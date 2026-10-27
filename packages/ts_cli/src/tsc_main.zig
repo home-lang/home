@@ -2434,7 +2434,6 @@ pub const LspProject = struct {
     /// directory's `tsconfig.json`); null or a missing file means defaults.
     pub fn create(gpa: std.mem.Allocator, config_path: ?[]const u8) !*LspProject {
         const self = try gpa.create(LspProject);
-        errdefer gpa.destroy(self);
         self.gpa = gpa;
         self.open_documents = .empty;
         self.pending_diagnostics = .empty;
@@ -2468,7 +2467,38 @@ pub const LspProject = struct {
         self.adapter.setProgramSources(&self.program, compile_options);
         compile_options.external_resolver = .{ .ptr = &self.adapter, .vtable = &CheckerResolverAdapter.vtable };
         self.service.compile_options = compile_options;
+        errdefer self.destroy();
+        try self.seedExplicitConfigRoots();
         return self;
+    }
+
+    fn seedExplicitConfigRoots(self: *LspProject) !void {
+        const config = self.config orelse return;
+        const roots = config.files orelse return;
+        const project_dir = std.fs.path.dirname(config.file_path) orelse ".";
+        var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer paths.deinit(self.gpa);
+        var owned_paths: std.ArrayListUnmanaged([]u8) = .empty;
+        defer {
+            for (owned_paths.items) |path| self.gpa.free(path);
+            owned_paths.deinit(self.gpa);
+        }
+        try ts_cli.appendProjectFilePaths(self.gpa, project_dir, roots, &paths, &owned_paths);
+        for (paths.items) |path| {
+            const is_js = std.mem.endsWith(u8, path, ".js") or
+                std.mem.endsWith(u8, path, ".jsx") or
+                std.mem.endsWith(u8, path, ".mjs") or
+                std.mem.endsWith(u8, path, ".cjs");
+            if (is_js and !self.service.compile_options.allow_js) continue;
+            const source = RealFs.read(self.gpa, path) catch |err| switch (err) {
+                // A missing config root must not prevent the editor from
+                // opening other documents. The CLI reports TS6053 for it.
+                error.FileNotFound => continue,
+                else => return err,
+            };
+            defer self.gpa.free(source);
+            _ = try self.program.add(path, source);
+        }
     }
 
     pub fn destroy(self: *LspProject) void {
@@ -8055,6 +8085,69 @@ test "LspProject: edited TypeScript imports admit and retire unopened JavaScript
     try std.testing.expect(std.mem.indexOf(u8, rejected_again, "\"code\":2322") != null);
     try std.testing.expectEqual(owner_id, project.program.lookupPath(js_path).?);
     try std.testing.expect(project.takePendingDiagnostic() == null);
+}
+
+test "LspProject: explicit JavaScript config root survives importer removal" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    // checkJs implies allowJs, including for config-listed JavaScript roots.
+    const config_source = "{\"compilerOptions\":{\"checkJs\":true,\"strict\":true,\"noEmit\":true},\"files\":[\"main.ts\",\"owner.js\"]}";
+    const owner_source = "/** @type {number} */ export const value = 'wrong';\n";
+    const imported_source = "import { value } from './owner.js';\nconst wrong: string = value;\n";
+    const detached_source = "export const local: number = 1;\n";
+    {
+        var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config.close(io);
+        try config.writeStreamingAll(io, config_source);
+        var owner = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+        defer owner.close(io);
+        try owner.writeStreamingAll(io, owner_source);
+        var importer = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer importer.close(io);
+        try importer.writeStreamingAll(io, imported_source);
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+    defer a.free(config_path);
+    const owner_path = try tmp.dir.realPathFileAlloc(io, "owner.js", a);
+    defer a.free(owner_path);
+    const main_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+    defer a.free(main_path);
+    const main_uri = try std.fmt.allocPrint(a, "file://{s}", .{main_path});
+    defer a.free(main_uri);
+
+    const project = try LspProject.create(a, config_path);
+    defer project.destroy();
+    const owner_id = project.program.lookupPath(owner_path) orelse return error.MissingExplicitRoot;
+    try std.testing.expect(project.program.fileById(owner_id).root_input);
+
+    const open_main = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = main_uri, .languageId = "typescript", .version = 1, .text = imported_source } } }, .{});
+    defer a.free(open_main);
+    const initial = try project.handle(open_main);
+    defer a.free(initial);
+    try std.testing.expect(std.mem.indexOf(u8, initial, "\"code\":2322") != null);
+    const owner_diagnostics = try project.service.diagnostics(a, owner_path);
+    defer a.free(owner_diagnostics);
+    try std.testing.expect(std.mem.indexOf(u8, owner_diagnostics, "TS2322") != null);
+
+    const remove_import = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didChange", .params = .{ .textDocument = .{ .uri = main_uri, .version = 2 }, .contentChanges = .{.{ .text = detached_source }} } }, .{});
+    defer a.free(remove_import);
+    const cleared = try project.handle(remove_import);
+    defer a.free(cleared);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "\"diagnostics\":[]") != null);
+    try std.testing.expectEqual(owner_id, project.program.lookupPath(owner_path).?);
+    try std.testing.expect(project.program.fileById(owner_id).root_input);
+    const still_checked = try project.service.diagnostics(a, owner_path);
+    defer a.free(still_checked);
+    try std.testing.expect(std.mem.indexOf(u8, still_checked, "TS2322") != null);
+
+    const readd_import = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didChange", .params = .{ .textDocument = .{ .uri = main_uri, .version = 3 }, .contentChanges = .{.{ .text = imported_source }} } }, .{});
+    defer a.free(readd_import);
+    const rejected_again = try project.handle(readd_import);
+    defer a.free(rejected_again);
+    try std.testing.expect(std.mem.indexOf(u8, rejected_again, "\"code\":2322") != null);
+    try std.testing.expectEqual(owner_id, project.program.lookupPath(owner_path).?);
 }
 
 test "LspProject: watched unopened JavaScript changes refresh open importer" {

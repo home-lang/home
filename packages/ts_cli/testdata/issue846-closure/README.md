@@ -15,8 +15,11 @@ owner is admitted while reachable, retired when the importer removes its
 edge, and readmitted under the same Program file identity when that import
 returns. The focused Program tests exercise both `checkJs` modes and contrast
 that owner with an explicitly listed JavaScript root, which must stay admitted
-after an importer removes its edge. LSP diagnostic publication for this exact
-remove-and-readmit sequence remains unverified.
+after an importer removes its edge. `LspProject` tests cover the actual
+`didOpen`/`didChange` diagnostic publications for the import-only sequence,
+and verify that a `files`-listed JavaScript root keeps its identity and
+diagnostics through removal and restoration of the importer edge when
+`checkJs` implicitly enables JavaScript admission.
 
 `tsconfig-root-only.json` is the static TypeScript 5.7.3 oracle for the
 explicit-root half of that lifecycle: `main-no-import.ts` has no dependency
