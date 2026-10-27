@@ -22,3 +22,9 @@ not every JavaScript dependency shape.
 import; depths 1 and 2 move that diagnostic to `m1`'s `m2` require and
 `m2`'s `m3` require respectively. Depth 3 admits the entire chain and reports
 the same TS2322 in `main.ts`. The stream suite pins all four CLI overrides.
+
+The import-only control is also run with `--allowJs true --checkJs false` at
+depths zero through three. TypeScript 5.7.3 reports TS7016 at the TS import
+at depth zero, no diagnostics at depths one and two, and the typed TS2322 at
+depth three. Home must infer admitted JS exports even while suppressing
+diagnostics originating inside JS files.

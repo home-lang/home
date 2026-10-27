@@ -362,6 +362,10 @@ TypeScript 5.7.3 CLI streams match Home and are pinned in the stream suite.
 The import-only control removes the explicit JS root: depths zero through
 three then move the admission frontier from `m1` to `m2` to `m3` before the
 typed consumer error appears. This also matches the exact CLI oracle.
+With `allowJs` on and `checkJs` off, the same import-only graph retains its
+depth-zero TS7016 and depth-three typed TS2322, but reports no owner-side
+diagnostics at partial depths one and two; four more exact streams pin that
+distinction.
 
 ## Watch mode
 

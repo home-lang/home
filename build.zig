@@ -2533,6 +2533,25 @@ pub fn build(b: *std.Build) void {
         transitive_import_only_three.expectExitCode(2);
         tsc_streams_step.dependOn(&transitive_import_only_three.step);
 
+        // Disabling owner-side JS diagnostics must not disable inference
+        // from admitted JS. A TS importer still gets TS7016 at depth zero;
+        // deeper partial chains are silent until the value is fully typed.
+        inline for (.{
+            .{ "0", b.fmt("main.ts(1,23): error TS7016: Could not find a declaration file for module 'm1'. '{s}' implicitly has an 'any' type.\n", .{transitive_m1_path}), @as(u8, 2) },
+            .{ "1", "", @as(u8, 0) },
+            .{ "2", "", @as(u8, 0) },
+            .{ "3", "main.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n", @as(u8, 2) },
+        }) |case| {
+            const transitive_without_check_js = b.addRunArtifact(home_tsc_exe);
+            transitive_without_check_js.setCwd(transitive_depth_dir);
+            transitive_without_check_js.clearEnvironment();
+            transitive_without_check_js.addArgs(&.{ "-p", "tsconfig-import-only.json", "--pretty", "false", "--allowJs", "true", "--checkJs", "false", "--maxNodeModuleJsDepth", case[0] });
+            transitive_without_check_js.expectStdOutEqual(case[1]);
+            transitive_without_check_js.expectStdErrEqual("");
+            transitive_without_check_js.expectExitCode(case[2]);
+            tsc_streams_step.dependOn(&transitive_without_check_js.step);
+        }
+
         // JSDoc object members imported from checked JS keep readonly and
         // optional write constraints. The local control pins the same
         // diagnostic rule without module-resolution involvement.
