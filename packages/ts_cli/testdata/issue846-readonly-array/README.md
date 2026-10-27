@@ -31,6 +31,13 @@ arrays still exclude `push`. It expects two TS2339 diagnostics.
 array rather than a mutable one. It expects TS2339 for `array.push` and
 TS4104 when assigning the callback array to `number[]`.
 
+`tsconfig-entries.json` checks the `[number, T]` tuple yielded by `entries()`
+on both admitted checked-JavaScript readonly and mutable arrays. TypeScript
+5.7.3 reports exactly three TS2322 errors when the numeric index or element
+is assigned to `string`; Home now preserves those types instead of treating
+the iterator values as `any`. The stream step pins all three locations,
+messages, and exit status.
+
 `tsconfig-surface.json` selects the ES2023 library and tests copying
 methods on both imported readonly and mutable arrays. TypeScript 5.7.3
 returns mutable `number[]` from `toReversed`, both `toSpliced` overloads,

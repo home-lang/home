@@ -597,7 +597,11 @@ pub fn arrayProto(
     const sig_to_spliced_simple = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t }, arr_t, false);
     const sig_with = try ti.internSignature(&[_]TypeId{ number_t, elem }, arr_t, false);
     const key_iterator = try iteratorObjectType(ti, sint, number_t, false);
-    const entry_iterator = try iteratorObjectType(ti, sint, any_t, false);
+    // Array.entries() yields [index, value] pairs, not `any`. Keep the
+    // index and element types distinct so both mutable and readonly
+    // receivers retain their admitted source element type downstream.
+    const entry_tuple = try internTuple(ti, sint, &.{ number_t, elem });
+    const entry_iterator = try iteratorObjectType(ti, sint, entry_tuple, false);
     const value_iterator = try iteratorObjectType(ti, sint, elem, false);
     const sig_keys = try ti.internSignature(&[_]TypeId{}, key_iterator, false);
     const sig_entries = try ti.internSignature(&[_]TypeId{}, entry_iterator, false);
@@ -1446,6 +1450,26 @@ test "lib: arrayProto exposes length/push/map/flatMap" {
     try T.expect(ti.objectMember(proto, push_id) != null);
     try T.expect(ti.objectMember(proto, map_id) != null);
     try T.expect(ti.objectMember(proto, flat_map_id) != null);
+}
+
+test "lib: array entries iterator preserves index and element tuple types" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.string_t, &rest_set);
+    const entries = ti.objectMember(proto, try sint.intern("entries")).?;
+    const iterator = ti.signatureReturn(entries).?;
+    const next = ti.objectMember(iterator, try sint.intern("next")).?;
+    const result = ti.signatureReturn(next).?;
+    const entry = ti.objectMember(result, try sint.intern("value")).?;
+    try T.expectEqual(types.Primitive.number_t, ti.objectMember(entry, try sint.intern("0")).?);
+    try T.expectEqual(types.Primitive.string_t, ti.objectMember(entry, try sint.intern("1")).?);
 }
 
 test "lib: arrayProto map/flatMap/reduce signatures are generic over U" {

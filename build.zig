@@ -2828,12 +2828,17 @@ pub fn build(b: *std.Build) void {
         const readonly_callback_output =
             "callback.ts(3,9): error TS2339: Property 'push' does not exist on type 'readonly number[]'.\n" ++
             "callback.ts(4,9): error TS4104: The type 'readonly number[]' is 'readonly' and cannot be assigned to the mutable type 'number[]'.\n";
+        const readonly_entries_output =
+            "entries.ts(6,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "entries.ts(7,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "entries.ts(12,7): error TS2322: Type 'number' is not assignable to type 'string'.\n";
         inline for (.{
             .{ "tsconfig.json", readonly_import_output },
             .{ "tsconfig-no-checkjs.json", readonly_import_output },
             .{ "tsconfig-local.json", readonly_local_output },
             .{ "tsconfig-augmentation.json", readonly_augmentation_output },
             .{ "tsconfig-callback.json", readonly_callback_output },
+            .{ "tsconfig-entries.json", readonly_entries_output },
         }) |case| {
             const readonly_array = b.addRunArtifact(home_tsc_exe);
             readonly_array.setCwd(readonly_array_dir);
