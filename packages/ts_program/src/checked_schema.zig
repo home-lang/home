@@ -29,6 +29,29 @@ pub fn lowerTypeInArena(
     return builder.lower(typ);
 }
 
+/// Project the public call signatures of an owner-checked overload set.
+/// The implementation signature is deliberately excluded: it checks the
+/// JavaScript body but is not a callable overload in an importing module.
+pub fn lowerVisibleOverloadsInArena(
+    arena: std.mem.Allocator,
+    path: []const u8,
+    compilation: *const driver.Compilation,
+    signatures: []const TypeId,
+) !*const schema.Expression {
+    var builder: Builder = .{
+        .arena = arena,
+        .path = path,
+        .compilation = compilation,
+    };
+    if (signatures.len == 0) return builder.unsupported();
+    if (signatures.len == 1) return builder.lower(signatures[0]);
+    const members = try arena.alloc(*const schema.Expression, signatures.len);
+    for (signatures, members) |signature, *member| member.* = try builder.lower(signature);
+    const expression = try arena.create(schema.Expression);
+    expression.* = .{ .intersection = members };
+    return expression;
+}
+
 /// Lower a checked generic function against the declaration projected from
 /// that same owner. Type parameters are matched by source identity and name;
 /// an unmatched graph stays unsupported instead of becoming an unbound `any`.
@@ -389,8 +412,13 @@ const Builder = struct {
         const parameters = try self.arena.alloc(schema.Element, source.len);
         const minimum = self.compilation.checked_types.signature_min_args.get(typ) orelse source.len;
         const is_rest = self.compilation.checked_types.rest_signatures.contains(typ);
+        const names = self.compilation.checked_types.signature_param_names.get(typ);
         for (source, parameters, 0..) |param, *out, index| out.* = .{
             .type = try self.lower(param),
+            .name = if (names) |signature_names|
+                if (index < signature_names.len) self.compilation.interner.get(signature_names[index]) else null
+            else
+                null,
             .optional = index >= minimum,
             .rest = is_rest and index + 1 == source.len,
         };

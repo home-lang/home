@@ -2921,11 +2921,31 @@ pub const Program = struct {
             const owner_node = by_position.get(declaration.position) orelse continue;
             const checked_type = compilation.hir.typeOf(owner_node);
             if (checked_type == ts_driver.Primitive.none) continue;
+            var visible_overloads: ?[]const ts_driver.TypeId = null;
             switch (route.kind) {
                 .function => {
-                    if (compilation.hir.kindOf(owner_node) != .fn_decl or
-                        std.mem.indexOf(u8, file.source, "@param") == null or
-                        !(jsdoc_types.hasParameterWithoutReturn(self.gpa, compilation, owner_node) catch return error.OutOfMemory)) continue;
+                    if (compilation.hir.kindOf(owner_node) != .fn_decl) continue;
+                    const function = hir_mod_ns.fnDeclOf(&compilation.hir, owner_node);
+                    if (function.name != hir_mod_ns.none_node_id and compilation.hir.kindOf(function.name) == .identifier) {
+                        const name = hir_mod_ns.identifierOf(&compilation.hir, function.name).name;
+                        if (compilation.checked_types.overload_has_implementation.contains(name)) {
+                            if (compilation.checked_types.overloads.get(name)) |overloads| {
+                                if (compilation.checked_types.overload_decls.get(name)) |overload_nodes| {
+                                    // Checker overload tables are name-keyed. Only project
+                                    // a set belonging to this exact source declaration.
+                                    if (overloads.items.len > 1 and
+                                        overload_nodes.items.len == overloads.items.len and
+                                        overload_nodes.items[overload_nodes.items.len - 1] == owner_node)
+                                    {
+                                        visible_overloads = overloads.items[0 .. overloads.items.len - 1];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (visible_overloads == null and
+                        (std.mem.indexOf(u8, file.source, "@param") == null or
+                            !(jsdoc_types.hasParameterWithoutReturn(self.gpa, compilation, owner_node) catch return error.OutOfMemory))) continue;
                 },
                 .variable => {
                     switch (compilation.hir.kindOf(owner_node)) {
@@ -2940,7 +2960,14 @@ pub const Program = struct {
                         compilation.checked_types.builtin_generic_kinds.get(checked_type) == null) continue;
                 },
             }
-            const body = (if (route.kind == .function and declaration.parameters.len > 0 and
+            const body = (if (visible_overloads) |overloads|
+                checked_schema.lowerVisibleOverloadsInArena(
+                    declarations.arena.allocator(),
+                    file.path,
+                    compilation,
+                    overloads,
+                )
+            else if (route.kind == .function and declaration.parameters.len > 0 and
                 compilation.checked_types.generic_signature_params.contains(checked_type))
                 checked_schema.lowerGenericSignatureInArena(
                     declarations.arena.allocator(),
@@ -2956,7 +2983,12 @@ pub const Program = struct {
                     compilation,
                     checked_type,
                 )) catch return error.OutOfMemory;
-            if (!(ts_driver.ProgramClassSchema.Schema.expressionSupported(body, self.gpa) catch return error.OutOfMemory)) continue;
+            if (!(ts_driver.ProgramClassSchema.Schema.expressionSupported(body, self.gpa) catch return error.OutOfMemory)) {
+                // Never expose the implementation's broad signature when a
+                // declared public overload cannot be transferred exactly.
+                if (visible_overloads != null) route.projection_only = true;
+                continue;
+            }
             @constCast(declaration).body = body;
             route.projection_only = false;
         }
@@ -22287,6 +22319,68 @@ test "Program: checked JavaScript primitive array JSDoc types cross the import b
         try T.expectEqual(@as(u32, 2322), diagnostics[3].code);
         try T.expectEqualStrings("Type 'boolean[]' is not assignable to type 'string[]'.", diagnostics[3].message);
         try expectCompilationLacksDiagnosticCode(p.fileById(consumer).compilation.?, 2339);
+    }
+}
+
+test "Program: admitted JavaScript JSDoc overloads exclude implementation signatures" {
+    const owner_source =
+        \\/**
+        \\ * @overload
+        \\ * @param {string} value
+        \\ * @returns {string}
+        \\ *
+        \\ * @overload
+        \\ * @param {number} value
+        \\ * @returns {number}
+        \\ *
+        \\ * @param {string | number} value
+        \\ * @returns {string | number}
+        \\ */
+        \\export function convert(value) { return value; }
+    ;
+    const consumer_source =
+        \\import { convert } from './owner.js';
+        \\const text: string = convert('one');
+        \\const count: number = convert(1);
+        \\convert(true);
+        \\const wrongCount: number = convert('one');
+        \\const wrongText: string = convert(1);
+        \\void [text, count, wrongCount, wrongText];
+    ;
+    for ([_]bool{ false, true }) |check_js| {
+        for ([_]bool{ false, true }) |parallel| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/owner.js", owner_source);
+            try vfs.addFile("/consumer.ts", consumer_source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            _ = try program.add("/owner.js", owner_source);
+            const consumer = try program.add("/consumer.ts", consumer_source);
+            const options: ts_driver.CompileOptions = .{
+                .allow_js = true,
+                .check_js = check_js,
+                .no_emit = true,
+                .strict = true,
+                .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+            };
+            if (parallel)
+                try program.compileAllParallel(options, 2)
+            else
+                try program.compileAll(options);
+            const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 3), diagnostics.len);
+            try T.expectEqual(@as(u32, 2769), diagnostics[0].code);
+            try T.expectEqual(@as(usize, 2), diagnostics[0].chain.len);
+            try T.expectEqualStrings("No overload matches this call.", diagnostics[0].message);
+            try T.expectEqual(@as(u32, 2322), diagnostics[1].code);
+            try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+            try T.expectEqual(@as(u32, 2322), diagnostics[2].code);
+            try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[2].message);
+        }
     }
 }
 

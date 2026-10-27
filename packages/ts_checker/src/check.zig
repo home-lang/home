@@ -96319,7 +96319,9 @@ pub const Checker = struct {
     }
 
     fn registerJsDocFunctionOverloads(self: *Checker, fn_node: NodeId, fn_name: hir_mod.StringId) CheckError!void {
-        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(fn_node)) return;
+        // JSDoc declares the callable surface even when checkJs is disabled;
+        // that option controls owner diagnostics, not importer-visible types.
+        if (!self.virtualSectionIsJsLike(fn_node)) return;
         if (self.overload_decls.get(fn_name)) |decls| {
             for (decls.items) |decl| if (decl == fn_node) return;
         }
@@ -116162,6 +116164,26 @@ pub const Checker = struct {
                 signature_payload.has_literal_types = function.has_literal_types;
                 signature_payload.has_parameter_declaration_origin = true;
                 try self.recordSignatureMinArgs(sig, optional);
+                if (function.parameters.len > 0) {
+                    var all_named = true;
+                    for (function.parameters) |parameter| {
+                        if (parameter.name == null) {
+                            all_named = false;
+                            break;
+                        }
+                    }
+                    if (all_named) {
+                        const names = try self.gpa.alloc(hir_mod.StringId, function.parameters.len);
+                        var names_transferred = false;
+                        errdefer if (!names_transferred) self.gpa.free(names);
+                        for (function.parameters, names) |parameter, *name| {
+                            name.* = self.string_interner.intern(parameter.name.?) catch return error.OutOfMemory;
+                        }
+                        if (self.signature_param_names.fetchRemove(sig)) |prior| self.gpa.free(prior.value);
+                        try self.signature_param_names.put(self.gpa, sig, names);
+                        names_transferred = true;
+                    }
+                }
                 if (function.is_construct) try self.recordConstructorSignatureVisibility(sig, switch (function.construct_visibility) {
                     .public => .public_,
                     .protected => .protected_,
@@ -135612,7 +135634,7 @@ pub const Checker = struct {
                 .message = msg,
             });
         } else {
-            try self.reportNoOverloadMatchesWithLastOverload(call_node, args, arg_types, sigs.items[sigs.items.len - 1]);
+            try self.reportNoOverloadMatchesWithOverloads(call_node, args, arg_types, sigs.items);
         }
         const ret = self.interner.signatureReturn(sigs.items[0]) orelse types.Primitive.any;
         return try self.optionalChainResult(ret, call_is_optional_chain);

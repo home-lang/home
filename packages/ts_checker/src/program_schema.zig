@@ -25,7 +25,7 @@ pub const Member = struct {
     visibility: types.MemberVisibility = .public,
 };
 
-pub const Element = struct { type: *const Expression, optional: bool = false, rest: bool = false };
+pub const Element = struct { type: *const Expression, name: ?[]const u8 = null, optional: bool = false, rest: bool = false };
 pub const TypePredicate = struct { param_index: u16, target: *const Expression, is_asserts: bool };
 pub const Function = struct {
     type_parameters: []Parameter = &.{},
