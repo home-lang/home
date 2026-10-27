@@ -29,6 +29,33 @@ pub fn lowerTypeInArena(
     return builder.lower(typ);
 }
 
+/// Lower a checked generic function against the declaration projected from
+/// that same owner. Type parameters are matched by source identity and name;
+/// an unmatched graph stays unsupported instead of becoming an unbound `any`.
+pub fn lowerGenericSignatureInArena(
+    arena: std.mem.Allocator,
+    path: []const u8,
+    compilation: *const driver.Compilation,
+    typ: TypeId,
+    declaration: *const schema.Declaration,
+) !*const schema.Expression {
+    var builder: Builder = .{
+        .arena = arena,
+        .path = path,
+        .compilation = compilation,
+    };
+    const generic_types = compilation.checked_types.generic_signature_params.get(typ) orelse return builder.unsupported();
+    if (generic_types.len == 0 or generic_types.len != declaration.parameters.len) return builder.unsupported();
+    for (generic_types, declaration.parameters) |source_type, parameter| {
+        const source_name = compilation.type_interner.typeParameterName(source_type) orelse return builder.unsupported();
+        if (!std.mem.eql(u8, compilation.interner.get(source_name), parameter.name)) return builder.unsupported();
+    }
+    builder.generic_signature = typ;
+    builder.generic_type_ids = generic_types;
+    builder.generic_parameters = declaration.parameters;
+    return builder.lower(typ);
+}
+
 pub fn wholeExportTypes(
     gpa: std.mem.Allocator,
     compilation: *const driver.Compilation,
@@ -216,6 +243,9 @@ const Builder = struct {
     expressions: std.AutoHashMapUnmanaged(TypeId, *const schema.Expression) = .empty,
     active: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     declarations: std.AutoHashMapUnmanaged(TypeId, *schema.Declaration) = .empty,
+    generic_signature: ?TypeId = null,
+    generic_type_ids: []const TypeId = &.{},
+    generic_parameters: []const schema.Parameter = &.{},
 
     fn expression(self: *Builder, value: schema.Expression) error{OutOfMemory}!*const schema.Expression {
         const result = try self.arena.create(schema.Expression);
@@ -287,6 +317,9 @@ const Builder = struct {
             };
         }
         if (flags.is_type_parameter) {
+            for (self.generic_type_ids, self.generic_parameters) |source_type, *parameter| {
+                if (source_type == typ) return self.expression(.{ .parameter = parameter });
+            }
             const name = interner.typeParameterName(typ) orelse return self.unsupported();
             if (std.mem.eql(u8, self.compilation.interner.get(name), "this"))
                 return self.expression(.polymorphic_this);
@@ -347,7 +380,8 @@ const Builder = struct {
     }
 
     fn signature(self: *Builder, typ: TypeId) error{OutOfMemory}!*const schema.Expression {
-        if (self.compilation.checked_types.generic_signature_params.contains(typ)) return self.unsupported();
+        if (self.compilation.checked_types.generic_signature_params.contains(typ) and
+            (self.generic_signature == null or self.generic_signature.? != typ)) return self.unsupported();
         const interner = &self.compilation.type_interner;
         const payload = interner.pool.signature_payloads.items[interner.pool.payloadOf(typ)];
         if (payload.is_construct) return self.unsupported();

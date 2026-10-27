@@ -2940,12 +2940,22 @@ pub const Program = struct {
                         compilation.checked_types.builtin_generic_kinds.get(checked_type) == null) continue;
                 },
             }
-            const body = checked_schema.lowerTypeInArena(
-                declarations.arena.allocator(),
-                file.path,
-                compilation,
-                checked_type,
-            ) catch return error.OutOfMemory;
+            const body = (if (route.kind == .function and declaration.parameters.len > 0 and
+                compilation.checked_types.generic_signature_params.contains(checked_type))
+                checked_schema.lowerGenericSignatureInArena(
+                    declarations.arena.allocator(),
+                    file.path,
+                    compilation,
+                    checked_type,
+                    declaration,
+                )
+            else
+                checked_schema.lowerTypeInArena(
+                    declarations.arena.allocator(),
+                    file.path,
+                    compilation,
+                    checked_type,
+                )) catch return error.OutOfMemory;
             if (!(ts_driver.ProgramClassSchema.Schema.expressionSupported(body, self.gpa) catch return error.OutOfMemory)) continue;
             @constCast(declaration).body = body;
             route.projection_only = false;
@@ -15271,12 +15281,19 @@ test "Program: admitted JavaScript function templates preserve imported constrai
         \\ * @returns {T}
         \\ */
         \\export function constrained(value) { return value; }
+        \\/**
+        \\ * @template T
+        \\ * @param {T} value
+        \\ */
+        \\export function inferred(value) { return value; }
     ;
     const consumer_source =
-        \\import { identity, constrained } from './owner.js';
+        \\import { identity, constrained, inferred } from './owner.js';
         \\const value: number = identity('one');
         \\constrained(true);
+        \\const inferredValue: number = inferred('two');
         \\void value;
+        \\void inferredValue;
     ;
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -15298,9 +15315,10 @@ test "Program: admitted JavaScript function templates preserve imported constrai
     };
     try program.compileAll(options);
     const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
-    try T.expectEqual(@as(usize, 2), diagnostics.len);
+    try T.expectEqual(@as(usize, 3), diagnostics.len);
     try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
     try T.expectEqual(@as(u32, 2345), diagnostics[1].code);
+    try T.expectEqual(@as(u32, 2322), diagnostics[2].code);
 }
 
 test "Program: package type revisions refresh implied module format" {
