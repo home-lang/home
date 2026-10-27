@@ -16,12 +16,12 @@ main.ts(7,1): error TS2322: Type 'string' is not assignable to type 'number'.
 main.ts(8,13): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
 ```
 
-Home exits 2 but omits the TS2339 line, accepting
-`readonlyValues.push(4)`.
-The same TS2339 gap reproduces for a locally declared `readonly number[]`,
-so the cause is the checker's shared array-member model rather than the
-JavaScript import boundary. #960 tracks a proper readonly prototype surface.
+Home now matches all five lines and exit status in both modes. The
+`test-tsc-streams` step compares stdout, stderr, and exit status exactly.
 
-This fixture is intentionally not wired into the green CLI stream suite
-until the complete expected output passes; it documents a known parity gap
-without weakening the expected diagnostics or concealing the failure.
+`tsconfig-local.json` is a TypeScript-only control for local readonly member
+lookup, indexed write, and `keyof`. It expects TS2339, TS2542, and TS2322
+in that order, with exact streams and exit status checked by the same step.
+
+[Issue #960](https://github.com/home-lang/home/issues/960) tracks the remaining work to model the complete TypeScript
+`ReadonlyArray<T>` surface; these passing cases do not claim full parity.

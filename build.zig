@@ -2808,6 +2808,35 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&adjacent_generic_overload.step);
         }
 
+        // Readonly array members remain distinct from mutable Array after
+        // importing a checked-JS owner or a local declaration. All outputs
+        // are pinned to TypeScript 5.7.3.
+        const readonly_array_dir = b.path("packages/ts_cli/testdata/issue846-readonly-array");
+        const readonly_import_output =
+            "main.ts(4,1): error TS2542: Index signature in type 'readonly number[]' only permits reading.\n" ++
+            "main.ts(5,16): error TS2339: Property 'push' does not exist on type 'readonly number[]'.\n" ++
+            "main.ts(6,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "main.ts(7,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(8,13): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n";
+        const readonly_local_output =
+            "local.ts(2,16): error TS2339: Property 'push' does not exist on type 'readonly number[]'.\n" ++
+            "local.ts(3,1): error TS2542: Index signature in type 'readonly number[]' only permits reading.\n" ++
+            "local.ts(4,7): error TS2322: Type '\"push\"' is not assignable to type 'keyof readonly number[]'.\n";
+        inline for (.{
+            .{ "tsconfig.json", readonly_import_output },
+            .{ "tsconfig-no-checkjs.json", readonly_import_output },
+            .{ "tsconfig-local.json", readonly_local_output },
+        }) |case| {
+            const readonly_array = b.addRunArtifact(home_tsc_exe);
+            readonly_array.setCwd(readonly_array_dir);
+            readonly_array.clearEnvironment();
+            readonly_array.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            readonly_array.expectStdOutEqual(case[1]);
+            readonly_array.expectStdErrEqual("");
+            readonly_array.expectExitCode(2);
+            tsc_streams_step.dependOn(&readonly_array.step);
+        }
+
         // A typedef-backed checked-JS object must transfer its resolved
         // union and optional-member types into the TypeScript importer.
         // Owner diagnostics can be on or off without losing the shape.
