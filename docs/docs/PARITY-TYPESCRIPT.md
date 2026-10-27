@@ -54,6 +54,10 @@ checks required and optional union-valued properties through two invalid
 writes and two invalid reads. The checked owner now supplies its resolved
 structural type when the pre-check JSDoc alias cannot be transferred; exact
 TypeScript 5.7.3 CLI streams match with `checkJs` enabled or disabled. The
+same fixture also checks an imported checked-JS class: its JSDoc-constrained
+method argument and checked-body return type remain visible to the TypeScript
+consumer in both `checkJs` modes. This covers that class-method shape, not
+general class inference. The
 broader typed-JavaScript owner surface remains tracked in
 [#846](https://github.com/home-lang/home/issues/846).
 

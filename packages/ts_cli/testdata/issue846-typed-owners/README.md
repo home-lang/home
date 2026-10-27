@@ -9,3 +9,11 @@ streams and exit 2; the Program test covers serial/parallel compilation,
 source insertion order, and both `checkJs` modes. The Program must publish the
 checked owner's resolved type when the pre-check JSDoc name was opaque, not
 infer a shape from the importer's assignments.
+
+`class-owner.js` declares a JSDoc-typed field and method parameter; the
+method's number result is inferred from its checked body. `class-consumer.ts`
+checks two invalid writes/calls and two invalid reads. TypeScript 5.7.3 emits
+TS2322, TS2345, TS2322, TS2322 with `checkJs` on or off. The CLI stream cases
+assert the exact output; the Program test varies compilation mode, insertion
+order, and `checkJs`. The checked owner must provide the method's signature,
+not the syntactic class schema's pre-check `any` result.

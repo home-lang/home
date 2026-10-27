@@ -2574,6 +2574,24 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&typed_union.step);
         }
 
+        // Checked JS class methods retain JSDoc parameter types and inferred
+        // results after crossing the class-schema import boundary.
+        const class_owner_output =
+            "class-consumer.ts(4,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "class-consumer.ts(5,13): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+            "class-consumer.ts(6,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "class-consumer.ts(7,7): error TS2322: Type 'number' is not assignable to type 'string'.\n";
+        inline for (.{ true, false }) |class_check_js| {
+            const typed_class = b.addRunArtifact(home_tsc_exe);
+            typed_class.setCwd(typed_owners_dir);
+            typed_class.clearEnvironment();
+            typed_class.addArgs(&.{ "-p", "tsconfig-class.json", "--pretty", "false", "--checkJs", if (class_check_js) "true" else "false" });
+            typed_class.expectStdOutEqual(class_owner_output);
+            typed_class.expectStdErrEqual("");
+            typed_class.expectExitCode(2);
+            tsc_streams_step.dependOn(&typed_class.step);
+        }
+
         // JSDoc object members imported from checked JS keep readonly and
         // optional write constraints. The local control pins the same
         // diagnostic rule without module-resolution involvement.

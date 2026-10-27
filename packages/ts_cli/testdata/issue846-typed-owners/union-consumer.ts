@@ -1,4 +1,4 @@
-import { payload } from "./union-owner.js";
+import { payload } from './union-owner.js';
 
 payload.choice = true;
 payload.maybe = false;
