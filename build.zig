@@ -2618,6 +2618,20 @@ pub fn build(b: *std.Build) void {
         package_exports.expectStdErrEqual("");
         package_exports.expectExitCode(0);
         tsc_streams_step.dependOn(&package_exports.step);
+        const excluded_exports_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-package-exports/node_modules/pkg/number.cjs") catch @panic("OOM");
+        if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, excluded_exports_path, '\\', '/');
+        const excluded_exports = b.addRunArtifact(home_tsc_exe);
+        excluded_exports.setCwd(b.path("packages/ts_cli/testdata/issue846-package-exports"));
+        excluded_exports.clearEnvironment();
+        excluded_exports.addArgs(&.{ "-p", "tsconfig-depth-zero.json", "--pretty", "false" });
+        excluded_exports.expectStdOutEqual(b.fmt(
+            "main.ts(1,21): error TS7016: Could not find a declaration file for module 'pkg'. '{s}' implicitly has an 'any' type.\n" ++
+                "  Try `npm i --save-dev @types/pkg` if it exists or add a new declaration (.d.ts) file containing `declare module 'pkg';`\n",
+            .{excluded_exports_path},
+        ));
+        excluded_exports.expectStdErrEqual("");
+        excluded_exports.expectExitCode(2);
+        tsc_streams_step.dependOn(&excluded_exports.step);
 
         // The same admitted ESM owner reaches `import = require`, type-only
         // import declarations, and `typeof import(...)` through distinct
