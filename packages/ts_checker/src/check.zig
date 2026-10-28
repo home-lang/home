@@ -774,6 +774,10 @@ pub const ProgramExportedValue = struct {
     parameters: []const ProgramTypeReference = &.{},
     result: ProgramTypeReference = .{},
     declaration: ?*const ProgramClassSchema.Declaration = null,
+    /// This value originates at a JavaScript `export default <expression>`
+    /// rather than a named declaration. Its source-owned schema is published
+    /// only after the exporting file has been checked.
+    expression_origin: bool = false,
     /// Source-owned constant members of an exported ambient const enum.
     /// Null means this route is not an enum; an empty slice is a valid enum.
     enum_members: ?[]const ProgramEnumMember = null,

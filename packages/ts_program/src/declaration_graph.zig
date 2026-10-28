@@ -7,6 +7,7 @@ const driver = @import("ts_driver");
 const resolver_mod = @import("ts_resolver");
 const schemas = @import("class_schema.zig");
 const export_origins = @import("export_origins.zig");
+const jsdoc_types = @import("jsdoc_types.zig");
 
 pub const Source = schemas.Source;
 const Binding = struct { source: usize, name: []const u8 };
@@ -1250,6 +1251,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
     defer builder.query.deinit();
     var by_path: std.StringHashMapUnmanaged(usize) = .empty;
     var declarations: std.AutoHashMapUnmanaged(Position, hir.NodeId) = .empty;
+    var default_expressions: std.AutoHashMapUnmanaged(Position, hir.NodeId) = .empty;
     var ambient_const_enums: std.AutoHashMapUnmanaged(Position, void) = .empty;
     var pending: std.ArrayListUnmanaged(Binding) = .empty;
     var visited: std.HashMapUnmanaged(Binding, void, BindingContext, 80) = .empty;
@@ -1287,6 +1289,15 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
             const ex = hir.exportOf(&c.hir, statement);
             if (ex.is_default and !ex.is_export_equals) {
                 try pending.append(arena, .{ .source = index, .name = "default" });
+                if (jsdoc_types.isJavaScriptPath(source.path) and ex.decl != hir.none_node_id) {
+                    switch (c.hir.kindOf(ex.decl)) {
+                        .class_decl, .class_expr, .fn_decl, .interface_decl, .type_alias_decl, .enum_decl, .namespace_decl, .var_decl, .let_decl, .const_decl, .identifier => {},
+                        else => try default_expressions.put(arena, .{
+                            .source = index,
+                            .position = c.hir.spanOf(ex.decl).start,
+                        }, ex.decl),
+                    }
+                }
             }
             for (hir.exportNamed(&c.hir, statement)) |specifier| {
                 const spec = hir.importSpecifierOf(&c.hir, specifier);
@@ -1325,6 +1336,30 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         for (0..2) |space| {
             const origin = (if (space == 1) origins.value orelse origins.type_only_value else origins.type) orelse continue;
             const owner = by_path.get(origin.path) orelse continue;
+            if (space == 1 and origin.kind == .expression and
+                default_expressions.contains(.{ .source = owner, .position = origin.position }))
+            {
+                // A JavaScript default expression has no declaration node for
+                // the ordinary schema builder. Preserve its exact owner and
+                // export route now; the checked owner publishes its final
+                // type before any importer is checked.
+                const declaration = try arena.create(driver.ProgramClassSchema.Declaration);
+                declaration.* = .{
+                    .path = sources[owner].path,
+                    .position = origin.position,
+                    .name = binding.name,
+                    .value_side = true,
+                };
+                try values.append(arena, .{
+                    .target_path = sources[binding.source].path,
+                    .export_name = binding.name,
+                    .kind = .variable,
+                    .declaration = declaration,
+                    .expression_origin = true,
+                    .projection_only = true,
+                });
+                continue;
+            }
             const node = declarations.get(.{ .source = owner, .position = origin.position }) orelse continue;
             if (sources[owner].compilation.hir.kindOf(node) == .namespace_decl or
                 sources[owner].compilation.hir.kindOf(node) == .class_decl) continue;

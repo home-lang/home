@@ -2911,6 +2911,14 @@ pub const Program = struct {
         while (node < compilation.hir.nodeCount()) : (node += 1) {
             switch (compilation.hir.kindOf(node)) {
                 .fn_decl, .var_decl, .let_decl, .const_decl => {},
+                .export_decl => {
+                    const exported = hir_mod_ns.exportOf(&compilation.hir, node);
+                    if (!exported.is_default or exported.is_export_equals or
+                        exported.decl == hir_mod_ns.none_node_id) continue;
+                    const expression = exported.decl;
+                    try by_position.put(self.gpa, compilation.hir.spanOf(expression).start, expression);
+                    continue;
+                },
                 else => continue,
             }
             try by_position.put(self.gpa, compilation.hir.spanOf(node).start, node);
@@ -2921,6 +2929,18 @@ pub const Program = struct {
             const owner_node = by_position.get(declaration.position) orelse continue;
             const checked_type = compilation.hir.typeOf(owner_node);
             if (checked_type == ts_driver.Primitive.none) continue;
+            if (route.expression_origin) {
+                const body = checked_schema.lowerTypeInArena(
+                    declarations.arena.allocator(),
+                    file.path,
+                    compilation,
+                    checked_type,
+                ) catch return error.OutOfMemory;
+                if (!(ts_driver.ProgramClassSchema.Schema.expressionSupported(body, self.gpa) catch return error.OutOfMemory)) continue;
+                @constCast(declaration).body = body;
+                route.projection_only = false;
+                continue;
+            }
             var visible_overloads: ?[]const ts_driver.TypeId = null;
             switch (route.kind) {
                 .function => {
@@ -22379,6 +22399,64 @@ test "Program: admitted JavaScript default function retains JSDoc return type" {
     for (diagnostics) |diagnostic| {
         try T.expectEqual(@as(u32, 2322), diagnostic.code);
         try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostic.message);
+    }
+}
+
+test "Program: checked JavaScript default expression types direct and re-export imports" {
+    const owner_source = "export default { count: 1, label: 'ready' };\n";
+    const bridge_source = "export { default } from './owner.js';\n";
+    const direct_source =
+        \\import settings from './owner.js';
+        \\const wrong: string = settings.count;
+        \\settings.count = 'bad';
+    ;
+    const main_source =
+        \\import settings from './bridge.js';
+        \\import * as bridge from './bridge.js';
+        \\const wrong: string = settings.count;
+        \\settings.count = 'bad';
+        \\const wrongNamespace: number = bridge.default.label;
+        \\bridge.default.label = 42;
+    ;
+    for ([_]bool{ true, false }) |check_js| {
+        for ([_]bool{ false, true }) |parallel| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/owner.js", owner_source);
+            try vfs.addFile("/bridge.js", bridge_source);
+            try vfs.addFile("/direct.ts", direct_source);
+            try vfs.addFile("/main.ts", main_source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            // This fixture's module exports only `default`. The shared test
+            // resolver's fixed export-name list belongs to a different
+            // namespace fixture, so let Program's source-owned routes supply
+            // the exact namespace members here.
+            var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true, .names_available = false };
+            var p = Program.init(T.allocator, &resolver);
+            defer p.deinit();
+            _ = try p.add("/owner.js", owner_source);
+            _ = try p.add("/bridge.js", bridge_source);
+            const direct = try p.add("/direct.ts", direct_source);
+            const main = try p.add("/main.ts", main_source);
+            const options: ts_driver.CompileOptions = .{
+                .allow_js = true,
+                .check_js = check_js,
+                .no_emit = true,
+                .strict = true,
+                .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+            };
+            if (parallel)
+                try p.compileAllParallel(options, 2)
+            else
+                try p.compileAll(options);
+            const direct_diagnostics = p.fileById(direct).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 2), direct_diagnostics.len);
+            for (direct_diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+            const main_diagnostics = p.fileById(main).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 4), main_diagnostics.len);
+            for (main_diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        }
     }
 }
 
