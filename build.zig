@@ -3387,6 +3387,47 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&whole_export_shapes.step);
         }
 
+        // CommonJS whole-export schemas retain inferred object fields and
+        // leading JSDoc readonly/optional modifiers in either checkJs mode.
+        // A later property write is ordinary CommonJS augmentation, not a
+        // TypeScript `export =` conflict (TS2309).
+        const commonjs_object_dir = b.path("packages/ts_cli/testdata/issue846-commonjs-object");
+        const inferred_commonjs_output =
+            "main.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "main.ts(5,1): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "main.ts(6,7): error TS2339: Property 'missing' does not exist on type '{ count: number; label: string; }'.\n";
+        const typed_commonjs_output =
+            "typed-main.ts(4,7): error TS2540: Cannot assign to 'count' because it is a read-only property.\n" ++
+            "typed-main.ts(5,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "typed-main.ts(6,7): error TS2322: Type 'string | undefined' is not assignable to type 'string'.\n" ++
+            "  Type 'undefined' is not assignable to type 'string'.\n" ++
+            "typed-main.ts(7,1): error TS2322: Type 'number' is not assignable to type 'string'.\n";
+        inline for (.{
+            .{ "tsconfig.json", inferred_commonjs_output },
+            .{ "tsconfig-no-checkjs.json", inferred_commonjs_output },
+            .{ "tsconfig-typed.json", typed_commonjs_output },
+            .{ "tsconfig-typed-no-checkjs.json", typed_commonjs_output },
+        }) |case| {
+            const commonjs_object = b.addRunArtifact(home_tsc_exe);
+            commonjs_object.setCwd(commonjs_object_dir);
+            commonjs_object.clearEnvironment();
+            commonjs_object.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            commonjs_object.expectStdOutEqual(case[1]);
+            commonjs_object.expectStdErrEqual("");
+            commonjs_object.expectExitCode(2);
+            tsc_streams_step.dependOn(&commonjs_object.step);
+        }
+        inline for (.{ "tsconfig-written.json", "tsconfig-written-no-checkjs.json", "tsconfig-mixed.json" }) |config| {
+            const commonjs_augmentation = b.addRunArtifact(home_tsc_exe);
+            commonjs_augmentation.setCwd(commonjs_object_dir);
+            commonjs_augmentation.clearEnvironment();
+            commonjs_augmentation.addArgs(&.{ "-p", config, "--pretty", "false" });
+            commonjs_augmentation.expectStdOutEqual("");
+            commonjs_augmentation.expectStdErrEqual("");
+            commonjs_augmentation.expectExitCode(0);
+            tsc_streams_step.dependOn(&commonjs_augmentation.step);
+        }
+
         // Mixed readonly string/number indices keep their own write rules
         // through checked-JS imports, local declarations, generics, and
         // inheritance. This is the exact TypeScript 5.7.3 CLI oracle.

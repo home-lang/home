@@ -18,9 +18,13 @@ try {
   process.exit(2)
 }
 for (const source of [
-  'build.zig',
+  // A successful `zig build home-tsc` may reuse an unchanged cached binary
+  // after test-only build.zig edits. Source mtimes still catch stale checker
+  // semantics; Zig's build graph owns build-configuration invalidation.
   'packages/ts_checker/src/check.zig',
+  'packages/ts_checker/src/checked_transfer.zig',
   'packages/ts_cli/src/tsc_main.zig',
+  'packages/ts_program/src/checked_schema.zig',
   'packages/ts_program/src/ts_program.zig',
   'packages/ts_resolver/src/ts_resolver.zig',
 ]) {

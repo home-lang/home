@@ -100,6 +100,15 @@ both `checkJs` modes. The
 broader typed-JavaScript owner surface remains tracked in
 [#846](https://github.com/home-lang/home/issues/846).
 
+A [CommonJS object fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-commonjs-object)
+checks inferred and JSDoc-typed `module.exports` values in both `checkJs`
+modes. The checked owner now publishes the declared `readonly` and optional
+fields to TypeScript importers; later `module.exports.count` and
+`exports.count` writes do not create a false TS2309 export conflict. Seven
+exact TypeScript 5.7.3 CLI streams pin these cases. This does not cover the
+distinct function/class expando typing gap tracked in
+[#965](https://github.com/home-lang/home/issues/965).
+
 An [imported JSDoc function fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-generic-functions)
 also checks an unconstrained identity function, a constrained template, and
 a template whose result is inferred from the checked JavaScript body, including
@@ -451,7 +460,7 @@ For an enumerated CLI check, the
 [#846 oracle auditor](https://github.com/home-lang/home/blob/main/scripts/tests/compare-issue846-oracles.mjs)
 compares exact stdout, stderr, and exit status against TypeScript 5.7.3 for
 every `issue846-*` config, with `--noEmit` on both sides. A fresh Home CLI
-matched all 99 configs on 2026-10-28. This verifies those inputs, not every
+matched all 106 configs on 2026-10-29. This verifies those inputs, not every
 JavaScript inference form or LSP behavior.
 
 ## Watch mode
