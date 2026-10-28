@@ -86,12 +86,17 @@ pub const LibCache = struct {
     /// `S[]`). The signature's runtime return type is boolean, so retain
     /// the otherwise-erased S binder for the checker's predicate metadata.
     every_guard_type_params: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    /// lib.es2019.array declares `flatMap<U, This = undefined>` and carries
+    /// `This` through both the callback receiver and optional thisArg. Its
+    /// synthetic signature needs both binders, not only result `U`.
+    flat_map_type_params: std.AutoHashMapUnmanaged(TypeId, [2]TypeId) = .empty,
 
     pub fn deinit(self: *LibCache, gpa: std.mem.Allocator) void {
         self.array_proto_by_elem.deinit(gpa);
         self.readonly_array_proto_by_elem.deinit(gpa);
         self.sort_comparator_signatures.deinit(gpa);
         self.every_guard_type_params.deinit(gpa);
+        self.flat_map_type_params.deinit(gpa);
     }
 };
 
@@ -521,13 +526,24 @@ pub fn arrayProto(
     // type drives inference of `U`: a string-returning callback makes
     // `arr.map(...)` resolve to `string[]` instead of `any[]`.
     const cb_t_u = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, u_tp, false);
-    // `(value: T, index: number, array: T[]) => U | U[]` — used by flatMap. The callback can
-    // return either a single value or an array of values; flatMap
-    // flattens the result by one level. Upstream signature is
-    // `(value: T) => U | readonly U[]`; we accept the non-readonly
-    // form which subsumes most call sites.
+    // lib.es2019.array declares `flatMap<U, This = undefined>`; the
+    // callback's `this` is inferred from the optional second argument.
+    const flat_map_this_tp = try ti.internFreshTypeParameterWithVariance(
+        try sint.intern("This"),
+        types.Primitive.none,
+        undef_t,
+        .bivariant,
+    );
+    const optional_flat_map_this = try ti.internUnion(&.{ flat_map_this_tp, undef_t });
+    // The callback returns a scalar or an array to flatten one level.
     const u_or_u_arr = try ti.internUnion(&[_]TypeId{ u_tp, u_arr });
-    const cb_t_u_or_arr = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, u_or_u_arr, false);
+    const cb_t_u_or_arr = try ti.internSignatureWithThisType(
+        &[_]TypeId{ elem, number_t, arr_t },
+        u_or_u_arr,
+        false,
+        false,
+        flat_map_this_tp,
+    );
     // `(value: T, index: number, array: T[]) => unknown` — used by filter / find, matching lib.d.ts
     // predicate overloads that accept truthy non-boolean returns. Current
     // lib.d.ts uses the same return type for every / some.
@@ -570,7 +586,8 @@ pub fn arrayProto(
     // may return either a single value or an array; flatMap flattens
     // one level so the result is always `U[]`. Without the union the
     // common `arr.flatMap(x => [a, b])` shape tripped TS2322.
-    const sig_flatMap = try ti.internSignature(&[_]TypeId{cb_t_u_or_arr}, u_arr, false);
+    const sig_flatMap = try ti.internSignature(&[_]TypeId{ cb_t_u_or_arr, optional_flat_map_this }, u_arr, false);
+    try cache.flat_map_type_params.put(gpa, sig_flatMap, .{ u_tp, flat_map_this_tp });
     // TypeScript's callback methods accept an optional, unconstrained
     // thisArg. Their one required argument is recorded by the checker.
     const sig_filter_guard = try ti.internSignature(&[_]TypeId{ cb_t_guard, any_t }, narrowed_arr, false);

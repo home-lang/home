@@ -110250,6 +110250,15 @@ pub const Checker = struct {
         member: types.ObjectMember,
     ) CheckError!void {
         if (!self.nodeBelongsToCurrentHir(member.decl_node)) return;
+        if (self.hir.kindOf(member.decl_node) == .object_property and
+            hir_mod.objectPropertyOf(self.hir, member.decl_node).type_annotation == hir_mod.none_node_id)
+        {
+            // An inferred object-literal member contributes a structural
+            // property type, but it is not a written type declaration.
+            // TypeScript reports the incompatible argument property without
+            // a TS6500 "declared here" note in this case.
+            return;
+        }
         if (self.diagnostics.items.len == 0) return;
         const last = &self.diagnostics.items[self.diagnostics.items.len - 1];
         if (last.code != TsCodes.type_not_assignable) return;
@@ -112683,11 +112692,17 @@ pub const Checker = struct {
             std.mem.eql(u8, method, "every") or
             std.mem.eql(u8, method, "some") or
             std.mem.eql(u8, method, "findIndex") or
-            std.mem.eql(u8, method, "findLastIndex"))
+            std.mem.eql(u8, method, "findLastIndex") or
+            std.mem.eql(u8, method, "flatMap"))
         {
             try self.signature_min_args.put(self.gpa, signature, 1);
         }
         if (self.generic_signature_params.contains(signature)) return;
+        if (self.lib_cache.flat_map_type_params.get(signature)) |type_params| {
+            const owned = try self.gpa.dupe(TypeId, &type_params);
+            try self.generic_signature_params.put(self.gpa, signature, owned);
+            return;
+        }
         if (std.mem.eql(u8, method, "every")) {
             if (self.lib_cache.every_guard_type_params.get(signature)) |narrowed| {
                 const params = self.interner.signatureParams(signature);
@@ -120443,6 +120458,13 @@ pub const Checker = struct {
                             // A callback may therefore be checked using a
                             // type fixed by a later scalar argument.
                             for (0..2) |phase| {
+                                if (phase == 1) try self.bindContextualCallbackThisBeforeBody(
+                                    effective_callee_t,
+                                    param_ts,
+                                    args,
+                                    arg_types.items,
+                                    &call_subs,
+                                );
                                 for (0..n) |i| {
                                     const is_contextual_callback = self.functionExpressionHasContextSensitiveParameters(args[i]);
                                     if ((phase == 0) == is_contextual_callback) continue;
@@ -128313,7 +128335,12 @@ pub const Checker = struct {
             self.program_contextual_function_nodes.contains(fn_node);
         defer if (program_contextual) self.deduplicateDiagnosticsWithin(fn_node);
         self.clearCachedTypesWithin(fn_node);
-        const params = hir_mod.fnParams(self.hir, fn_node);
+        const all_params = hir_mod.fnParams(self.hir, fn_node);
+        const explicit_this_param = if (all_params.len > 0 and self.isThisParameter(all_params[0]))
+            all_params[0]
+        else
+            hir_mod.none_node_id;
+        const params = if (explicit_this_param != hir_mod.none_node_id) all_params[1..] else all_params;
         const param_ts = self.interner.signatureParams(sig);
         // The function may already have been checked against an unresolved
         // generic signature. This pass owns the final contextual diagnostics.
@@ -128336,6 +128363,19 @@ pub const Checker = struct {
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         try self.recordFunctionSelfBinding(fn_node, sig);
+        const explicit_this_t: ?TypeId = if (explicit_this_param != hir_mod.none_node_id) blk: {
+            const this_param = hir_mod.parameterOf(self.hir, explicit_this_param);
+            const this_t = if (this_param.type_annotation != hir_mod.none_node_id)
+                try self.lowererLowerWithTypeParams(this_param.type_annotation)
+            else
+                types.Primitive.any;
+            const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+            try self.recordNarrow(this_id, this_t);
+            try self.contextual_function_this_types.put(self.gpa, fn_node, this_t);
+            self.hir.setType(explicit_this_param, this_t);
+            if (this_param.name != hir_mod.none_node_id) self.hir.setType(this_param.name, this_t);
+            break :blk this_t;
+        } else null;
         const n = params.len;
         const effective_param_ts = try self.gpa.alloc(TypeId, n);
         defer self.gpa.free(effective_param_ts);
@@ -128375,7 +128415,7 @@ pub const Checker = struct {
             self.hir.setType(pp.name, effective_param_t);
         }
         try self.recordContextualRestTupleDependentParameters(fn_node, sig);
-        if (self.hir.kindOf(fn_node) != .arrow_fn) {
+        if (self.hir.kindOf(fn_node) != .arrow_fn and explicit_this_t == null) {
             if (self.signatureThisParam(sig)) |this_t_raw| {
                 const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
                 const this_t = self.thisTypeMarkerConstraint(this_t_raw) orelse this_t_raw;
@@ -128412,7 +128452,10 @@ pub const Checker = struct {
                     try self.buildStructuralPromise(self.evalAwaited(return_t))
                 else
                     return_t;
-                const inferred_sig = self.interner.internSignature(effective_param_ts, inferred_return_t, false) catch return error.OutOfMemory;
+                const inferred_sig = if (explicit_this_t) |this_t|
+                    self.interner.internSignatureWithThisType(effective_param_ts, inferred_return_t, false, false, this_t) catch return error.OutOfMemory
+                else
+                    self.interner.internSignature(effective_param_ts, inferred_return_t, false) catch return error.OutOfMemory;
                 try self.recordSignatureParamNames(inferred_sig, params[0..n]);
                 if (inferred_sig != sig) if (self.generic_signature_params.get(sig)) |type_params| {
                     try self.recordGenericSignatureParams(inferred_sig, type_params);
@@ -128428,7 +128471,10 @@ pub const Checker = struct {
                     try self.buildStructuralPromise(self.evalAwaited(body_t))
                 else
                     body_t;
-                const inferred_sig = self.interner.internSignature(effective_param_ts, inferred_return_t, false) catch return error.OutOfMemory;
+                const inferred_sig = if (explicit_this_t) |this_t|
+                    self.interner.internSignatureWithThisType(effective_param_ts, inferred_return_t, false, false, this_t) catch return error.OutOfMemory
+                else
+                    self.interner.internSignature(effective_param_ts, inferred_return_t, false) catch return error.OutOfMemory;
                 try self.recordSignatureParamNames(inferred_sig, params[0..n]);
                 if (inferred_sig != sig) if (self.generic_signature_params.get(sig)) |type_params| {
                     try self.recordGenericSignatureParams(inferred_sig, type_params);
@@ -137024,6 +137070,47 @@ pub const Checker = struct {
             if (default_t == types.Primitive.none) default_t = try self.lowererLowerWithTypeParams(default_node);
             default_t = try self.instantiateGenericSignatureDefault(default_t, subs);
             try subs.put(self.gpa, param, default_t);
+        }
+    }
+
+    /// Contextual callback bodies are checked after scalar arguments have
+    /// supplied candidates. A defaulted callback `this` binder must be fixed
+    /// at that point, before the body reads `this`; a callback with its own
+    /// explicit `this` annotation supplies a candidate instead. This is the
+    /// same two-phase inference order used for value parameters and returns.
+    fn bindContextualCallbackThisBeforeBody(
+        self: *Checker,
+        enclosing_sig: TypeId,
+        param_ts: []const TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        const binders = self.generic_signature_params.get(enclosing_sig) orelse return;
+        const n = @min(param_ts.len, @min(args.len, arg_types.len));
+        for (0..n) |i| {
+            if (!self.isContextualFunctionExpressionLike(args[i]) or
+                !self.interner.isSignature(param_ts[i])) continue;
+            const this_param = self.signatureThisParam(param_ts[i]) orelse continue;
+            if (!self.interner.isDirectTypeParameter(this_param) or
+                std.mem.indexOfScalar(TypeId, binders, this_param) == null or
+                subs.contains(this_param)) continue;
+
+            const explicit_this_param = for (hir_mod.fnParams(self.hir, args[i])) |parameter| {
+                if (self.isThisParameter(parameter)) break parameter;
+            } else hir_mod.none_node_id;
+            if (explicit_this_param != hir_mod.none_node_id) {
+                const annotation = hir_mod.parameterOf(self.hir, explicit_this_param).type_annotation;
+                if (annotation != hir_mod.none_node_id) {
+                    const argument_this = try self.lowererLowerWithTypeParams(annotation);
+                    try self.inferFromPair(this_param, argument_this, subs);
+                }
+                continue;
+            }
+            const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(this_param)];
+            if (payload.default != types.Primitive.none) {
+                try subs.put(self.gpa, this_param, try self.instantiateGenericSignatureDefault(payload.default, subs));
+            }
         }
     }
 
@@ -167575,6 +167662,11 @@ pub const Checker = struct {
         const p_payload = pool.payloadOf(param_t);
         if (p_payload >= pool.signature_payloads.items.len) return;
         if (pool.payloadOf(arg_t) >= pool.signature_payloads.items.len) return;
+        if (self.signatureThisParam(param_t)) |target_this| {
+            if (self.signatureThisParam(arg_t)) |source_this| {
+                try self.inferFromPair(target_this, source_this, subs);
+            }
+        }
         const pp = try self.gpa.dupe(TypeId, self.interner.signatureParams(param_t));
         defer self.gpa.free(pp);
         if (self.generic_signature_params.get(arg_t) != null and
@@ -280316,6 +280408,35 @@ test "checker: Array.prototype.flatMap accepts array-returning callback" {
     }
 }
 
+test "checker: flatMap infers callback this from optional thisArg" {
+    const s = try newSetup(
+        \\const values: readonly number[] = [1, 2];
+        \\const context = { offset: 2 };
+        \\const result: number[] = values.flatMap(function (value) {
+        \\  const wrong: string = this.offset;
+        \\  return [value + this.offset];
+        \\}, context);
+        \\const explicit: number[] = values.flatMap<number, typeof context>(function (value) {
+        \\  return value + this.offset;
+        \\}, context);
+        \\const defaulted: number[] = values.flatMap(function (value) {
+        \\  const absent: undefined = this;
+        \\  return [value];
+        \\});
+        \\const annotated: number[] = values.flatMap(function (this: { offset: number }, value) {
+        \\  return value + this.offset;
+        \\});
+        \\values.flatMap<number, typeof context>(value => value, { offset: 'bad' });
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+}
+
 test "checker: readonly flatMap infers mixed scalar and array results" {
     const s = try newSetup(
         \\const values: readonly number[] = [1, 2];
@@ -280357,8 +280478,14 @@ test "checker: unrelated generic U does not change readonly flatMap inference" {
     }
     try T.expect(synthetic_param != types.Primitive.none);
     const registered_params = s.checker.generic_signature_params.get(flat_map_sig) orelse return error.MissingFlatMapBinder;
-    try T.expectEqualSlices(TypeId, &.{synthetic_param}, registered_params);
+    try T.expectEqual(@as(usize, 2), registered_params.len);
+    try T.expectEqual(synthetic_param, registered_params[0]);
+    const callback_this = s.checker.signatureThisParam(callback_sig) orelse return error.MissingFlatMapThisBinder;
+    try T.expectEqual(callback_this, registered_params[1]);
+    const this_payload = s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(callback_this)];
+    try T.expectEqual(types.Primitive.undefined_t, this_payload.default);
     try T.expect(alias_param != synthetic_param);
+    try T.expect(alias_param != callback_this);
     try T.expect(s.checker.type_parameter_decl_nodes.get(synthetic_param) == null);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
@@ -281225,6 +281352,23 @@ test "checker: TS6500 related info points to target property for call argument o
         }
     }
     try T.expect(saw_related);
+}
+
+test "checker: inferred object property type does not claim a written declaration" {
+    const s = try newSetup(
+        \\const context = { offset: 2 };
+        \\function takes(value: typeof context): void {}
+        \\takes({ offset: 'bad' });
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        for (diagnostic.related) |related| {
+            try T.expect(related.code != TsCodes.expected_type_from_property);
+        }
+    }
 }
 
 test "checker: TS6501 related info points to target index signature for object literal mismatch" {
