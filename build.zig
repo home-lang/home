@@ -2377,6 +2377,19 @@ pub fn build(b: *std.Build) void {
             closure.expectExitCode(2);
             tsc_streams_step.dependOn(&closure.step);
         }
+        // A two-hop imported JavaScript owner supplies the importer's type
+        // even when diagnostics in JavaScript are disabled.
+        const transitive_revision_dir = b.path("packages/ts_cli/testdata/issue846-transitive-revision");
+        inline for (.{ "tsconfig.json", "tsconfig-no-checkjs.json" }) |config_name| {
+            const transitive_revision = b.addRunArtifact(home_tsc_exe);
+            transitive_revision.setCwd(transitive_revision_dir);
+            transitive_revision.clearEnvironment();
+            transitive_revision.addArgs(&.{ "-p", config_name, "--pretty", "false" });
+            transitive_revision.expectStdOutEqual("main.ts(3,7): error TS2322: Type 'number' is not assignable to type 'string'.\n");
+            transitive_revision.expectStdErrEqual("");
+            transitive_revision.expectExitCode(2);
+            tsc_streams_step.dependOn(&transitive_revision.step);
+        }
         // Removing every import edge does not retire a JavaScript file that
         // the project lists as an explicit root. TypeScript 5.7.3 still
         // reports the root's own checked-JS diagnostic.

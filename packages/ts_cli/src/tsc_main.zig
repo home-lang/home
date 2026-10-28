@@ -8787,6 +8787,78 @@ test "LspProject: watched unopened JavaScript changes refresh open importer" {
     try std.testing.expect(std.mem.indexOf(u8, importer_after_watch, "TS2322") == null);
 }
 
+test "LspProject: watched transitive JavaScript revision refreshes open importer" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    inline for (.{ true, false }) |check_js| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        {
+            var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+            defer config.close(io);
+            try config.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"checkJs\":" ++ (if (check_js) "true" else "false") ++ ",\"strict\":true,\"noEmit\":true},\"files\":[\"main.ts\"]}");
+            var importer = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+            defer importer.close(io);
+            try importer.writeStreamingAll(io, "import { value } from './bridge.js';\nconst expected: string = value;\nvoid expected;\n");
+            var bridge = try tmp.dir.createFile(io, "bridge.js", .{ .truncate = true });
+            defer bridge.close(io);
+            try bridge.writeStreamingAll(io, "export { value } from './leaf.js';\n");
+            var leaf = try tmp.dir.createFile(io, "leaf.js", .{ .truncate = true });
+            defer leaf.close(io);
+            try leaf.writeStreamingAll(io, "export const value = 1;\n");
+        }
+        const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+        defer a.free(config_path);
+        const ts_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+        defer a.free(ts_path);
+        const bridge_path = try tmp.dir.realPathFileAlloc(io, "bridge.js", a);
+        defer a.free(bridge_path);
+        const leaf_path = try tmp.dir.realPathFileAlloc(io, "leaf.js", a);
+        defer a.free(leaf_path);
+        const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
+        defer a.free(ts_uri);
+        const leaf_uri = try std.fmt.allocPrint(a, "file://{s}", .{leaf_path});
+        defer a.free(leaf_uri);
+
+        const project = try LspProject.create(a, config_path);
+        defer project.destroy();
+        const opening = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = ts_uri, .languageId = "typescript", .version = 1, .text = "import { value } from './bridge.js';\nconst expected: string = value;\nvoid expected;\n" } } }, .{});
+        defer a.free(opening);
+        const initial = try project.handle(opening);
+        defer a.free(initial);
+        try std.testing.expect(std.mem.indexOf(u8, initial, "\"code\":2322") != null);
+        const bridge_id = project.program.lookupPath(bridge_path) orelse return error.MissingAdmittedJavaScript;
+        const leaf_id = project.program.lookupPath(leaf_path) orelse return error.MissingAdmittedJavaScript;
+        try std.testing.expect(!project.program.fileById(bridge_id).root_input);
+        try std.testing.expect(!project.program.fileById(leaf_id).root_input);
+        try std.testing.expect(project.takePendingDiagnostic() == null);
+
+        const leaf_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = leaf_uri, .type = 2 }} } }, .{});
+        defer a.free(leaf_event);
+        inline for (.{ .{ "export const value = 'ready';\n", false }, .{ "export const value = 1;\n", true } }) |revision| {
+            {
+                var leaf = try tmp.dir.createFile(io, "leaf.js", .{ .truncate = true });
+                defer leaf.close(io);
+                try leaf.writeStreamingAll(io, revision[0]);
+            }
+            const response = try project.handle(leaf_event);
+            defer a.free(response);
+            try std.testing.expectEqual(@as(usize, 0), response.len);
+            const refreshed = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+            defer a.free(refreshed);
+            try std.testing.expect(std.mem.indexOf(u8, refreshed, ts_uri) != null);
+            const parsed = try std.json.parseFromSlice(std.json.Value, a, refreshed, .{});
+            defer parsed.deinit();
+            const diagnostics = parsed.value.object.get("params").?.object.get("diagnostics").?.array.items;
+            try std.testing.expectEqual(@as(usize, if (revision[1]) 1 else 0), diagnostics.len);
+            if (revision[1]) try std.testing.expectEqual(@as(i64, 2322), diagnostics[0].object.get("code").?.integer);
+            try std.testing.expectEqual(bridge_id, project.program.lookupPath(bridge_path).?);
+            try std.testing.expectEqual(leaf_id, project.program.lookupPath(leaf_path).?);
+            try std.testing.expect(project.takePendingDiagnostic() == null);
+        }
+    }
+}
+
 test "LspProject: package metadata revisions refresh an admitted JavaScript importer" {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

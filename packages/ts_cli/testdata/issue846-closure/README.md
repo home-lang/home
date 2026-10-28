@@ -81,8 +81,8 @@ HOME_RUN_MAX_MB=3840 perl scripts/run-bounded.pl 900 node scripts/tests/compare-
 ```
 
 The script requires TypeScript 5.7.3 and compares the exact stdout, stderr,
-and exit status for every `issue846-*` `tsconfig*.json` (80 configs as of
+and exit status for every `issue846-*` `tsconfig*.json` (82 configs as of
 2026-10-28). It passes `--noEmit` to both CLIs so the audit cannot modify
-fixture outputs. The fresh 2026-10-28 CLI matched all 80 configs. This
+fixture outputs. The fresh 2026-10-28 CLI matched all 82 configs. This
 enumerated fixture result does not establish arbitrary JavaScript inference
 or LSP revision parity; those need their own focused and editor tests.
