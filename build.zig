@@ -2851,6 +2851,20 @@ pub fn build(b: *std.Build) void {
             "predicate.ts(8,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
             "predicate.ts(11,7): error TS2322: Type 'string | number' is not assignable to type 'number'.\n" ++
             "  Type 'string' is not assignable to type 'number'.\n";
+        const readonly_predicate_search_output =
+            "predicate-search.ts(16,7): error TS2322: Type 'number | undefined' is not assignable to type 'string | undefined'.\n" ++
+            "  Type 'number' is not assignable to type 'string'.\n" ++
+            "predicate-search.ts(17,7): error TS2322: Type 'number | undefined' is not assignable to type 'string | undefined'.\n" ++
+            "  Type 'number' is not assignable to type 'string'.\n" ++
+            "predicate-search.ts(18,7): error TS2322: Type 'number | undefined' is not assignable to type 'string | undefined'.\n" ++
+            "  Type 'number' is not assignable to type 'string'.\n" ++
+            "predicate-search.ts(19,7): error TS2322: Type 'number | undefined' is not assignable to type 'string | undefined'.\n" ++
+            "  Type 'number' is not assignable to type 'string'.\n" ++
+            "predicate-search.ts(20,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "predicate-search.ts(22,7): error TS2322: Type 'string | number | undefined' is not assignable to type 'number | undefined'.\n" ++
+            "  Type 'string' is not assignable to type 'number'.\n" ++
+            "predicate-search.ts(28,7): error TS2322: Type 'number | undefined' is not assignable to type 'number'.\n" ++
+            "  Type 'undefined' is not assignable to type 'number'.\n";
         inline for (.{
             .{ "tsconfig.json", readonly_import_output },
             .{ "tsconfig-no-checkjs.json", readonly_import_output },
@@ -2865,6 +2879,8 @@ pub fn build(b: *std.Build) void {
             .{ "tsconfig-generic-scope-no-checkjs.json", readonly_generic_scope_output },
             .{ "tsconfig-predicate.json", readonly_predicate_output },
             .{ "tsconfig-predicate-no-checkjs.json", readonly_predicate_output },
+            .{ "tsconfig-predicate-search.json", readonly_predicate_search_output },
+            .{ "tsconfig-predicate-search-no-checkjs.json", readonly_predicate_search_output },
         }) |case| {
             const readonly_array = b.addRunArtifact(home_tsc_exe);
             readonly_array.setCwd(readonly_array_dir);

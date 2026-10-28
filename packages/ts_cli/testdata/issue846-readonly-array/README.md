@@ -72,6 +72,14 @@ retain the original union type. TypeScript 5.7.3 and Home agree on the three
 deliberate TS2322 diagnostics at `predicate.ts(5,7)`, `(8,7)`, and `(11,7)`,
 with exact stdout, empty stderr, and error exit pinned by the stream suite.
 
+`tsconfig-predicate-search.json` and its no-`checkJs` control extend the
+admitted-JavaScript oracle to `find` and `findLast` on readonly and mutable
+arrays. Type predicates narrow their results to `number | undefined`, while
+an ordinary predicate retains `number | string | undefined`. The same control
+passes a `thisArg` through `find`, `findLast`, and `filter`; both modes pin seven
+deliberate TS2322 diagnostics, including the possibility that `find` returns
+`undefined`, and no callback or arity errors.
+
 `tsconfig-surface.json` selects the ES2023 library and tests copying
 methods on both imported readonly and mutable arrays. TypeScript 5.7.3
 returns mutable `number[]` from `toReversed`, both `toSpliced` overloads,
