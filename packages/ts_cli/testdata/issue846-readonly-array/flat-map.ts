@@ -10,5 +10,6 @@ const callbackArray: number[] = readonlyValues.flatMap((value, index, array) => 
   return value;
 });
 const wrong: string[] = readonlyValues.flatMap(() => readonlyValues);
+const explicit: number[] = readonlyValues.flatMap<number>(() => readonlyValues);
 
-void [flattened, flattenedMutable, scalar, mixed, callbackArray, wrong];
+void [flattened, flattenedMutable, scalar, mixed, callbackArray, wrong, explicit];

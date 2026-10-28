@@ -89,7 +89,7 @@ pub const LibCache = struct {
     /// lib.es2019.array declares `flatMap<U, This = undefined>` and carries
     /// `This` through both the callback receiver and optional thisArg. Its
     /// synthetic signature needs both binders, not only result `U`.
-    flat_map_type_params: std.AutoHashMapUnmanaged(TypeId, [2]TypeId) = .empty,
+    flat_map_type_params: std.AutoHashMapUnmanaged(TypeId, FlatMapSignatureInfo) = .empty,
 
     pub fn deinit(self: *LibCache, gpa: std.mem.Allocator) void {
         self.array_proto_by_elem.deinit(gpa);
@@ -98,6 +98,11 @@ pub const LibCache = struct {
         self.every_guard_type_params.deinit(gpa);
         self.flat_map_type_params.deinit(gpa);
     }
+};
+
+pub const FlatMapSignatureInfo = struct {
+    type_params: [2]TypeId,
+    readonly_callback_array: TypeId,
 };
 
 fn optionalStringChoices(ti: *interner_mod.Interner, sint: *string_interner.Interner, choices: []const []const u8) !TypeId {
@@ -535,8 +540,16 @@ pub fn arrayProto(
         .bivariant,
     );
     const optional_flat_map_this = try ti.internUnion(&.{ flat_map_this_tp, undef_t });
-    // The callback returns a scalar or an array to flatten one level.
-    const u_or_u_arr = try ti.internUnion(&[_]TypeId{ u_tp, u_arr });
+    // The callback returns a scalar or ReadonlyArray<U>. The readonly
+    // container is distinct from the mutable U[] result of flatMap itself.
+    const readonly_u_arr = try ti.internObjectTypeWithIndex(&.{.{
+        .name = try sint.intern("length"),
+        .type = number_t,
+        .is_optional = false,
+        .is_readonly = true,
+        .is_method = false,
+    }}, types.Primitive.none, u_tp);
+    const u_or_u_arr = try ti.internUnion(&[_]TypeId{ u_tp, readonly_u_arr });
     const cb_t_u_or_arr = try ti.internSignatureWithThisType(
         &[_]TypeId{ elem, number_t, arr_t },
         u_or_u_arr,
@@ -582,12 +595,15 @@ pub fn arrayProto(
     const sig_pop = try ti.internSignature(&[_]TypeId{}, t_or_undef, false);
     // `map<U>(cb: (value: T) => U): U[]`.
     const sig_map = try ti.internSignature(&[_]TypeId{ cb_t_u, any_t }, u_arr, false);
-    // `flatMap<U>(cb: (value: T) => U | U[]): U[]` — the callback
+    // `flatMap<U>(cb: (value: T) => U | ReadonlyArray<U>): U[]` — the callback
     // may return either a single value or an array; flatMap flattens
     // one level so the result is always `U[]`. Without the union the
     // common `arr.flatMap(x => [a, b])` shape tripped TS2322.
     const sig_flatMap = try ti.internSignature(&[_]TypeId{ cb_t_u_or_arr, optional_flat_map_this }, u_arr, false);
-    try cache.flat_map_type_params.put(gpa, sig_flatMap, .{ u_tp, flat_map_this_tp });
+    try cache.flat_map_type_params.put(gpa, sig_flatMap, .{
+        .type_params = .{ u_tp, flat_map_this_tp },
+        .readonly_callback_array = readonly_u_arr,
+    });
     // TypeScript's callback methods accept an optional, unconstrained
     // thisArg. Their one required argument is recorded by the checker.
     const sig_filter_guard = try ti.internSignature(&[_]TypeId{ cb_t_guard, any_t }, narrowed_arr, false);
@@ -1561,10 +1577,27 @@ test "lib: arrayProto map/flatMap/reduce signatures are generic over U" {
         try T.expectEqual(types.Primitive.any, params[1]);
     }
 
-    // `flatMap<U>` mirrors `map<U>`.
+    // `flatMap<U>` returns mutable U[] but accepts a readonly U[] from
+    // its callback, exactly as lib.es2019.array.d.ts declares.
     const fm_sig = ti.objectMember(proto, try sint.intern("flatMap")).?;
     const fm_ret = ti.signatureReturn(fm_sig).?;
-    try T.expect(ti.pool.flagsOf(ti.objectNumberIndex(fm_ret)).is_type_parameter);
+    const fm_u = ti.objectNumberIndex(fm_ret);
+    try T.expect(ti.pool.flagsOf(fm_u).is_type_parameter);
+    const fm_info = cache.flat_map_type_params.get(fm_sig) orelse return error.MissingFlatMapSignatureInfo;
+    try T.expectEqual(fm_u, fm_info.type_params[0]);
+    const fm_callback_return = ti.signatureReturn(ti.signatureParams(fm_sig)[0]).?;
+    var saw_scalar = false;
+    var saw_readonly_array = false;
+    for (ti.unionMembers(fm_callback_return)) |member| {
+        if (member == fm_u) saw_scalar = true;
+        if (member == fm_info.readonly_callback_array) {
+            saw_readonly_array = true;
+            try T.expectEqual(fm_u, ti.objectNumberIndex(member));
+            const length = ti.objectMemberInfo(member, try sint.intern("length")) orelse return error.MissingReadonlyLength;
+            try T.expect(length.is_readonly);
+        }
+    }
+    try T.expect(saw_scalar and saw_readonly_array);
 
     // `reduce<U>(cb, init: U): U`: the first reduce member stays the
     // generic initial-value overload so explicit `reduce<T>(..., init)`

@@ -112698,8 +112698,13 @@ pub const Checker = struct {
             try self.signature_min_args.put(self.gpa, signature, 1);
         }
         if (self.generic_signature_params.contains(signature)) return;
-        if (self.lib_cache.flat_map_type_params.get(signature)) |type_params| {
-            const owned = try self.gpa.dupe(TypeId, &type_params);
+        if (self.lib_cache.flat_map_type_params.get(signature)) |flat_map| {
+            // The callback accepts ReadonlyArray<U>, while the method
+            // returns mutable U[]. Keep the write-permission metadata on
+            // the exact synthetic callback array type.
+            try self.array_origin_types.put(self.gpa, flat_map.readonly_callback_array, {});
+            try self.readonly_index_types.put(self.gpa, flat_map.readonly_callback_array, .{});
+            const owned = try self.gpa.dupe(TypeId, &flat_map.type_params);
             try self.generic_signature_params.put(self.gpa, signature, owned);
             return;
         }
@@ -280482,6 +280487,8 @@ test "checker: unrelated generic U does not change readonly flatMap inference" {
     try T.expectEqual(synthetic_param, registered_params[0]);
     const callback_this = s.checker.signatureThisParam(callback_sig) orelse return error.MissingFlatMapThisBinder;
     try T.expectEqual(callback_this, registered_params[1]);
+    const flat_map_info = s.checker.lib_cache.flat_map_type_params.get(flat_map_sig) orelse return error.MissingFlatMapSignatureInfo;
+    try T.expect(s.checker.typeIsReadonlyArrayLike(flat_map_info.readonly_callback_array));
     const this_payload = s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(callback_this)];
     try T.expectEqual(types.Primitive.undefined_t, this_payload.default);
     try T.expect(alias_param != synthetic_param);

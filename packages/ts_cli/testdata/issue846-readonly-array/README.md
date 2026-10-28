@@ -52,6 +52,10 @@ array parameter declared for `flatMap` in TypeScript 5.7.3's
 `lib.es2019.array.d.ts`. Both calls must succeed; only assigning the
 resulting `number[]` to `string[]` reports TS2322. The stream step pins the
 exact location, elaboration and exit status with both `checkJs` settings.
+An explicit `<number>` callback returning the imported readonly array also
+must succeed: the callback accepts `ReadonlyArray<U>` even though the method
+itself returns mutable `U[]`.
+
 An independent generic-name interaction was tracked in
 [issue #962](https://github.com/home-lang/home/issues/962); the regression
 below pins its resolution.
