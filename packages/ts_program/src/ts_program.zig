@@ -21516,6 +21516,50 @@ test "Program: imported checked-JS object JSDoc retains nested writes and modifi
     try T.expectEqual(@as(u32, 2339), diagnostics[3].code);
 }
 
+test "Program: admitted CommonJS JSDoc export retains readonly and optional fields" {
+    const owner_source =
+        \\/** @typedef {{readonly count: number, label?: string}} Payload */
+        \\/** @type {Payload} */
+        \\module.exports = { count: 1, label: 'ready' };
+    ;
+    const consumer_source =
+        \\import value = require('./owner.js');
+        \\const count: number = value.count;
+        \\value.count = 2;
+        \\const wrongCount: string = value.count;
+        \\const label: string = value.label;
+        \\value.label = 42;
+        \\void [count, wrongCount, label];
+    ;
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const owner = try p.add("/owner.js", owner_source);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        try p.compileAll(.{
+            .allow_js = true,
+            .check_js = check_js,
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        });
+        try T.expectEqual(@as(usize, 0), p.fileById(owner).compilation.?.diagnostics.items.len);
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 4), diagnostics.len);
+        try T.expectEqual(@as(u32, 2540), diagnostics[0].code);
+        try T.expectEqual(@as(u32, 2322), diagnostics[1].code);
+        try T.expectEqual(@as(u32, 2322), diagnostics[2].code);
+        try T.expectEqual(@as(u32, 2322), diagnostics[3].code);
+    }
+}
+
 test "Program: imported checked-JS JSDoc index signatures constrain reads and writes" {
     const owner_source =
         \\// @ts-check

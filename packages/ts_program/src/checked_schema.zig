@@ -130,14 +130,17 @@ pub fn wholeExportTypes(
             continue;
         }
         if (compilation.hir.kindOf(statement) != .assignment) continue;
-        var assignment = hir.assignmentOf(&compilation.hir, statement);
+        var current = statement;
+        var assignment = hir.assignmentOf(&compilation.hir, current);
         while (true) {
             if (wholeExportTarget(compilation, assignment.target)) {
-                const typ = compilation.hir.typeOf(assignment.value);
+                const typ = compilation.checked_types.commonjs_whole_export_declared_types.get(current) orelse
+                    compilation.hir.typeOf(assignment.value);
                 if (typ != Primitive.none and std.mem.indexOfScalar(TypeId, result.items, typ) == null)
                     try result.append(gpa, typ);
             }
             if (assignment.value == hir.none_node_id or compilation.hir.kindOf(assignment.value) != .assignment) break;
+            current = assignment.value;
             assignment = hir.assignmentOf(&compilation.hir, assignment.value);
             if (assignment.op != null) break;
         }

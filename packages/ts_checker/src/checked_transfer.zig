@@ -219,6 +219,7 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
         .class_this_types,
         .class_static_type_by_node,
         .namespace_value_object_types,
+        .commonjs_whole_export_declared_types,
         => .{ .key = node_id, .value = type_id },
         .commonjs_export_narrows, .checkjs_object_expando_narrows => .{ .key = member, .value = type_id },
         .class_name_by_instance,

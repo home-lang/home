@@ -4419,6 +4419,7 @@ pub const CheckedTypes = struct {
     inferred_variance: std.AutoHashMapUnmanaged(TypeId, types.Variance) = .empty,
 
     commonjs_export_narrows: std.AutoHashMapUnmanaged(MemberKey, TypeId) = .empty,
+    commonjs_whole_export_declared_types: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
     checkjs_object_expando_narrows: std.AutoHashMapUnmanaged(MemberKey, TypeId) = .empty,
     merged_class_instance_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     class_this_types: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
@@ -4707,6 +4708,7 @@ pub const Checker = struct {
     /// `exports.x` and `module.exports.x`. Unlike branch narrows, these
     /// must also work at file scope where `narrow_scopes` is empty.
     commonjs_export_narrows: std.AutoHashMapUnmanaged(MemberKey, TypeId),
+    commonjs_whole_export_declared_types: std.AutoHashMapUnmanaged(NodeId, TypeId),
     /// Source-order CheckJS namespace-object expando assignments for
     /// `var Ns = {}; Ns.C = class { ... }`. These are value-shape
     /// discoveries, not branch narrows, so they must be visible at
@@ -6188,6 +6190,7 @@ pub const Checker = struct {
             .resolved_contextual_parameters = .empty,
             .resolved_flow_member_accesses = .empty,
             .commonjs_export_narrows = .empty,
+            .commonjs_whole_export_declared_types = .empty,
             .checkjs_object_expando_narrows = .empty,
             .class_instance_types = .empty,
             .merged_class_instance_types = .empty,
@@ -6950,6 +6953,7 @@ pub const Checker = struct {
         self.resolved_contextual_parameters.deinit(self.gpa);
         self.resolved_flow_member_accesses.deinit(self.gpa);
         self.commonjs_export_narrows.deinit(self.gpa);
+        self.commonjs_whole_export_declared_types.deinit(self.gpa);
         self.checkjs_object_expando_narrows.deinit(self.gpa);
         self.tuple_origin_types.deinit(self.gpa);
         self.array_origin_types.deinit(self.gpa);
@@ -17137,18 +17141,14 @@ pub const Checker = struct {
 
     fn checkExportAssignmentExclusivity(self: *Checker, stmts: []const NodeId) CheckError!void {
         var by_section: std.AutoHashMapUnmanaged(usize, ExportAssignmentSection) = .empty;
-        var commonjs_export_assignments: std.AutoHashMapUnmanaged(usize, NodeId) = .empty;
         var commonjs_whole_exports: std.AutoHashMapUnmanaged(usize, std.ArrayListUnmanaged(NodeId)) = .empty;
-        var commonjs_property_sections: std.AutoHashMapUnmanaged(usize, void) = .empty;
         defer {
             var it = by_section.valueIterator();
             while (it.next()) |v| v.all_export_assignments.deinit(self.gpa);
             by_section.deinit(self.gpa);
-            commonjs_export_assignments.deinit(self.gpa);
             var commonjs_it = commonjs_whole_exports.valueIterator();
             while (commonjs_it.next()) |nodes| nodes.deinit(self.gpa);
             commonjs_whole_exports.deinit(self.gpa);
-            commonjs_property_sections.deinit(self.gpa);
         }
 
         // The declaration transformer collects nested CommonJS assignments,
@@ -17165,10 +17165,6 @@ pub const Checker = struct {
                 const gop = try commonjs_whole_exports.getOrPut(self.gpa, section);
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 try gop.value_ptr.append(self.gpa, node);
-                const export_gop = try commonjs_export_assignments.getOrPut(self.gpa, section);
-                if (!export_gop.found_existing) export_gop.value_ptr.* = node;
-            } else if (self.commonJsExportsAssignmentName(node) != null) {
-                try commonjs_property_sections.put(self.gpa, section, {});
             }
         }
 
@@ -17203,12 +17199,10 @@ pub const Checker = struct {
                 }
             }
         }
-        var commonjs_it = commonjs_property_sections.keyIterator();
-        while (commonjs_it.next()) |section| {
-            const export_assignment = commonjs_export_assignments.get(section.*) orelse continue;
-            if (self.commonJsWholeExportAliasesExportsInsideFunction(export_assignment)) continue;
-            try self.report(export_assignment, TsCodes.export_assignment_with_other_exports, "An export assignment cannot be used in a module with other exported elements.");
-        }
+        // `module.exports = value` followed by `module.exports.name = ...`
+        // (or `exports.name = ...`) is normal CommonJS augmentation. TS2309
+        // applies to the TypeScript `export =` declaration conflict below,
+        // not to JavaScript property writes on the exported value.
         // When the source declares an ESM-target module (`esnext`,
         // `es2015`, `es2020`, etc.) `export = X` is invalid syntax ÃÂ¢ÃÂÃÂ
         // emit upstream TS1203 directly on the export assignment node
@@ -17266,22 +17260,6 @@ pub const Checker = struct {
                 try self.report(info.export_assignment, TsCodes.export_assignment_with_other_exports, "An export assignment cannot be used in a module with other exported elements.");
             }
         }
-    }
-
-    fn commonJsWholeExportAliasesExportsInsideFunction(self: *Checker, node: NodeId) bool {
-        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .assignment) return false;
-        const assignment = hir_mod.assignmentOf(self.hir, node);
-        if (!self.nodeIsModuleExportsAccess(assignment.target) or
-            assignment.value == hir_mod.none_node_id or
-            self.hir.kindOf(assignment.value) != .identifier) return false;
-        const value_name = self.string_interner.get(hir_mod.identifierOf(self.hir, assignment.value).name);
-        if (!std.mem.eql(u8, value_name, "exports")) return false;
-        var parent = self.hir.parentOf(node);
-        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
-            const kind = self.hir.kindOf(parent);
-            if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) return true;
-        }
-        return false;
     }
 
     fn checkCommonJsDefinePropertyDeclarationPrivacy(self: *Checker) CheckError!void {
@@ -117743,6 +117721,23 @@ pub const Checker = struct {
                         TsCodes.assignment_lhs_not_variable,
                         "The left-hand side of an assignment expression must be a variable or a property access.",
                     );
+                }
+                // A leading JSDoc @type on `module.exports = value` declares
+                // the public CommonJS shape even when checkJs is disabled.
+                // Keep that declaration separate from the inferred value type:
+                // checkJs only controls diagnostics in this owner, not the
+                // type seen by an importing TypeScript file.
+                if (a.op == null and target_kind == .member_access and
+                    self.virtualSectionIsJsLike(node) and self.memberAccessIsModuleExports(a.target))
+                {
+                    const parent = self.hir.parentOf(node);
+                    const anchor = if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .expression_stmt)
+                        parent
+                    else
+                        node;
+                    if (try self.jsDocTypeForLeadingNodeUnchecked(anchor)) |declared_t| {
+                        try self.commonjs_whole_export_declared_types.put(self.gpa, node, declared_t);
+                    }
                 }
                 if (target_kind == .identifier and !target_is_implicit_arguments) {
                     if (self.visibleActiveAnnotatedIdentifierType(a.target)) |annotated_t| {
@@ -258379,7 +258374,7 @@ test "checker: repeated CommonJS object exports preserve typedef and union seman
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, 2351));
     try T.expect(checkerHasCodeAndMessage(
@@ -290241,7 +290236,7 @@ test "checker: JSDoc imports and root params support destructured constructors" 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsdoc_param_name_no_parameter));
 }
 
-test "checker: CommonJS typedef export property conflicts with export assignment" {
+test "checker: CommonJS typedef export property is not an export assignment conflict" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -290253,7 +290248,7 @@ test "checker: CommonJS typedef export property conflicts with export assignment
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expect(checkerHasCodeAndMessage(
         s,
@@ -290394,7 +290389,7 @@ test "checker: checked JS whole CommonJS exports reject later expandos" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expect(checkerHasCodeAndMessage(
         s,
@@ -292102,7 +292097,7 @@ test "checker: CommonJS whole exports reject property writes" {
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
 }
 
