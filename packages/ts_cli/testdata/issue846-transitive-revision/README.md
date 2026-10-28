@@ -18,3 +18,10 @@ config and `--pretty false`, then the numeric fixture was restored. The
 and both admitted JavaScript file identities. This covers a transitive
 watched-source revision, not every possible JavaScript inference or editor
 event ordering.
+
+`alternate.js` is an unadmitted sibling until `bridge.js` re-exports it.
+Changing only that re-export edge from `leaf.js` to `alternate.js` makes
+TypeScript 5.7.3 and Home exit 0 with empty streams in both configs; reversing
+the edge restores the single TS2322. The editor regression watches the bridge
+edit-and-revert, requiring the old leaf to leave the Program, the alternate
+leaf to enter it, and the original leaf FileId to return on reversal.

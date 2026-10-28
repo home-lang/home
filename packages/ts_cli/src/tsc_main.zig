@@ -8806,6 +8806,9 @@ test "LspProject: watched transitive JavaScript revision refreshes open importer
             var leaf = try tmp.dir.createFile(io, "leaf.js", .{ .truncate = true });
             defer leaf.close(io);
             try leaf.writeStreamingAll(io, "export const value = 1;\n");
+            var alternate = try tmp.dir.createFile(io, "alternate.js", .{ .truncate = true });
+            defer alternate.close(io);
+            try alternate.writeStreamingAll(io, "export const value = 'ready';\n");
         }
         const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
         defer a.free(config_path);
@@ -8815,10 +8818,14 @@ test "LspProject: watched transitive JavaScript revision refreshes open importer
         defer a.free(bridge_path);
         const leaf_path = try tmp.dir.realPathFileAlloc(io, "leaf.js", a);
         defer a.free(leaf_path);
+        const alternate_path = try tmp.dir.realPathFileAlloc(io, "alternate.js", a);
+        defer a.free(alternate_path);
         const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
         defer a.free(ts_uri);
         const leaf_uri = try std.fmt.allocPrint(a, "file://{s}", .{leaf_path});
         defer a.free(leaf_uri);
+        const bridge_uri = try std.fmt.allocPrint(a, "file://{s}", .{bridge_path});
+        defer a.free(bridge_uri);
 
         const project = try LspProject.create(a, config_path);
         defer project.destroy();
@@ -8831,6 +8838,7 @@ test "LspProject: watched transitive JavaScript revision refreshes open importer
         const leaf_id = project.program.lookupPath(leaf_path) orelse return error.MissingAdmittedJavaScript;
         try std.testing.expect(!project.program.fileById(bridge_id).root_input);
         try std.testing.expect(!project.program.fileById(leaf_id).root_input);
+        try std.testing.expect(project.program.lookupPath(alternate_path) == null);
         try std.testing.expect(project.takePendingDiagnostic() == null);
 
         const leaf_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = leaf_uri, .type = 2 }} } }, .{});
@@ -8854,6 +8862,32 @@ test "LspProject: watched transitive JavaScript revision refreshes open importer
             if (revision[1]) try std.testing.expectEqual(@as(i64, 2322), diagnostics[0].object.get("code").?.integer);
             try std.testing.expectEqual(bridge_id, project.program.lookupPath(bridge_path).?);
             try std.testing.expectEqual(leaf_id, project.program.lookupPath(leaf_path).?);
+            try std.testing.expect(project.takePendingDiagnostic() == null);
+        }
+
+        const bridge_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = bridge_uri, .type = 2 }} } }, .{});
+        defer a.free(bridge_event);
+        inline for (.{ .{ "export { value } from './alternate.js';\n", false }, .{ "export { value } from './leaf.js';\n", true } }) |revision| {
+            {
+                var bridge = try tmp.dir.createFile(io, "bridge.js", .{ .truncate = true });
+                defer bridge.close(io);
+                try bridge.writeStreamingAll(io, revision[0]);
+            }
+            const response = try project.handle(bridge_event);
+            defer a.free(response);
+            try std.testing.expectEqual(@as(usize, 0), response.len);
+            const refreshed = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+            defer a.free(refreshed);
+            try std.testing.expect(std.mem.indexOf(u8, refreshed, ts_uri) != null);
+            const parsed = try std.json.parseFromSlice(std.json.Value, a, refreshed, .{});
+            defer parsed.deinit();
+            const diagnostics = parsed.value.object.get("params").?.object.get("diagnostics").?.array.items;
+            try std.testing.expectEqual(@as(usize, if (revision[1]) 1 else 0), diagnostics.len);
+            if (revision[1]) try std.testing.expectEqual(@as(i64, 2322), diagnostics[0].object.get("code").?.integer);
+            try std.testing.expectEqual(bridge_id, project.program.lookupPath(bridge_path).?);
+            try std.testing.expectEqual(revision[1], project.program.lookupPath(leaf_path) != null);
+            if (revision[1]) try std.testing.expectEqual(leaf_id, project.program.lookupPath(leaf_path).?);
+            try std.testing.expectEqual(!revision[1], project.program.lookupPath(alternate_path) != null);
             try std.testing.expect(project.takePendingDiagnostic() == null);
         }
     }
