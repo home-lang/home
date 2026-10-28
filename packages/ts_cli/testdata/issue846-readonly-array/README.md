@@ -56,6 +56,15 @@ An independent generic-name interaction was tracked in
 [issue #962](https://github.com/home-lang/home/issues/962); the regression
 below pins its resolution.
 
+`tsconfig-flat-map-this.json` and its no-`checkJs` control exercise the
+`flatMap<U, This = undefined>` signature from TypeScript 5.7.3. Both imported
+readonly and mutable arrays infer callback `this` from `thisArg`; an omitted
+argument defaults `this` to `undefined`, and an explicit callback `this`
+annotation can supply the type instead. The fixture also checks explicit
+`<U, This>` arguments and rejects a wrong `thisArg`. Both engines report only
+the two intentional TS2322 diagnostics at `flat-map-this.ts(6,9)` and
+`(31,6)`; the stream suite pins stdout, empty stderr, and exit 2.
+
 `tsconfig-generic-scope.json` and its no-`checkJs` control keep an unrelated
 `type Alias<U>` in scope while `flatMap` consumes both imported checked-JS and
 local readonly arrays. The method must bind its own `U`, never the alias's

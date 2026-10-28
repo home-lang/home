@@ -3044,6 +3044,9 @@ pub fn build(b: *std.Build) void {
         const readonly_flat_map_output =
             "flat-map.ts(12,7): error TS2322: Type 'number[]' is not assignable to type 'string[]'.\n" ++
             "  Type 'number' is not assignable to type 'string'.\n";
+        const readonly_flat_map_this_output =
+            "flat-map-this.ts(6,9): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "flat-map-this.ts(31,6): error TS2322: Type 'string' is not assignable to type 'number'.\n";
         const readonly_generic_scope_output =
             "generic-scope.ts(9,7): error TS2322: Type 'number[]' is not assignable to type 'string[]'.\n" ++
             "  Type 'number' is not assignable to type 'string'.\n";
@@ -3082,6 +3085,8 @@ pub fn build(b: *std.Build) void {
             .{ "tsconfig-concat.json", readonly_concat_output },
             .{ "tsconfig-flat-map.json", readonly_flat_map_output },
             .{ "tsconfig-flat-map-no-checkjs.json", readonly_flat_map_output },
+            .{ "tsconfig-flat-map-this.json", readonly_flat_map_this_output },
+            .{ "tsconfig-flat-map-this-no-checkjs.json", readonly_flat_map_this_output },
             .{ "tsconfig-generic-scope.json", readonly_generic_scope_output },
             .{ "tsconfig-generic-scope-no-checkjs.json", readonly_generic_scope_output },
             .{ "tsconfig-predicate.json", readonly_predicate_output },
