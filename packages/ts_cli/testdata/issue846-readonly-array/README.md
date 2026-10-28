@@ -52,9 +52,17 @@ array parameter declared for `flatMap` in TypeScript 5.7.3's
 `lib.es2019.array.d.ts`. Both calls must succeed; only assigning the
 resulting `number[]` to `string[]` reports TS2322. The stream step pins the
 exact location, elaboration and exit status with both `checkJs` settings.
-An independent generic-name interaction still changes array inference;
-[issue #962](https://github.com/home-lang/home/issues/962) tracks that
-separate, currently failing cross-declaration case.
+An independent generic-name interaction was tracked in
+[issue #962](https://github.com/home-lang/home/issues/962); the regression
+below pins its resolution.
+
+`tsconfig-generic-scope.json` and its no-`checkJs` control keep an unrelated
+`type Alias<U>` in scope while `flatMap` consumes both imported checked-JS and
+local readonly arrays. The method must bind its own `U`, never the alias's
+parameter or the `U | U[]` return union. TypeScript 5.7.3 accepts all three
+valid calls and reports only the deliberately invalid `string[]` assignment
+at `generic-scope.ts(9,7)`; the stream step pins that exact diagnostic in
+both modes. This is the regression for #962.
 
 `tsconfig-surface.json` selects the ES2023 library and tests copying
 methods on both imported readonly and mutable arrays. TypeScript 5.7.3

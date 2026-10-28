@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "noEmit": true,
+    "lib": ["es2023"]
+  },
+  "files": ["generic-scope.ts"]
+}

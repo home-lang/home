@@ -2843,6 +2843,9 @@ pub fn build(b: *std.Build) void {
         const readonly_flat_map_output =
             "flat-map.ts(12,7): error TS2322: Type 'number[]' is not assignable to type 'string[]'.\n" ++
             "  Type 'number' is not assignable to type 'string'.\n";
+        const readonly_generic_scope_output =
+            "generic-scope.ts(9,7): error TS2322: Type 'number[]' is not assignable to type 'string[]'.\n" ++
+            "  Type 'number' is not assignable to type 'string'.\n";
         inline for (.{
             .{ "tsconfig.json", readonly_import_output },
             .{ "tsconfig-no-checkjs.json", readonly_import_output },
@@ -2853,6 +2856,8 @@ pub fn build(b: *std.Build) void {
             .{ "tsconfig-concat.json", readonly_concat_output },
             .{ "tsconfig-flat-map.json", readonly_flat_map_output },
             .{ "tsconfig-flat-map-no-checkjs.json", readonly_flat_map_output },
+            .{ "tsconfig-generic-scope.json", readonly_generic_scope_output },
+            .{ "tsconfig-generic-scope-no-checkjs.json", readonly_generic_scope_output },
         }) |case| {
             const readonly_array = b.addRunArtifact(home_tsc_exe);
             readonly_array.setCwd(readonly_array_dir);
