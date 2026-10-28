@@ -393,11 +393,20 @@ Checked-JavaScript import revisions have an end-to-end LSP regression: adding
 an import of an unopened `.js` file admits its inferred type, removing the
 import retires that source and clears the importer diagnostic, and re-adding
 it restores the same Program file identity. This verifies one editor workflow,
-not general tsserver parity; broader JavaScript admission, dependency-depth,
-and negative-diagnostic coverage remains tracked in [#846](https://github.com/home-lang/home/issues/846).
+not general tsserver parity; broader JavaScript admission and
+negative-diagnostic coverage remains tracked in [#846](https://github.com/home-lang/home/issues/846).
 Watched-file notifications also refresh an unopened imported `.js` owner on
 change, deletion, and recreation, while preserving unsaved text in open
-documents. Other watcher and project-configuration combinations remain open.
+documents. A package-metadata revision test changes `package.json` from ESM
+to CommonJS and back, then deletes and recreates it: the open importer loses
+and regains TS1479 without losing its typed property errors or JS FileId.
+Another changes only a package `exports` target between two admitted `.cjs`
+owners: the old owner retires, the importer type changes, and reversing the
+metadata edit restores the first owner identity. A config-reload test moves a
+package import across `maxNodeModuleJsDepth` zero and one, with implicit
+`checkJs`, explicit `allowJs`/`checkJs` controls, and an unsaved importer
+buffer. These are specific editor workflows; other watcher and project-config
+combinations remain unverified.
 
 An explicit `node_modules` JavaScript root now has a four-config TypeScript
 5.7.3 CLI oracle: default and depth-one dependency admission, each with and
@@ -421,6 +430,13 @@ With `allowJs` on and `checkJs` off, the same import-only graph retains its
 depth-zero TS7016 and depth-three typed TS2322, but reports no owner-side
 diagnostics at partial depths one and two; four more exact streams pin that
 distinction.
+
+For an enumerated CLI check, the
+[#846 oracle auditor](https://github.com/home-lang/home/blob/main/scripts/tests/compare-issue846-oracles.mjs)
+compares exact stdout, stderr, and exit status against TypeScript 5.7.3 for
+every `issue846-*` config, with `--noEmit` on both sides. A fresh Home CLI
+matched all 79 configs on 2026-10-28. This verifies those inputs, not every
+JavaScript inference form or LSP behavior.
 
 ## Watch mode
 
