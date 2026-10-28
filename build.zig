@@ -3032,6 +3032,33 @@ pub fn build(b: *std.Build) void {
             default_closure.expectExitCode(2);
             tsc_streams_step.dependOn(&default_closure.step);
         }
+
+        // An anonymous checked-JS default class retains its JSDoc method
+        // parameter through direct and re-exported imports. Exact tsc 5.7.3
+        // diagnostics hold with either owner diagnostic mode.
+        const default_class_dir = b.path("packages/ts_cli/testdata/issue846-default-class");
+        const default_class_output =
+            "main.ts(5,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "main.ts(6,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(7,9): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n";
+        const default_class_direct_output =
+            "direct.ts(5,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "direct.ts(6,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "direct.ts(7,9): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n";
+        inline for (.{
+            .{ "tsconfig.json", default_class_output },
+            .{ "tsconfig-no-checkjs.json", default_class_output },
+            .{ "tsconfig-direct.json", default_class_direct_output },
+        }) |case| {
+            const default_class = b.addRunArtifact(home_tsc_exe);
+            default_class.setCwd(default_class_dir);
+            default_class.clearEnvironment();
+            default_class.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            default_class.expectStdOutEqual(case[1]);
+            default_class.expectStdErrEqual("");
+            default_class.expectExitCode(2);
+            tsc_streams_step.dependOn(&default_class.step);
+        }
         // Readonly array members remain distinct from mutable Array after
         // importing a checked-JS owner or a local declaration. All outputs
         // are pinned to TypeScript 5.7.3.

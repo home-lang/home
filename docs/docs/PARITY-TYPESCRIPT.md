@@ -84,6 +84,11 @@ refreshes the imported method's parameter and result, including editor
 diagnostic publication. A further static-class fixture checks a JSDoc-typed
 static field alongside a checked static method (argument and inferred result)
 against TypeScript 5.7.3, with `checkJs` enabled or disabled. The
+[anonymous default-class fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-default-class)
+checks the distinct declaration identity of `export default class {}`: its
+JSDoc method parameter and field type survive both direct import and a
+default re-export. Three exact CLI streams and bound-graph/Program tests
+cover that route; this is not a claim of general JavaScript class parity. The
 broader typed-JavaScript owner surface remains tracked in
 [#846](https://github.com/home-lang/home/issues/846).
 
@@ -438,7 +443,7 @@ For an enumerated CLI check, the
 [#846 oracle auditor](https://github.com/home-lang/home/blob/main/scripts/tests/compare-issue846-oracles.mjs)
 compares exact stdout, stderr, and exit status against TypeScript 5.7.3 for
 every `issue846-*` config, with `--noEmit` on both sides. A fresh Home CLI
-matched all 80 configs on 2026-10-28. This verifies those inputs, not every
+matched all 94 configs on 2026-10-28. This verifies those inputs, not every
 JavaScript inference form or LSP behavior.
 
 ## Watch mode
