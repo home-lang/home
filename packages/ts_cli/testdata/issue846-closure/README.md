@@ -72,11 +72,17 @@ both diagnostics and exit 2.
 
 ## Cross-fixture oracle audit
 
-From the repository root, build a fresh `home-tsc` under the 3,840 MB guard,
-then run `node scripts/tests/compare-issue846-oracles.mjs` under the same guard.
+From the repository root, build a fresh `home-tsc` and compare under the
+3,840 MB guard, sequentially:
+
+```sh
+HOME_RUN_MAX_MB=3840 perl scripts/run-bounded.pl 900 zig build home-tsc -j1
+HOME_RUN_MAX_MB=3840 perl scripts/run-bounded.pl 900 node scripts/tests/compare-issue846-oracles.mjs
+```
+
 The script requires TypeScript 5.7.3 and compares the exact stdout, stderr,
-and exit status for every `issue846-*` `tsconfig*.json` (78 configs as of
+and exit status for every `issue846-*` `tsconfig*.json` (79 configs as of
 2026-10-28). It passes `--noEmit` to both CLIs so the audit cannot modify
-fixture outputs. The fresh 2026-10-28 CLI matched all 78 configs. This
+fixture outputs. The fresh 2026-10-28 CLI matched all 79 configs. This
 enumerated fixture result does not establish arbitrary JavaScript inference
 or LSP revision parity; those need their own focused and editor tests.

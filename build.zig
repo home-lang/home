@@ -2610,6 +2610,15 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&metadata_format.step);
         }
 
+        const package_exports = b.addRunArtifact(home_tsc_exe);
+        package_exports.setCwd(b.path("packages/ts_cli/testdata/issue846-package-exports"));
+        package_exports.clearEnvironment();
+        package_exports.addArgs(&.{ "-p", "tsconfig.json", "--pretty", "false" });
+        package_exports.expectStdOutEqual("");
+        package_exports.expectStdErrEqual("");
+        package_exports.expectExitCode(0);
+        tsc_streams_step.dependOn(&package_exports.step);
+
         // The same admitted ESM owner reaches `import = require`, type-only
         // import declarations, and `typeof import(...)` through distinct
         // checker paths. Depth zero remains TS7016, with no phantom module
