@@ -3009,6 +3009,29 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&array_thisarg.step);
         }
 
+        // A checked JavaScript default expression must retain its source-owned
+        // object shape through direct and re-exported import closure routes.
+        const default_closure_dir = b.path("packages/ts_cli/testdata/issue846-default-closure");
+        const default_closure_output =
+            "main.ts(6,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "main.ts(7,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(8,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(9,1): error TS2322: Type 'number' is not assignable to type 'string'.\n";
+        inline for (.{
+            .{ "tsconfig.json", default_closure_output },
+            .{ "tsconfig-no-checkjs.json", default_closure_output },
+            .{ "tsconfig-direct.json", "direct.ts(3,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+                "direct.ts(4,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" },
+        }) |case| {
+            const default_closure = b.addRunArtifact(home_tsc_exe);
+            default_closure.setCwd(default_closure_dir);
+            default_closure.clearEnvironment();
+            default_closure.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            default_closure.expectStdOutEqual(case[1]);
+            default_closure.expectStdErrEqual("");
+            default_closure.expectExitCode(2);
+            tsc_streams_step.dependOn(&default_closure.step);
+        }
         // Readonly array members remain distinct from mutable Array after
         // importing a checked-JS owner or a local declaration. All outputs
         // are pinned to TypeScript 5.7.3.
