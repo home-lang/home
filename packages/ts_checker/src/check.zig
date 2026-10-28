@@ -46589,8 +46589,9 @@ pub const Checker = struct {
             // record the instance type on the name node. `new Foo()`
             // looks up the class by name to get the instance type.
             self.hir.setType(c.name, instance_t);
-        } else if (self.classNodeIsExpression(node)) {
-            // Anonymous class expression: register under a synthesized
+        } else if (self.classNodeIsExpression(node) or self.classIsAnonymousDefaultExport(node)) {
+            // Anonymous class expression or default-export declaration:
+            // register under a synthesized
             // per-node key so private-name accessibility (TS18013/18014)
             // can attribute `#member` accesses to this class. The key is
             // unique per node (two anonymous classes never share member
@@ -46904,8 +46905,8 @@ pub const Checker = struct {
                     }
                 }
                 self.hir.setType(c.name, instance_t);
-            } else if (self.hir.kindOf(node) == .class_expr) {
-                // Anonymous class expression: the refinement re-interned
+            } else if (self.hir.kindOf(node) == .class_expr or self.classIsAnonymousDefaultExport(node)) {
+                // Anonymous class: the refinement re-interned
                 // `instance_t`/`static_t`, so re-register the new TypeIds
                 // under the synthesized key (the member-name sets keyed by
                 // the same key carry over unchanged).
@@ -50896,7 +50897,7 @@ pub const Checker = struct {
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
             return hir_mod.identifierOf(self.hir, c.name).name;
         }
-        if (self.classNodeIsExpression(class_node)) {
+        if (self.classNodeIsExpression(class_node) or self.classIsAnonymousDefaultExport(class_node)) {
             return try self.anonymousClassKey(class_node);
         }
         return null;
@@ -56406,6 +56407,15 @@ pub const Checker = struct {
             .object_property => hir_mod.objectPropertyOf(self.hir, parent).value == class_node,
             else => false,
         };
+    }
+
+    fn classIsAnonymousDefaultExport(self: *Checker, class_node: NodeId) bool {
+        if (self.hir.kindOf(class_node) != .class_decl) return false;
+        if (hir_mod.classOf(self.hir, class_node).name != hir_mod.none_node_id) return false;
+        const parent = self.hir.parentOf(class_node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .export_decl) return false;
+        const export_info = hir_mod.exportOf(self.hir, parent);
+        return export_info.is_default and export_info.decl == class_node;
     }
 
     fn contextualClassExpressionTargetType(self: *Checker, class_node: NodeId) CheckError!?TypeId {

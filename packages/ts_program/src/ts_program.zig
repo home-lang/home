@@ -7624,6 +7624,40 @@ test "Program: bound class facts separate static members and ignore source trivi
     try T.expectEqualStrings("version", class.static_members[2].name);
 }
 
+test "Program: anonymous default JavaScript class retains source-owned class facts through re-export" {
+    const owner_source =
+        \\export default class {
+        \\  /** @type {number} */ count = 1;
+        \\  /** @param {number} value */
+        \\  set(value) { this.count = value; }
+        \\}
+    ;
+    const bridge_source = "export { default } from './owner.js';";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/bridge.js", bridge_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.js", owner_source);
+    _ = try program.add("/bridge.js", bridge_source);
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true, .allow_js = true });
+    const classes = try program.collectProgramExportedClasses();
+    defer Program.freeProgramExportedClasses(T.allocator, classes);
+    try T.expectEqual(@as(usize, 2), classes.len);
+    for (classes) |class| {
+        try T.expectEqualStrings("/owner.js", class.declaration_path);
+        try T.expectEqualStrings("default", class.exportedName());
+        try T.expect(class.schema != null);
+        try T.expectEqual(@as(usize, 2), class.members.len);
+        try T.expectEqualStrings("set", class.members[1].name);
+        try T.expect(class.members[1].is_method);
+    }
+}
+
 test "Program: class export aliases retain their bound declaration through cycles" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -16569,6 +16603,51 @@ test "Program: checked JavaScript class methods retain imported argument and res
                 for (diagnostics, [_]u32{ 2322, 2345, 2322, 2322 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
             }
         }
+    }
+}
+
+test "Program: anonymous default JavaScript class retains checked method arguments across re-export" {
+    const owner_source =
+        \\export default class {
+        \\  /** @type {number} */ count = 1;
+        \\  /** @param {number} value */
+        \\  set(value) { this.count = value; }
+        \\}
+    ;
+    const bridge_source = "export { default } from './owner.js';";
+    const consumer_source =
+        \\import Box from './bridge.js';
+        \\const box = new Box();
+        \\const wrong: string = box.count;
+        \\box.count = 'bad';
+        \\box.set('bad');
+        \\void wrong;
+    ;
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/bridge.js", bridge_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const consumer = try program.add("/consumer.ts", consumer_source);
+        _ = try program.add("/bridge.js", bridge_source);
+        _ = try program.add("/owner.js", owner_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = check_js,
+            .strict = true,
+            .no_emit = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        try program.compileAll(options);
+        const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 3), diagnostics.len);
+        for (diagnostics, [_]u32{ 2322, 2322, 2345 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
     }
 }
 
