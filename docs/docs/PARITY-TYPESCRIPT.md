@@ -405,7 +405,10 @@ owners: the old owner retires, the importer type changes, and reversing the
 metadata edit restores the first owner identity. A config-reload test moves a
 package import across `maxNodeModuleJsDepth` zero and one, with implicit
 `checkJs`, explicit `allowJs`/`checkJs` controls, and an unsaved importer
-buffer. These are specific editor workflows; other watcher and project-config
+buffer. At depth zero, changing a package `exports` target from an unadmitted
+`.cjs` implementation to a `.d.ts` declaration replaces importer TS7016 with
+typed TS2322; reversing the metadata restores TS7016 and retires the
+declaration source. These are specific editor workflows; other watcher and project-config
 combinations remain unverified.
 
 An explicit `node_modules` JavaScript root now has a four-config TypeScript
@@ -435,7 +438,7 @@ For an enumerated CLI check, the
 [#846 oracle auditor](https://github.com/home-lang/home/blob/main/scripts/tests/compare-issue846-oracles.mjs)
 compares exact stdout, stderr, and exit status against TypeScript 5.7.3 for
 every `issue846-*` config, with `--noEmit` on both sides. A fresh Home CLI
-matched all 79 configs on 2026-10-28. This verifies those inputs, not every
+matched all 80 configs on 2026-10-28. This verifies those inputs, not every
 JavaScript inference form or LSP behavior.
 
 ## Watch mode

@@ -8904,6 +8904,9 @@ test "LspProject: package exports revisions replace admitted JavaScript owners" 
         var string_owner = try tmp.dir.createFile(io, "node_modules/pkg/string.cjs", .{ .truncate = true });
         defer string_owner.close(io);
         try string_owner.writeStreamingAll(io, "exports.box = { count: 'wrong' };\n");
+        var declaration = try tmp.dir.createFile(io, "node_modules/pkg/types.d.ts", .{ .truncate = true });
+        defer declaration.close(io);
+        try declaration.writeStreamingAll(io, "export const box: { count: string };\n");
     }
     const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
     defer a.free(config_path);
@@ -8913,12 +8916,16 @@ test "LspProject: package exports revisions replace admitted JavaScript owners" 
     defer a.free(number_path);
     const string_path = try tmp.dir.realPathFileAlloc(io, "node_modules/pkg/string.cjs", a);
     defer a.free(string_path);
+    const types_path = try tmp.dir.realPathFileAlloc(io, "node_modules/pkg/types.d.ts", a);
+    defer a.free(types_path);
     const metadata_path = try tmp.dir.realPathFileAlloc(io, "node_modules/pkg/package.json", a);
     defer a.free(metadata_path);
     const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
     defer a.free(ts_uri);
     const metadata_uri = try std.fmt.allocPrint(a, "file://{s}", .{metadata_path});
     defer a.free(metadata_uri);
+    const config_uri = try std.fmt.allocPrint(a, "file://{s}", .{config_path});
+    defer a.free(config_uri);
 
     const project = try LspProject.create(a, config_path);
     defer project.destroy();
@@ -8959,6 +8966,48 @@ test "LspProject: package exports revisions replace admitted JavaScript owners" 
             try std.testing.expectEqual(number_id, project.program.lookupPath(number_path).?);
             try std.testing.expect(project.program.lookupPath(string_path) == null);
         }
+        try std.testing.expect(project.program.lookupPath(metadata_path) == null);
+        try std.testing.expect(project.takePendingDiagnostic() == null);
+    }
+
+    // At depth zero, the .cjs export is not admitted. Changing only package
+    // metadata to a declaration target must replace TS7016 with a typed
+    // TS2322; reversing it must restore the untyped diagnostic.
+    {
+        var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config.close(io);
+        try config.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"checkJs\":true,\"strict\":true,\"noEmit\":true,\"module\":\"node16\",\"moduleResolution\":\"node16\",\"maxNodeModuleJsDepth\":0},\"files\":[\"main.ts\"]}");
+    }
+    const config_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = config_uri, .type = 2 }} } }, .{});
+    defer a.free(config_event);
+    const depth_response = try project.handle(config_event);
+    defer a.free(depth_response);
+    try std.testing.expectEqual(@as(usize, 0), depth_response.len);
+    const excluded = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+    defer a.free(excluded);
+    try std.testing.expect(std.mem.indexOf(u8, excluded, "\"code\":7016") != null);
+    try std.testing.expect(project.program.lookupPath(number_path) == null);
+    try std.testing.expect(project.program.lookupPath(types_path) == null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    inline for (.{ .{ "types.d.ts", @as(i64, 2322) }, .{ "number.cjs", @as(i64, 7016) } }) |revision| {
+        {
+            var metadata = try tmp.dir.createFile(io, "node_modules/pkg/package.json", .{ .truncate = true });
+            defer metadata.close(io);
+            try metadata.writeStreamingAll(io, "{\"name\":\"pkg\",\"exports\":\"./" ++ revision[0] ++ "\"}");
+        }
+        const response = try project.handle(event);
+        defer a.free(response);
+        try std.testing.expectEqual(@as(usize, 0), response.len);
+        const refreshed = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+        defer a.free(refreshed);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, refreshed, .{});
+        defer parsed.deinit();
+        const diagnostics = parsed.value.object.get("params").?.object.get("diagnostics").?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+        try std.testing.expectEqual(revision[1], diagnostics[0].object.get("code").?.integer);
+        try std.testing.expectEqual(revision[1] == 2322, project.program.lookupPath(types_path) != null);
+        try std.testing.expect(project.program.lookupPath(number_path) == null);
         try std.testing.expect(project.program.lookupPath(metadata_path) == null);
         try std.testing.expect(project.takePendingDiagnostic() == null);
     }
