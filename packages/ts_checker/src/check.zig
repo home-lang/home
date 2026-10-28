@@ -103641,6 +103641,11 @@ pub const Checker = struct {
         const parent = self.hir.parentOf(fn_node);
         if (parent == hir_mod.none_node_id) return null;
         const parent_kind = self.hir.kindOf(parent);
+        if (parent_kind == .export_decl) {
+            const export_info = hir_mod.exportOf(self.hir, parent);
+            if (export_info.decl != fn_node) return null;
+            return self.leadingJsDocBodyWithStart(src, self.hir.spanOf(parent).start);
+        }
         if (parent_kind == .object_property) {
             const prop = hir_mod.objectPropertyOf(self.hir, parent);
             if (prop.value != fn_node) return null;
@@ -260577,6 +260582,31 @@ test "checker: checkjs matched and name-first JSDoc params do not emit TS8024" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.jsdoc_param_name_no_parameter);
     }
+}
+
+test "checker: JSDoc before exported function types anonymous and named parameters" {
+    inline for (.{ "export default function(value) { return value + 1; }", "export function addOne(value) { return value + 1; }" }) |declaration| {
+        const source = "// @allowJs: true\n// @checkJs: true\n// @Filename: /owner.js\n/** @param {number} value */\n" ++ declaration;
+        const s = try newSetup(source);
+        defer destroySetup(s);
+        s.checker.strict_flags.no_implicit_any = true;
+        try s.checker.checkSourceFile(s.root);
+        const statement = hir_mod.blockStmts(&s.hir, s.root)[0];
+        const function = hir_mod.exportOf(&s.hir, statement).decl;
+        const parameter = (try s.checker.jsDocParamInfoForFunctionParam(function, "value")) orelse return error.MissingJSDocParameter;
+        try T.expectEqual(types.Primitive.number_t, parameter.typ.?);
+        try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    }
+    const untyped = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /owner.js
+        \\export default function(value) { return value + 1; }
+    );
+    defer destroySetup(untyped);
+    untyped.checker.strict_flags.no_implicit_any = true;
+    try untyped.checker.checkSourceFile(untyped.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(untyped, TsCodes.parameter_implicitly_any));
 }
 
 test "checker: checkjs dotted JSDoc @param for a destructured parameter does not emit TS8024" {

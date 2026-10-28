@@ -22428,6 +22428,96 @@ test "Program: checked JavaScript function JSDoc types cross the import boundary
     }
 }
 
+test "Program: anonymous default JavaScript function retains JSDoc through direct and re-export imports" {
+    const owner_source =
+        \\/** @param {number} value */
+        \\export default function(value) { return value + 1; }
+    ;
+    const bridge_source = "export { default } from './owner.js';";
+    for ([_]bool{ false, true }) |direct| {
+        const consumer_source = if (direct)
+            "import addOne from './owner.js'; const wrong: string = addOne(1); addOne('bad');"
+        else
+            "import addOne from './bridge.js'; const wrong: string = addOne(1); addOne('bad');";
+        for ([_]bool{ false, true }) |check_js| {
+            for ([_]bool{ false, true }) |parallel| {
+                var vfs = ts_resolver.VirtualFs.init(T.allocator);
+                defer vfs.deinit();
+                try vfs.addFile("/owner.js", owner_source);
+                try vfs.addFile("/bridge.js", bridge_source);
+                try vfs.addFile("/consumer.ts", consumer_source);
+                var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+                defer resolver.deinit();
+                var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+                var program = Program.init(T.allocator, &resolver);
+                defer program.deinit();
+                const consumer = try program.add("/consumer.ts", consumer_source);
+                _ = try program.add("/bridge.js", bridge_source);
+                const owner = try program.add("/owner.js", owner_source);
+                const options: ts_driver.CompileOptions = .{
+                    .allow_js = true,
+                    .check_js = check_js,
+                    .strict = true,
+                    .no_emit = true,
+                    .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+                };
+                if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+                const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+                try T.expectEqual(@as(usize, 2), diagnostics.len);
+                try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+                try T.expectEqual(@as(u32, 2345), diagnostics[1].code);
+                try expectCompilationLacksDiagnosticCode(program.fileById(owner).compilation.?, 7006);
+            }
+        }
+    }
+}
+
+test "Program: anonymous default JavaScript function revision refreshes re-exported importer" {
+    const number_owner = "/** @param {number} value */\nexport default function(value) { return value + 1; }";
+    const string_owner = "/** @param {string} value */\nexport default function(value) { return value + '!'; }";
+    const bridge_source = "export { default } from './owner.js';";
+    const consumer_source = "import addOne from './bridge.js'; const result: number = addOne(1); void result;";
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", number_owner);
+        try vfs.addFile("/bridge.js", bridge_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const consumer = try program.add("/consumer.ts", consumer_source);
+        _ = try program.add("/bridge.js", bridge_source);
+        _ = try program.add("/owner.js", number_owner);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = check_js,
+            .strict = true,
+            .no_emit = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        try program.compileAll(options);
+        try T.expectEqual(@as(usize, 0), program.fileById(consumer).compilation.?.diagnostics.items.len);
+
+        try vfs.addFile("/owner.js", string_owner);
+        _ = try program.updateSource("/owner.js", string_owner);
+        resolver.invalidateCaches();
+        try T.expectEqual(@as(u32, 3), try program.recompileChanged(&.{"/owner.js"}, options));
+        const changed = program.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 2), changed.len);
+        try expectCompilationHasDiagnosticCode(program.fileById(consumer).compilation.?, 2322);
+        try expectCompilationHasDiagnosticCode(program.fileById(consumer).compilation.?, 2345);
+
+        try vfs.addFile("/owner.js", number_owner);
+        _ = try program.updateSource("/owner.js", number_owner);
+        resolver.invalidateCaches();
+        try T.expectEqual(@as(u32, 3), try program.recompileChanged(&.{"/owner.js"}, options));
+        try T.expectEqual(@as(usize, 0), program.fileById(consumer).compilation.?.diagnostics.items.len);
+    }
+}
+
 test "Program: admitted JavaScript default function retains JSDoc return type" {
     const owner_source =
         \\/** @returns {number} */

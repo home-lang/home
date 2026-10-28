@@ -3059,6 +3059,33 @@ pub fn build(b: *std.Build) void {
             default_class.expectExitCode(2);
             tsc_streams_step.dependOn(&default_class.step);
         }
+        // JSDoc attached before an anonymous default function's `export`
+        // declaration must type its parameter and flow through importers.
+        // Direct, re-exported, explicit-root, implicit-checkJs, and unchecked
+        // owner modes are exact TypeScript 5.7.3 CLI controls.
+        const default_function_dir = b.path("packages/ts_cli/testdata/issue846-default-function");
+        const default_function_output =
+            "main.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "main.ts(5,8): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n";
+        const default_function_direct_output =
+            "direct.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "direct.ts(5,8): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n";
+        inline for (.{
+            .{ "tsconfig.json", default_function_output },
+            .{ "tsconfig-no-checkjs.json", default_function_output },
+            .{ "tsconfig-checkjs-only.json", default_function_output },
+            .{ "tsconfig-explicit.json", default_function_output },
+            .{ "tsconfig-direct.json", default_function_direct_output },
+        }) |case| {
+            const default_function = b.addRunArtifact(home_tsc_exe);
+            default_function.setCwd(default_function_dir);
+            default_function.clearEnvironment();
+            default_function.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            default_function.expectStdOutEqual(case[1]);
+            default_function.expectStdErrEqual("");
+            default_function.expectExitCode(2);
+            tsc_streams_step.dependOn(&default_function.step);
+        }
         // Readonly array members remain distinct from mutable Array after
         // importing a checked-JS owner or a local declaration. All outputs
         // are pinned to TypeScript 5.7.3.
