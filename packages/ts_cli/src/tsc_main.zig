@@ -8881,6 +8881,89 @@ test "LspProject: package metadata revisions refresh an admitted JavaScript impo
     }
 }
 
+test "LspProject: package exports revisions replace admitted JavaScript owners" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, "node_modules/pkg");
+    const source = "import { box } from 'pkg';\nconst value: number = box.count;\nvoid value;\n";
+    {
+        var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config.close(io);
+        try config.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"checkJs\":true,\"strict\":true,\"noEmit\":true,\"module\":\"node16\",\"moduleResolution\":\"node16\",\"maxNodeModuleJsDepth\":1},\"files\":[\"main.ts\"]}");
+        var importer = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer importer.close(io);
+        try importer.writeStreamingAll(io, source);
+        var metadata = try tmp.dir.createFile(io, "node_modules/pkg/package.json", .{ .truncate = true });
+        defer metadata.close(io);
+        try metadata.writeStreamingAll(io, "{\"name\":\"pkg\",\"exports\":\"./number.cjs\"}");
+        var number_owner = try tmp.dir.createFile(io, "node_modules/pkg/number.cjs", .{ .truncate = true });
+        defer number_owner.close(io);
+        try number_owner.writeStreamingAll(io, "exports.box = { count: 42 };\n");
+        var string_owner = try tmp.dir.createFile(io, "node_modules/pkg/string.cjs", .{ .truncate = true });
+        defer string_owner.close(io);
+        try string_owner.writeStreamingAll(io, "exports.box = { count: 'wrong' };\n");
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+    defer a.free(config_path);
+    const ts_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+    defer a.free(ts_path);
+    const number_path = try tmp.dir.realPathFileAlloc(io, "node_modules/pkg/number.cjs", a);
+    defer a.free(number_path);
+    const string_path = try tmp.dir.realPathFileAlloc(io, "node_modules/pkg/string.cjs", a);
+    defer a.free(string_path);
+    const metadata_path = try tmp.dir.realPathFileAlloc(io, "node_modules/pkg/package.json", a);
+    defer a.free(metadata_path);
+    const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
+    defer a.free(ts_uri);
+    const metadata_uri = try std.fmt.allocPrint(a, "file://{s}", .{metadata_path});
+    defer a.free(metadata_uri);
+
+    const project = try LspProject.create(a, config_path);
+    defer project.destroy();
+    const opening = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = ts_uri, .languageId = "typescript", .version = 1, .text = source } } }, .{});
+    defer a.free(opening);
+    const initial = try project.handle(opening);
+    defer a.free(initial);
+    try std.testing.expect(std.mem.indexOf(u8, initial, "\"diagnostics\":[]") != null);
+    const number_id = project.program.lookupPath(number_path) orelse return error.MissingAdmittedJavaScript;
+    try std.testing.expect(project.program.lookupPath(string_path) == null);
+    try std.testing.expect(project.program.lookupPath(metadata_path) == null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    const event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = metadata_uri, .type = 2 }} } }, .{});
+    defer a.free(event);
+    inline for (.{ .{ "string.cjs", true }, .{ "number.cjs", false } }) |revision| {
+        {
+            var metadata = try tmp.dir.createFile(io, "node_modules/pkg/package.json", .{ .truncate = true });
+            defer metadata.close(io);
+            try metadata.writeStreamingAll(io, "{\"name\":\"pkg\",\"exports\":\"./" ++ revision[0] ++ "\"}");
+        }
+        const response = try project.handle(event);
+        defer a.free(response);
+        try std.testing.expectEqual(@as(usize, 0), response.len);
+        const refreshed = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+        defer a.free(refreshed);
+        try std.testing.expect(std.mem.indexOf(u8, refreshed, ts_uri) != null);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, refreshed, .{});
+        defer parsed.deinit();
+        const diagnostics = parsed.value.object.get("params").?.object.get("diagnostics").?.array.items;
+        if (revision[1]) {
+            try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+            try std.testing.expectEqual(@as(i64, 2322), diagnostics[0].object.get("code").?.integer);
+            try std.testing.expect(project.program.lookupPath(number_path) == null);
+            try std.testing.expect(project.program.lookupPath(string_path) != null);
+        } else {
+            try std.testing.expectEqual(@as(usize, 0), diagnostics.len);
+            try std.testing.expectEqual(number_id, project.program.lookupPath(number_path).?);
+            try std.testing.expect(project.program.lookupPath(string_path) == null);
+        }
+        try std.testing.expect(project.program.lookupPath(metadata_path) == null);
+        try std.testing.expect(project.takePendingDiagnostic() == null);
+    }
+}
+
 test "LspProject: watched creation admits a previously missing JavaScript import" {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
