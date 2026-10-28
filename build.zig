@@ -2539,6 +2539,57 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&admitted_package.step);
         }
 
+        // Package-owned JavaScript is untyped until admitted, then its named
+        // exports preserve both read and write types. ESM packages also
+        // require TS1479 when imported from a Node16 CommonJS-format file;
+        // an excluded JS implementation must report only TS7016.
+        inline for (.{
+            .{ "untyped-named", "named.ts", "index.js", "tsconfig-named-zero.json", "tsconfig-named-one.json", "tsconfig-named-one-no-checkjs.json", false },
+            .{ "untyped-esm", "esm.ts", "index.mjs", "tsconfig-esm.json", "tsconfig-esm.json", "tsconfig-esm.json", true },
+            .{ "untyped-esm-js", "esm-js.ts", "index.js", "tsconfig-esm-js.json", "tsconfig-esm-js.json", "tsconfig-esm-js.json", true },
+        }) |case| {
+            const package_name = case[0];
+            const source_name = case[1];
+            const package_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-untyped-package/node_modules/" ++ package_name ++ "/" ++ case[2]) catch @panic("OOM");
+            if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, package_path, '\\', '/');
+
+            const excluded = b.addRunArtifact(home_tsc_exe);
+            excluded.setCwd(untyped_package_dir);
+            excluded.clearEnvironment();
+            excluded.addArgs(&.{ "-p", case[3], "--pretty", "false" });
+            excluded.expectStdOutEqual(b.fmt(
+                "{s}(1,21): error TS7016: Could not find a declaration file for module '{s}'. '{s}' implicitly has an 'any' type.\n" ++
+                    "  Try `npm i --save-dev @types/{s}` if it exists or add a new declaration (.d.ts) file containing `declare module '{s}';`\n",
+                .{ source_name, package_name, package_path, package_name, package_name },
+            ));
+            excluded.expectStdErrEqual("");
+            excluded.expectExitCode(2);
+            tsc_streams_step.dependOn(&excluded.step);
+
+            inline for (.{ false, true }) |disable_check_js| {
+                const admitted = b.addRunArtifact(home_tsc_exe);
+                admitted.setCwd(untyped_package_dir);
+                admitted.clearEnvironment();
+                admitted.addArgs(&.{ "-p", case[if (disable_check_js) 5 else 4] });
+                if (case[6]) admitted.addArgs(&.{ "--maxNodeModuleJsDepth", "1" });
+                if (disable_check_js and case[6]) admitted.addArgs(&.{ "--checkJs", "false" });
+                admitted.addArgs(&.{ "--pretty", "false" });
+                const format_error = if (case[6]) b.fmt(
+                    "{s}(1,21): error TS1479: The current file is a CommonJS module whose imports will produce 'require' calls; however, the referenced file is an ECMAScript module and cannot be imported with 'require'. Consider writing a dynamic 'import(\"{s}\")' call instead.\n" ++
+                        "  {s}(1,1): To convert this file to an ECMAScript module, change its file extension to '.mts' or create a local package.json file with `{{ \"type\": \"module\" }}`.\n",
+                    .{ source_name, package_name, source_name },
+                ) else "";
+                admitted.expectStdOutEqual(b.fmt(
+                    "{s}{s}(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+                        "{s}(5,1): error TS2322: Type 'string' is not assignable to type 'number'.\n",
+                    .{ format_error, source_name, source_name },
+                ));
+                admitted.expectStdErrEqual("");
+                admitted.expectExitCode(2);
+                tsc_streams_step.dependOn(&admitted.step);
+            }
+        }
+
         // An explicitly listed JavaScript root is admitted even at the
         // default node_modules depth, while its imports are not. checkJs
         // alone implies allowJs, so it diagnoses both excluded requires.

@@ -58367,17 +58367,19 @@ pub const Checker = struct {
         return .none;
     }
 
-    /// Return the resolved source filename for a relative import. Production
-    /// programs use the external resolver; conformance inputs use virtual
-    /// sections in the source text. Both paths must feed the same Node-format
-    /// checks for imports and import types.
+    /// Return the resolved, typed source filename for an import. Production
+    /// programs resolve both bare and relative specifiers through the Program
+    /// adapter; conformance inputs resolve relative virtual sections in the
+    /// source text. An excluded JavaScript implementation is not a typed
+    /// module and must keep TS7016 rather than gain a format diagnostic.
     fn resolvedImportSectionFilename(self: *Checker, node: NodeId, spec: []const u8) CheckError!?[]const u8 {
-        if (!std.mem.startsWith(u8, spec, ".")) return null;
         if (!self.sourceHasVirtualFilenameSections()) {
             const resolver = self.external_resolver orelse return null;
             const resolution = resolver.resolve(spec, self.importer_path) orelse return null;
+            if (isResolverImplementationExtension(resolution.path) and !resolution.is_declaration) return null;
             return resolution.path;
         }
+        if (!std.mem.startsWith(u8, spec, ".")) return null;
         const from = self.virtualSectionFilenameForNode(node) orelse return null;
         const resolved_full = try self.resolveVirtualRelativePath(from, spec);
         defer self.gpa.free(resolved_full);
@@ -58393,6 +58395,24 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    /// The extension determines unambiguous Node formats. For `.js`/`.ts`
+    /// targets, use the owning package's resolved format, not the specifier's
+    /// spelling or the importing file's package. This also covers bare
+    /// package imports once their JavaScript implementation is admitted.
+    fn resolvedImportIsEsmFormat(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        const target = (try self.resolvedImportSectionFilename(node, spec)) orelse return false;
+        if (sectionFilenameIsEsmFormat(target)) return true;
+        if (!sectionFilenameHasAmbiguousNodeFormat(target)) return false;
+        if (self.sourceHasVirtualFilenameSections()) {
+            const package = self.nearestVirtualPackageJson(target) orelse return false;
+            return package.type_kind == .module;
+        }
+        const resolver = self.external_resolver orelse return false;
+        const facts = resolver.moduleExport(spec, self.importer_path, "default") orelse return false;
+        const owner = facts.default_import_info orelse return false;
+        return owner.node_format == .esm;
     }
 
     /// Trim a trailing module-output extension (`.mjs`/`.cjs`/`.js`/`.jsx`/
@@ -58470,17 +58490,16 @@ pub const Checker = struct {
     }
 
     /// TS1479 — under `module: node16`/`node18`, a CommonJS-format file
-    /// (`.cjs`/`.cts`) statically importing an ECMAScript-module file
-    /// (`.mjs`/`.mts`) would lower to a `require` of an ES module. tsc
+    /// statically importing an ECMAScript module (including a package-owned
+    /// `.js` implementation with `"type": "module"`) would lower to a
+    /// `require` of an ES module. tsc
     /// reports this and suggests a dynamic `import()`. Anchored at the
     /// module specifier. `import x = require(...)` (→ TS1471) and dynamic
     /// `import()` are excluded by the caller.
     fn checkCommonJsImportingEsm(self: *Checker, node: NodeId, spec: []const u8) CheckError!void {
         if (!self.sourceModuleIsNode16Or18()) return;
         if (!self.sectionFileIsCommonJsFormatForNodeMode(node)) return;
-        if (!std.mem.startsWith(u8, spec, ".")) return;
-        const target = (try self.resolvedImportSectionFilename(node, spec)) orelse return;
-        if (!sectionFilenameIsEsmFormat(target)) return;
+        if (!try self.resolvedImportIsEsmFormat(node, spec)) return;
         const pos = self.moduleSpecifierQuotePos(node, spec);
         // A type-only `import type {…}` takes TS1541, not TS1479: it just
         // needs a `resolution-mode` attribute to disambiguate require vs
