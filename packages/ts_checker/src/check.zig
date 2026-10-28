@@ -112575,6 +112575,28 @@ pub const Checker = struct {
             return;
         }
         if (self.generic_signature_params.contains(signature)) return;
+        if (std.mem.eql(u8, method, "filter")) {
+            const params = self.interner.signatureParams(signature);
+            if (params.len != 1 or !self.interner.isSignature(params[0]) or
+                self.interner.signatureReturn(params[0]) != types.Primitive.boolean_t) return;
+            const return_t = self.interner.signatureReturn(signature) orelse return;
+            const narrowed = self.interner.objectNumberIndex(return_t);
+            if (!self.interner.isDirectTypeParameter(narrowed)) return;
+            const owned = try self.gpa.alloc(TypeId, 1);
+            owned[0] = narrowed;
+            try self.generic_signature_params.put(self.gpa, signature, owned);
+            const predicate: FnPredicate = .{
+                .param_index = 0,
+                .target_type = narrowed,
+                .is_asserts = false,
+            };
+            try self.signature_predicates.put(self.gpa, params[0], predicate);
+            try self.signature_param_predicates.put(self.gpa, .{
+                .signature = signature,
+                .param_index = 0,
+            }, predicate);
+            return;
+        }
         if (!std.mem.eql(u8, method, "map") and
             !std.mem.eql(u8, method, "flatMap") and
             !std.mem.eql(u8, method, "reduce") and
@@ -170082,6 +170104,11 @@ pub const Checker = struct {
                 const arg_t = arg_types[i];
                 if (param_t >= self.interner.pool.typeCount() or arg_t >= self.interner.pool.typeCount()) continue;
                 if (self.interner.pool.flagsOf(param_t).is_signature) {
+                    const predicate = self.signature_param_predicates.get(.{
+                        .signature = sig,
+                        .param_index = @intCast(i),
+                    });
+                    if (try self.inferFromPredicateSignatureArgument(param_t, predicate, args[i], arg_t, subs)) continue;
                     if (self.interner.pool.flagsOf(arg_t).is_signature) {
                         try self.inferFromPair(param_ts[i], arg_types[i], subs);
                     } else if (self.signatureIsConstruct(param_t)) {
@@ -170142,6 +170169,11 @@ pub const Checker = struct {
                 const arg_t = arg_types[i];
                 if (param_t >= self.interner.pool.typeCount() or arg_t >= self.interner.pool.typeCount()) continue;
                 if (self.interner.pool.flagsOf(param_t).is_signature) {
+                    const predicate = self.signature_param_predicates.get(.{
+                        .signature = sig,
+                        .param_index = @intCast(i),
+                    });
+                    if (try self.inferFromPredicateSignatureArgument(param_t, predicate, args[i], arg_t, subs)) continue;
                     if (self.interner.pool.flagsOf(arg_t).is_signature) {
                         try self.inferFromPair(param_t, arg_t, subs);
                     } else if (self.signatureIsConstruct(param_t)) {
@@ -213972,6 +214004,20 @@ test "checker: Array.filter predicate may return a non-boolean value" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: readonly Array.filter predicate narrows its result element" {
+    const s = try newSetup(
+        \\const mixed: readonly (number | string)[] = [1, 'two'];
+        \\const numbers = mixed.filter((value): value is number => typeof value === 'number');
+        \\const good: number = numbers[0];
+        \\const bad: string = numbers[0];
+        \\void [good, bad];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: allowJs default import from virtual js module is namespace-shaped" {

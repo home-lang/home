@@ -527,6 +527,17 @@ pub fn arrayProto(
     // predicate overloads that accept truthy non-boolean returns. Current
     // lib.d.ts uses the same return type for every / some.
     const cb_t_unknown = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, unknown_t, false);
+    // lib.es5.d.ts places the type-predicate filter overload before the
+    // ordinary unknown-returning callback. The checker records its predicate
+    // metadata when the synthetic member is resolved.
+    const narrowed_tp = try ti.internFreshTypeParameterWithVariance(
+        try sint.intern("S"),
+        elem,
+        types.Primitive.none,
+        .bivariant,
+    );
+    const narrowed_arr = try ti.internArrayType(sint, narrowed_tp);
+    const cb_t_guard = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, boolean_t, false);
     // `(value: T, index: number, array: T[]) => void` — used by forEach.
     const cb_t_void = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, void_t, false);
     // `(a: T, b: T) => number` — used by sort.
@@ -554,6 +565,7 @@ pub fn arrayProto(
     // one level so the result is always `U[]`. Without the union the
     // common `arr.flatMap(x => [a, b])` shape tripped TS2322.
     const sig_flatMap = try ti.internSignature(&[_]TypeId{cb_t_u_or_arr}, u_arr, false);
+    const sig_filter_guard = try ti.internSignature(&[_]TypeId{cb_t_guard}, narrowed_arr, false);
     const sig_filter = try ti.internSignature(&[_]TypeId{cb_t_unknown}, arr_t, false);
     const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
     const sig_every = try ti.internSignature(&[_]TypeId{cb_t_unknown}, boolean_t, false);
@@ -674,6 +686,7 @@ pub fn arrayProto(
         .{ .name = try sint.intern("pop"), .type = sig_pop, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("map"), .type = sig_map, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("flatMap"), .type = sig_flatMap, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("filter"), .type = sig_filter_guard, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("filter"), .type = sig_filter, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("forEach"), .type = sig_forEach, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("every"), .type = sig_every, .is_optional = false, .is_readonly = false, .is_method = true },
