@@ -2992,6 +2992,23 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&adjacent_generic_overload.step);
         }
 
+        // Callback methods on imported readonly and mutable arrays accept
+        // TypeScript's optional thisArg but still reject a third argument.
+        const array_thisarg_dir = b.path("packages/ts_cli/testdata/issue846-array-thisarg");
+        inline for (.{ "tsconfig.json", "tsconfig-no-checkjs.json" }) |config_name| {
+            const array_thisarg = b.addRunArtifact(home_tsc_exe);
+            array_thisarg.setCwd(array_thisarg_dir);
+            array_thisarg.clearEnvironment();
+            array_thisarg.addArgs(&.{ "-p", config_name, "--pretty", "false" });
+            array_thisarg.expectStdOutEqual(
+                "main.ts(17,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+                    "main.ts(18,50): error TS2554: Expected 1-2 arguments, but got 3.\n",
+            );
+            array_thisarg.expectStdErrEqual("");
+            array_thisarg.expectExitCode(2);
+            tsc_streams_step.dependOn(&array_thisarg.step);
+        }
+
         // Readonly array members remain distinct from mutable Array after
         // importing a checked-JS owner or a local declaration. All outputs
         // are pinned to TypeScript 5.7.3.
