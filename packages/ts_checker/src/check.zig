@@ -87328,7 +87328,8 @@ pub const Checker = struct {
     fn firstFreeTypeParameter(self: *Checker, t: TypeId) ?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) return t;
+        // Union/intersection flags are the OR of their members' flags. Their
+        // payload indexes a compound pool, not the type-parameter pool.
         if (flags.is_union) {
             for (self.interner.unionMembers(t)) |m| {
                 if (self.firstFreeTypeParameter(m)) |tp| return tp;
@@ -87341,6 +87342,7 @@ pub const Checker = struct {
             }
             return null;
         }
+        if (flags.is_type_parameter) return t;
         if (flags.is_object_type) {
             for (self.interner.objectMembers(t)) |m| {
                 if (self.firstFreeTypeParameter(m.type)) |tp| return tp;
@@ -280065,6 +280067,36 @@ test "checker: readonly flatMap infers mixed scalar and array results" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: unrelated generic U does not change readonly flatMap inference" {
+    const s = try newSetup(
+        \\type Alias<U> = number;
+        \\const values: readonly number[] = [1, 2];
+        \\const flattened: number[] = values.flatMap(() => values);
+        \\void flattened;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const u_name = try s.checker.string_interner.intern("U");
+    try T.expect(s.checker.lookupNarrow(u_name) == null);
+    const alias = hir_mod.typeAliasOf(&s.hir, hir_mod.blockStmts(&s.hir, s.root)[0]);
+    const alias_param = s.hir.typeOf(s.hir.childSlice(alias.type_params_start, alias.type_params_len)[0]);
+    const proto = s.checker.lib_cache.readonly_array_proto_by_elem.get(types.Primitive.number_t) orelse return error.MissingArrayPrototype;
+    const flat_map_sig = s.ti.objectMember(proto, try s.sint.intern("flatMap")) orelse return error.MissingFlatMap;
+    const callback_sig = s.ti.signatureParams(flat_map_sig)[0];
+    const callback_return = s.ti.signatureReturn(callback_sig) orelse return error.MissingCallbackReturn;
+    var synthetic_param: TypeId = types.Primitive.none;
+    for (s.ti.unionMembers(callback_return)) |member| {
+        const flags = s.ti.pool.flagsOf(member);
+        if (flags.is_type_parameter and !flags.is_object_type) synthetic_param = member;
+    }
+    try T.expect(synthetic_param != types.Primitive.none);
+    const registered_params = s.checker.generic_signature_params.get(flat_map_sig) orelse return error.MissingFlatMapBinder;
+    try T.expectEqualSlices(TypeId, &.{synthetic_param}, registered_params);
+    try T.expect(alias_param != synthetic_param);
+    try T.expect(s.checker.type_parameter_decl_nodes.get(synthetic_param) == null);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: recursiveConditionalTypes Flatten terminates" {
