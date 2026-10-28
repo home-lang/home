@@ -92644,6 +92644,13 @@ pub const Checker = struct {
         return null;
     }
 
+    fn tupleElementIsOptional(self: *Checker, target: TypeId, index: usize) CheckError!bool {
+        var name_buf: [32]u8 = undefined;
+        const name_text = std.fmt.bufPrint(&name_buf, "{d}", .{index}) catch return false;
+        const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+        return if (self.tupleElementMember(target, name)) |member| member.is_optional else false;
+    }
+
     fn tupleTypeLooksReadonly(self: *Checker, target: TypeId) bool {
         const len = self.fixedTupleLength(target) orelse return false;
         if (len == 0) return false;
@@ -134250,18 +134257,14 @@ pub const Checker = struct {
             }
         }
         if (overloads.len >= 2 and overloads.len <= 3) {
-            const chain = try self.overloadArgumentErrorChains(call_node, args, arg_types, overloads);
-            if (chain.len > 0) {
+            const errors = try self.overloadArgumentErrorChains(call_node, args, arg_types, overloads);
+            if (errors.chain.len > 0) {
                 try self.checkFailedOverloadArgumentContexts(call_node, args, arg_types);
-                const error_node = if (try self.overloadSignatureArgumentErrorEntry(call_node, args, arg_types, overloads[overloads.len - 1])) |arg_error|
-                    arg_error.node
-                else
-                    call_node;
                 try self.diagnostics.append(self.gpa, .{
-                    .node = error_node,
+                    .node = errors.common_error_node orelse call_node,
                     .code = TsCodes.no_overload_matches,
                     .message = "No overload matches this call.",
-                    .chain = chain,
+                    .chain = errors.chain,
                 });
                 return;
             }
@@ -134269,22 +134272,36 @@ pub const Checker = struct {
         try self.reportNoOverloadMatchesWithLastOverload(call_node, args, arg_types, overloads[overloads.len - 1]);
     }
 
+    const OverloadArgumentErrors = struct {
+        chain: []const DiagnosticChainEntry,
+        common_error_node: ?NodeId,
+    };
+
     fn overloadArgumentErrorChains(
         self: *Checker,
         call_node: NodeId,
         args: []const NodeId,
         arg_types: []const TypeId,
         overloads: []const TypeId,
-    ) CheckError![]const DiagnosticChainEntry {
+    ) CheckError!OverloadArgumentErrors {
         const arena = self.diag_arena.allocator();
         const entries = try arena.alloc(DiagnosticChainEntry, overloads.len);
         var count: usize = 0;
+        var common_error_node: ?NodeId = null;
+        var same_error_span = true;
         for (overloads, 0..) |sig, i| {
             const effective_sig = self.instantiateSignatureFromArgs(sig, args, arg_types) catch sig;
             // First decide applicability with the actual inference result.
             // Replacing unbound parameters is solely a rendering step and
             // must never add a candidate to the diagnostic chain.
             const arg_error = (try self.overloadSignatureArgumentErrorEntry(call_node, args, arg_types, sig)) orelse continue;
+            if (common_error_node) |first| {
+                const first_span = self.hir.spanOf(first);
+                const next_span = self.hir.spanOf(arg_error.node);
+                if (first_span.start != next_span.start or first_span.end != next_span.end) same_error_span = false;
+            } else {
+                common_error_node = arg_error.node;
+            }
             const diagnostic_sig = try self.instantiateUninferredOverloadParametersForDiagnostics(sig, effective_sig);
             const display_error = if (diagnostic_sig != effective_sig)
                 (try self.signatureArgumentErrorEntry(call_node, args, arg_types, diagnostic_sig)) orelse arg_error
@@ -134305,7 +134322,13 @@ pub const Checker = struct {
             };
             count += 1;
         }
-        return entries[0..count];
+        // TypeScript retains the argument location only when all candidate
+        // applicability errors agree on its span. Otherwise the overload set
+        // belongs to the call expression itself.
+        return .{
+            .chain = entries[0..count],
+            .common_error_node = if (same_error_span and count == overloads.len) common_error_node else null,
+        };
     }
 
     /// Failed generic candidates still need concrete display types. TypeScript
@@ -134510,15 +134533,14 @@ pub const Checker = struct {
                 arg,
                 try self.templateLiteralDiagnosticTarget(raw_display_param_t),
             );
-            if (display_param_t < self.interner.pool.typeCount() and
-                self.interner.pool.flagsOf(display_param_t).is_template_literal)
-            {
-                arg_t = self.expressionLiteralType(arg, arg_t) catch arg_t;
-            }
-            const diagnostic_arg_t = if (self.interner.isSignature(display_param_t))
+            const diagnostic_arg_base_t = if (self.interner.isSignature(display_param_t))
                 self.identifierFunctionInitializerDiagnosticType(arg, arg_t)
             else
                 arg_t;
+            // Keep an expression's literal identity until the formatter has
+            // seen the candidate target. It widens against broad targets but
+            // retains a literal against a rejected literal overload.
+            const diagnostic_arg_t = try self.expressionLiteralType(arg, diagnostic_arg_base_t);
             const msg = if (try self.formatNullishLiteralArgumentNotAssignable(arg, param_t)) |literal_msg|
                 literal_msg
             else
@@ -199275,11 +199297,17 @@ pub const Checker = struct {
                         while (ti < length) : (ti += 1) {
                             if (ti > 0) try tuple_buf.appendSlice(arena_t, ", ");
                             const elem_t = self.tupleElementType(t, @intCast(ti));
+                            const optional = try self.tupleElementIsOptional(t, @intCast(ti));
+                            const elem_flags = if (elem_t < self.interner.pool.typeCount()) self.interner.pool.flagsOf(elem_t) else types.TypeFlags{};
+                            const wrap_optional = optional and (elem_flags.is_union or elem_flags.is_intersection or elem_flags.is_conditional or elem_flags.is_signature);
+                            if (wrap_optional) try tuple_buf.append(arena_t, '(');
                             if (try self.allocSimpleTypeName(elem_t)) |nm| {
                                 try tuple_buf.appendSlice(arena_t, nm);
                             } else {
                                 try tuple_buf.appendSlice(arena_t, "any");
                             }
+                            if (wrap_optional) try tuple_buf.append(arena_t, ')');
+                            if (optional) try tuple_buf.append(arena_t, '?');
                         }
                         try tuple_buf.append(arena_t, ']');
                         break :blk tuple_buf.items;
@@ -297357,26 +297385,39 @@ test "checker: overload applicability preserves final contextual callback diagno
         for (case.codes) |code| try T.expectEqual(@as(usize, 1), checkerCountCode(setup, code));
         for (setup.checker.diagnostics.items) |diagnostic| {
             if (diagnostic.code != TsCodes.no_overload_matches) continue;
-            const expected = std.mem.indexOf(u8, case.source, "match(y=>y.length").?;
+            const expected = std.mem.indexOf(u8, case.source, "use([match(y=>y.length").?;
             const actual = diagnostic.pos orelse setup.hir.spanOf(diagnostic.node).start;
             try T.expectEqual(@as(u32, @intCast(expected)), actual);
             try T.expectEqual(@as(usize, 0), diagnostic.related.len);
-            // Pinned TypeScript 5.7.3 reports both rejected overloads. The
-            // first fails its literal tag; the second fails its tuple value.
-            // Exact candidate text remains tracked in #959.
+            // TypeScript 5.7.3 reports both rejected overloads: the first
+            // retains its literal tag, the second its optional tuple value.
             try T.expectEqual(@as(usize, 2), diagnostic.chain.len);
             try T.expectEqual(@as(u32, TsCodes.overload_n_error), diagnostic.chain[0].code);
             try T.expectEqual(@as(u32, TsCodes.overload_n_error), diagnostic.chain[1].code);
+            try T.expectEqualStrings(
+                "Overload 1 of 2, '(point: [(number | undefined)?], tag: \"numeric\"): boolean', gave the following error.",
+                diagnostic.chain[0].message,
+            );
+            try T.expectEqualStrings(
+                "Overload 2 of 2, '(point: [(string | undefined)?], tag: \"text\"): boolean', gave the following error.",
+                diagnostic.chain[1].message,
+            );
             try T.expectEqual(@as(usize, 1), diagnostic.chain[0].children.len);
             try T.expectEqual(@as(usize, 1), diagnostic.chain[1].children.len);
             const tag_error = diagnostic.chain[0].children[0];
             try T.expectEqual(@as(u32, TsCodes.argument_type_mismatch), tag_error.code);
-            try T.expect(std.mem.indexOf(u8, tag_error.message, "numeric") != null);
+            try T.expectEqualStrings(
+                "Argument of type '\"text\"' is not assignable to parameter of type '\"numeric\"'.",
+                tag_error.message,
+            );
             const tuple_error = diagnostic.chain[1].children[0];
             try T.expectEqual(@as(u32, TsCodes.type_not_assignable), tuple_error.code);
-            try T.expect(std.mem.indexOf(u8, tuple_error.message, "number") != null);
-            try T.expect(std.mem.indexOf(u8, tuple_error.message, "string") != null);
-            try T.expect(std.mem.indexOf(u8, tuple_error.message, "unknown[]") == null);
+            try T.expectEqualStrings(
+                "Type 'number | undefined' is not assignable to type 'string | undefined'.",
+                tuple_error.message,
+            );
+            try T.expectEqual(@as(usize, 1), tuple_error.children.len);
+            try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", tuple_error.children[0].message);
         }
     }
 }

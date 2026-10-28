@@ -3086,6 +3086,42 @@ pub fn build(b: *std.Build) void {
             default_function.expectExitCode(2);
             tsc_streams_step.dependOn(&default_function.step);
         }
+        // The #959 contextual-overload oracle pins the complete TypeScript
+        // 5.7.3 chain, its call-site anchor, and the callback-body errors.
+        const overload_context_dir = b.path("packages/ts_cli/testdata/issue959-overload-context");
+        const overload_context_output =
+            "main.ts(9,1): error TS2769: No overload matches this call.\n" ++
+            "  Overload 1 of 2, '(point: [(number | undefined)?], tag: \"numeric\"): boolean', gave the following error.\n" ++
+            "    Argument of type '\"text\"' is not assignable to parameter of type '\"numeric\"'.\n" ++
+            "  Overload 2 of 2, '(point: [(string | undefined)?], tag: \"text\"): boolean', gave the following error.\n" ++
+            "    Type 'number | undefined' is not assignable to type 'string | undefined'.\n" ++
+            "      Type 'number' is not assignable to type 'string'.\n" ++
+            "main.ts(9,17): error TS18048: 'y' is possibly 'undefined'.\n" ++
+            "main.ts(9,19): error TS2339: Property 'length' does not exist on type 'number'.\n";
+        const overload_context = b.addRunArtifact(home_tsc_exe);
+        overload_context.setCwd(overload_context_dir);
+        overload_context.clearEnvironment();
+        overload_context.addArgs(&.{ "-p", "tsconfig.json", "--pretty", "false" });
+        overload_context.expectStdOutEqual(overload_context_output);
+        overload_context.expectStdErrEqual("");
+        overload_context.expectExitCode(2);
+        tsc_streams_step.dependOn(&overload_context.step);
+        // If overload candidates reject different argument spans, the
+        // diagnostic belongs to the call even when each mismatch is direct.
+        const different_arguments_output =
+            "different-arguments.ts(4,1): error TS2769: No overload matches this call.\n" ++
+            "  Overload 1 of 2, '(value: number, mode: \"number\"): void', gave the following error.\n" ++
+            "    Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+            "  Overload 2 of 2, '(value: string, mode: \"string\"): void', gave the following error.\n" ++
+            "    Argument of type '\"number\"' is not assignable to parameter of type '\"string\"'.\n";
+        const different_arguments = b.addRunArtifact(home_tsc_exe);
+        different_arguments.setCwd(overload_context_dir);
+        different_arguments.clearEnvironment();
+        different_arguments.addArgs(&.{ "-p", "tsconfig-different-arguments.json", "--pretty", "false" });
+        different_arguments.expectStdOutEqual(different_arguments_output);
+        different_arguments.expectStdErrEqual("");
+        different_arguments.expectExitCode(2);
+        tsc_streams_step.dependOn(&different_arguments.step);
         // Readonly array members remain distinct from mutable Array after
         // importing a checked-JS owner or a local declaration. All outputs
         // are pinned to TypeScript 5.7.3.
