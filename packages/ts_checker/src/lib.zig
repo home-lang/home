@@ -537,6 +537,7 @@ pub fn arrayProto(
         .bivariant,
     );
     const narrowed_arr = try ti.internArrayType(sint, narrowed_tp);
+    const narrowed_or_undef = try ti.internUnion(&[_]TypeId{ narrowed_tp, undef_t });
     const cb_t_guard = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, boolean_t, false);
     // `(value: T, index: number, array: T[]) => void` — used by forEach.
     const cb_t_void = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, void_t, false);
@@ -565,8 +566,10 @@ pub fn arrayProto(
     // one level so the result is always `U[]`. Without the union the
     // common `arr.flatMap(x => [a, b])` shape tripped TS2322.
     const sig_flatMap = try ti.internSignature(&[_]TypeId{cb_t_u_or_arr}, u_arr, false);
-    const sig_filter_guard = try ti.internSignature(&[_]TypeId{cb_t_guard}, narrowed_arr, false);
-    const sig_filter = try ti.internSignature(&[_]TypeId{cb_t_unknown}, arr_t, false);
+    // TypeScript's callback methods accept an optional, unconstrained
+    // thisArg. Their one required argument is recorded by the checker.
+    const sig_filter_guard = try ti.internSignature(&[_]TypeId{ cb_t_guard, any_t }, narrowed_arr, false);
+    const sig_filter = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, arr_t, false);
     const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
     const sig_every = try ti.internSignature(&[_]TypeId{cb_t_unknown}, boolean_t, false);
     const sig_some = try ti.internSignature(&[_]TypeId{cb_t_unknown}, boolean_t, false);
@@ -582,7 +585,8 @@ pub fn arrayProto(
     // TS2554 on `arr.join()` with no args.
     const optional_string_t = try ti.internUnion(&[_]TypeId{ string_t, undef_t });
     const sig_join = try ti.internSignature(&[_]TypeId{optional_string_t}, string_t, false);
-    const sig_find = try ti.internSignature(&[_]TypeId{cb_t_unknown}, t_or_undef, false);
+    const sig_find_guard = try ti.internSignature(&[_]TypeId{ cb_t_guard, any_t }, narrowed_or_undef, false);
+    const sig_find = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, t_or_undef, false);
     // Preserve lib.d.ts's two concat overloads so failed calls report
     // against an overload set instead of collapsing to a single TS2345.
     const concat_array_rest = try ti.internArrayType(sint, arr_t);
@@ -631,7 +635,8 @@ pub fn arrayProto(
     // `findIndex(pred): number` / `findLastIndex(pred): number`.
     const sig_find_index = try ti.internSignature(&[_]TypeId{cb_t_unknown}, number_t, false);
     // `findLast(pred): T | undefined` (es2023).
-    const sig_find_last = try ti.internSignature(&[_]TypeId{cb_t_unknown}, t_or_undef, false);
+    const sig_find_last_guard = try ti.internSignature(&[_]TypeId{ cb_t_guard, any_t }, narrowed_or_undef, false);
+    const sig_find_last = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, t_or_undef, false);
     // `lastIndexOf(searchElement: T, fromIndex?: number): number`.
     const sig_last_index_of = try ti.internSignature(&[_]TypeId{ elem, optional_number_t }, number_t, false);
     // `at(index: number): T | undefined` (es2022).
@@ -695,6 +700,7 @@ pub fn arrayProto(
         .{ .name = try sint.intern("indexOf"), .type = sig_indexOf, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("slice"), .type = sig_slice, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("join"), .type = sig_join, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("find"), .type = sig_find_guard, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("find"), .type = sig_find, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("concat"), .type = sig_concat_arrays, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("concat"), .type = sig_concat, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -715,6 +721,7 @@ pub fn arrayProto(
         .{ .name = try sint.intern("reduceRight"), .type = sig_reduce, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("reduceRight"), .type = sig_reduce_no_init, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("findIndex"), .type = sig_find_index, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("findLast"), .type = sig_find_last_guard, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("findLast"), .type = sig_find_last, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("findLastIndex"), .type = sig_find_index, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("lastIndexOf"), .type = sig_last_index_of, .is_optional = false, .is_readonly = false, .is_method = true },

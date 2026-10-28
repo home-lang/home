@@ -112574,13 +112574,30 @@ pub const Checker = struct {
             try self.signature_min_args.put(self.gpa, signature, 1);
             return;
         }
+        const is_predicate_search = std.mem.eql(u8, method, "find") or std.mem.eql(u8, method, "findLast");
+        if (std.mem.eql(u8, method, "filter") or is_predicate_search) {
+            try self.signature_min_args.put(self.gpa, signature, 1);
+        }
         if (self.generic_signature_params.contains(signature)) return;
-        if (std.mem.eql(u8, method, "filter")) {
+        if (std.mem.eql(u8, method, "filter") or is_predicate_search) {
             const params = self.interner.signatureParams(signature);
-            if (params.len != 1 or !self.interner.isSignature(params[0]) or
+            if (params.len != 2 or !self.interner.isSignature(params[0]) or
                 self.interner.signatureReturn(params[0]) != types.Primitive.boolean_t) return;
             const return_t = self.interner.signatureReturn(signature) orelse return;
-            const narrowed = self.interner.objectNumberIndex(return_t);
+            var narrowed: TypeId = types.Primitive.none;
+            if (is_predicate_search) {
+                if (return_t >= self.interner.pool.typeCount() or
+                    !self.interner.pool.flagsOf(return_t).is_union) return;
+                const result_members = self.interner.unionMembers(return_t);
+                if (result_members.len != 2) return;
+                for (result_members) |member| {
+                    if (self.interner.isDirectTypeParameter(member)) {
+                        narrowed = member;
+                    } else if (member != types.Primitive.undefined_t) return;
+                }
+            } else {
+                narrowed = self.interner.objectNumberIndex(return_t);
+            }
             if (!self.interner.isDirectTypeParameter(narrowed)) return;
             const owned = try self.gpa.alloc(TypeId, 1);
             owned[0] = narrowed;
@@ -195993,15 +196010,15 @@ pub const Checker = struct {
             null;
         const contextual_async_source_name = try self.contextualAsyncFunctionAssignmentDiagnosticName(value_node, target);
         // A two-member `T | undefined` write target is reported as `T`
-        // when a concrete, non-nullish source fails against T. A source
-        // union containing a nullish member (or `unknown`) is compared to
-        // the entire target union instead. This is the same rule for an
-        // optional property, an explicit union property, and a local
-        // variable; it changes diagnostic presentation, not assignability.
+        // when a concrete, non-nullish source fails against T. Use the
+        // initializer's semantic type for this decision: `source` can be a
+        // narrowed/widened reporting type even while the original value is
+        // `S | undefined`. In that case TypeScript retains the entire target
+        // union in TS2322 (including for a local variable declaration).
         const diagnostic_target = if (checked_js_default_parameter_union)
             self.subtractType(target, types.Primitive.undefined_t) catch target
         else
-            self.singleNonUndefinedAssignmentDiagnosticTarget(source, target) orelse target;
+            self.singleNonUndefinedAssignmentDiagnosticTarget(related_source, target) orelse target;
         const diagnostic_source = if (diagnostic_target != target and self.shouldWidenForArgDiagnostic(source, diagnostic_target))
             self.widenLiteralType(source)
         else
@@ -196044,7 +196061,10 @@ pub const Checker = struct {
             (try self.normalizedKeyofIdentifierAnnotationName(target_node)) orelse
             self.keyofAnnotationNameForIdentifier(target_node) orelse
             (try self.indexedAccessAnnotationNameForIdentifier(target_node)) orelse
-            (try self.nullableAnnotationDiagnosticNameForIdentifier(target_node, false)) orelse
+            (try self.nullableAnnotationDiagnosticNameForIdentifier(
+                target_node,
+                diagnostic_target == target and self.typeIsPossiblyNullishStrict(related_source),
+            )) orelse
             (try self.singleLiteralAliasAssignmentName(target_node, diagnostic_target)) orelse
             (try self.assignmentIdentifierObjectUnionAnnotationName(target_node, diagnostic_target)) orelse
             (try self.visibleMixedCompoundAnnotationNameForIdentifier(target_node)) orelse
@@ -214017,6 +214037,24 @@ test "checker: readonly Array.filter predicate narrows its result element" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: Array.find predicate narrows readonly and mutable results" {
+    const s = try newSetup(
+        \\const readonlyValues: readonly (number | string)[] = [1, 'two'];
+        \\const mutableValues: (number | string)[] = [1, 'two'];
+        \\const first = readonlyValues.find((value): value is number => typeof value === 'number', {});
+        \\const last = mutableValues.findLast((value): value is number => typeof value === 'number', {});
+        \\const goodFirst: number | undefined = first;
+        \\const goodLast: number | undefined = last;
+        \\const badFirst: string | undefined = first;
+        \\const badLast: string | undefined = last;
+        \\void [goodFirst, goodLast, badFirst, badLast];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
