@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "noEmit": true,
+    "module": "node16",
+    "moduleResolution": "node16",
+    "maxNodeModuleJsDepth": 1
+  },
+  "files": ["named.ts"]
+}
