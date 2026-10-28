@@ -8965,6 +8965,82 @@ test "LspProject: watched JavaScript default expression refreshes a re-export im
     }
 }
 
+test "LspProject: watched anonymous default JavaScript function refreshes re-exported importer" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const number_owner = "/** @param {number} value */\nexport default function(value) { return value + 1; }\n";
+    const string_owner = "/** @param {string} value */\nexport default function(value) { return value + '!'; }\n";
+    const importer_source = "import addOne from './bridge.js';\nconst result: number = addOne(1);\nvoid result;\n";
+    inline for (.{ true, false }) |check_js| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        {
+            var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+            defer config.close(io);
+            try config.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"checkJs\":" ++ (if (check_js) "true" else "false") ++ ",\"strict\":true,\"noEmit\":true},\"files\":[\"main.ts\"]}");
+            var importer = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+            defer importer.close(io);
+            try importer.writeStreamingAll(io, importer_source);
+            var bridge = try tmp.dir.createFile(io, "bridge.js", .{ .truncate = true });
+            defer bridge.close(io);
+            try bridge.writeStreamingAll(io, "export { default } from './owner.js';\n");
+            var owner = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+            defer owner.close(io);
+            try owner.writeStreamingAll(io, number_owner);
+        }
+        const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+        defer a.free(config_path);
+        const ts_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+        defer a.free(ts_path);
+        const bridge_path = try tmp.dir.realPathFileAlloc(io, "bridge.js", a);
+        defer a.free(bridge_path);
+        const owner_path = try tmp.dir.realPathFileAlloc(io, "owner.js", a);
+        defer a.free(owner_path);
+        const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
+        defer a.free(ts_uri);
+        const owner_uri = try std.fmt.allocPrint(a, "file://{s}", .{owner_path});
+        defer a.free(owner_uri);
+
+        const project = try LspProject.create(a, config_path);
+        defer project.destroy();
+        const opening = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = ts_uri, .languageId = "typescript", .version = 1, .text = importer_source } } }, .{});
+        defer a.free(opening);
+        const initial = try project.handle(opening);
+        defer a.free(initial);
+        try std.testing.expect(std.mem.indexOf(u8, initial, "\"diagnostics\":[]") != null);
+        const bridge_id = project.program.lookupPath(bridge_path) orelse return error.MissingAdmittedJavaScript;
+        const owner_id = project.program.lookupPath(owner_path) orelse return error.MissingAdmittedJavaScript;
+        try std.testing.expect(project.takePendingDiagnostic() == null);
+
+        const owner_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = owner_uri, .type = 2 }} } }, .{});
+        defer a.free(owner_event);
+        inline for (.{ .{ string_owner, true }, .{ number_owner, false } }) |revision| {
+            {
+                var owner = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+                defer owner.close(io);
+                try owner.writeStreamingAll(io, revision[0]);
+            }
+            const response = try project.handle(owner_event);
+            defer a.free(response);
+            try std.testing.expectEqual(@as(usize, 0), response.len);
+            const refreshed = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+            defer a.free(refreshed);
+            try std.testing.expect(std.mem.indexOf(u8, refreshed, ts_uri) != null);
+            const parsed = try std.json.parseFromSlice(std.json.Value, a, refreshed, .{});
+            defer parsed.deinit();
+            const diagnostics = parsed.value.object.get("params").?.object.get("diagnostics").?.array.items;
+            try std.testing.expectEqual(@as(usize, if (revision[1]) 2 else 0), diagnostics.len);
+            if (revision[1]) {
+                try std.testing.expectEqual(@as(i64, 2322), diagnostics[0].object.get("code").?.integer);
+                try std.testing.expectEqual(@as(i64, 2345), diagnostics[1].object.get("code").?.integer);
+            }
+            try std.testing.expectEqual(bridge_id, project.program.lookupPath(bridge_path).?);
+            try std.testing.expectEqual(owner_id, project.program.lookupPath(owner_path).?);
+            try std.testing.expect(project.takePendingDiagnostic() == null);
+        }
+    }
+}
+
 test "LspProject: package metadata revisions refresh an admitted JavaScript importer" {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

@@ -94,7 +94,9 @@ checks a JSDoc parameter attached before the `export` declaration. Five
 TypeScript 5.7.3 streams cover direct and re-exported imports, an explicit
 JavaScript root, implicit `allowJs` through `checkJs`, and `checkJs: false`.
 The named-export and unannotated negative checker controls keep this a
-source-ownership fix rather than implicit-any suppression. The
+source-ownership fix rather than implicit-any suppression. Program and
+LspProject edit/revert tests also check re-exported importer invalidation in
+both `checkJs` modes. The
 broader typed-JavaScript owner surface remains tracked in
 [#846](https://github.com/home-lang/home/issues/846).
 
