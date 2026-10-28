@@ -16,6 +16,13 @@ zero, its named import reports only TS7016. At depth one, with `checkJs` either
 on or off, a string read and a string write each report TS2322. This checks
 that admitted exports carry a mutable property type into the importing file.
 
+The LSP config-revision test uses the same `untyped-package` source and import
+shape. TypeScript 5.7.3 reports only TS7016 at depth zero and only TS2322 at
+depth one, including when `checkJs` is disabled but `allowJs` stays enabled.
+The test changes the config through those states (and explicit `allowJs:
+false`) while the importer has unsaved text, checking both admission and fresh
+editor diagnostics after each reload.
+
 The `untyped-esm` (`index.mjs`) and `untyped-esm-js` (`index.js` in a package
 with `"type": "module"`) packages exercise the same admission boundary.
 At depth zero, each reports only TS7016. At depth one, each reports TS1479

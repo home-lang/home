@@ -8557,6 +8557,86 @@ test "LspProject: watched config changes JavaScript root admission and clears er
     try std.testing.expect(project.takePendingDiagnostic() == null);
 }
 
+test "LspProject: config revisions change JavaScript package depth without losing open source" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, "node_modules/untyped-package");
+    const unsaved_source = "import value from 'untyped-package';\nconst typed: string = value;\nvoid typed;\n";
+    {
+        var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config.close(io);
+        try config.writeStreamingAll(io, "{\"compilerOptions\":{\"checkJs\":true,\"strict\":true,\"noEmit\":true,\"module\":\"node16\",\"moduleResolution\":\"node16\"},\"files\":[\"main.ts\"]}");
+        var importer = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer importer.close(io);
+        try importer.writeStreamingAll(io, "import value from 'untyped-package';\nconst typed: number = value;\nvoid typed;\n");
+        var metadata = try tmp.dir.createFile(io, "node_modules/untyped-package/package.json", .{ .truncate = true });
+        defer metadata.close(io);
+        try metadata.writeStreamingAll(io, "{\"name\":\"untyped-package\",\"main\":\"index.js\"}");
+        var owner = try tmp.dir.createFile(io, "node_modules/untyped-package/index.js", .{ .truncate = true });
+        defer owner.close(io);
+        try owner.writeStreamingAll(io, "module.exports = 42;\n");
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+    defer a.free(config_path);
+    const ts_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+    defer a.free(ts_path);
+    const js_path = try tmp.dir.realPathFileAlloc(io, "node_modules/untyped-package/index.js", a);
+    defer a.free(js_path);
+    const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
+    defer a.free(ts_uri);
+    const config_uri = try std.fmt.allocPrint(a, "file://{s}", .{config_path});
+    defer a.free(config_uri);
+    const expect_single_code = struct {
+        fn check(body: []const u8, expected: i64) !void {
+            const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+            defer parsed.deinit();
+            const diagnostics = parsed.value.object.get("params").?.object.get("diagnostics").?.array.items;
+            try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+            try std.testing.expectEqual(expected, diagnostics[0].object.get("code").?.integer);
+        }
+    }.check;
+
+    const project = try LspProject.create(a, config_path);
+    defer project.destroy();
+    const opening = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = ts_uri, .languageId = "typescript", .version = 1, .text = unsaved_source } } }, .{});
+    defer a.free(opening);
+    const initial = try project.handle(opening);
+    defer a.free(initial);
+    try expect_single_code(initial, 7016);
+    try std.testing.expect(project.service.compile_options.allow_js);
+    try std.testing.expect(project.service.compile_options.check_js);
+    try std.testing.expect(project.program.lookupPath(js_path) == null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    const event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = config_uri, .type = 2 }} } }, .{});
+    defer a.free(event);
+    inline for (.{
+        .{ "{\"compilerOptions\":{\"checkJs\":true,\"strict\":true,\"noEmit\":true,\"module\":\"node16\",\"moduleResolution\":\"node16\",\"maxNodeModuleJsDepth\":1},\"files\":[\"main.ts\"]}", @as(i64, 2322), true, true },
+        .{ "{\"compilerOptions\":{\"allowJs\":true,\"checkJs\":false,\"strict\":true,\"noEmit\":true,\"module\":\"node16\",\"moduleResolution\":\"node16\",\"maxNodeModuleJsDepth\":1},\"files\":[\"main.ts\"]}", @as(i64, 2322), true, false },
+        .{ "{\"compilerOptions\":{\"allowJs\":true,\"checkJs\":false,\"strict\":true,\"noEmit\":true,\"module\":\"node16\",\"moduleResolution\":\"node16\",\"maxNodeModuleJsDepth\":0},\"files\":[\"main.ts\"]}", @as(i64, 7016), false, false },
+        .{ "{\"compilerOptions\":{\"allowJs\":false,\"checkJs\":false,\"strict\":true,\"noEmit\":true,\"module\":\"node16\",\"moduleResolution\":\"node16\",\"maxNodeModuleJsDepth\":1},\"files\":[\"main.ts\"]}", @as(i64, 7016), false, false },
+    }) |revision| {
+        {
+            var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+            defer config.close(io);
+            try config.writeStreamingAll(io, revision[0]);
+        }
+        const response = try project.handle(event);
+        defer a.free(response);
+        try std.testing.expectEqual(@as(usize, 0), response.len);
+        const refreshed = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+        defer a.free(refreshed);
+        try expect_single_code(refreshed, revision[1]);
+        try std.testing.expectEqual(revision[2], project.program.lookupPath(js_path) != null);
+        try std.testing.expectEqual(revision[3], project.service.compile_options.check_js);
+        const importer_id = project.program.lookupPath(ts_path) orelse return error.MissingImporter;
+        try std.testing.expectEqualStrings(unsaved_source, project.program.fileById(importer_id).source);
+        try std.testing.expect(project.takePendingDiagnostic() == null);
+    }
+}
+
 test "LspProject: config reload preserves unsaved editor source and republishes diagnostics" {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
