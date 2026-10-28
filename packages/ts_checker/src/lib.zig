@@ -82,11 +82,16 @@ pub const LibCache = struct {
     /// declaration uses `(a: T, b: T) => number` rather than synthesized
     /// positional names. The checker reads this only for diagnostics.
     sort_comparator_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// `every`'s predicate overload returns `this is S[]` (or readonly
+    /// `S[]`). The signature's runtime return type is boolean, so retain
+    /// the otherwise-erased S binder for the checker's predicate metadata.
+    every_guard_type_params: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
 
     pub fn deinit(self: *LibCache, gpa: std.mem.Allocator) void {
         self.array_proto_by_elem.deinit(gpa);
         self.readonly_array_proto_by_elem.deinit(gpa);
         self.sort_comparator_signatures.deinit(gpa);
+        self.every_guard_type_params.deinit(gpa);
     }
 };
 
@@ -571,6 +576,8 @@ pub fn arrayProto(
     const sig_filter_guard = try ti.internSignature(&[_]TypeId{ cb_t_guard, any_t }, narrowed_arr, false);
     const sig_filter = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, arr_t, false);
     const sig_forEach = try ti.internSignature(&[_]TypeId{ cb_t_void, any_t }, void_t, false);
+    const sig_every_guard = try ti.internSignature(&[_]TypeId{ cb_t_guard, any_t }, boolean_t, false);
+    try cache.every_guard_type_params.put(gpa, sig_every_guard, narrowed_tp);
     const sig_every = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, boolean_t, false);
     const sig_some = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, boolean_t, false);
     // `includes(searchElement: T, fromIndex?: number): boolean`. The
@@ -694,6 +701,7 @@ pub fn arrayProto(
         .{ .name = try sint.intern("filter"), .type = sig_filter_guard, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("filter"), .type = sig_filter, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("forEach"), .type = sig_forEach, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("every"), .type = sig_every_guard, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("every"), .type = sig_every, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("some"), .type = sig_some, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("includes"), .type = sig_includes, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -806,6 +814,9 @@ pub fn readonlyArrayProto(
         // Keep that declared distinction instead of rewriting every callback.
         if (inherited.is_method and !std.mem.eql(u8, sint.get(member.name), "flatMap")) {
             inherited.type = try readonlyArrayCallbackSignature(ti, gpa, inherited.type, elem, readonly_array);
+        }
+        if (cache.every_guard_type_params.get(member.type)) |narrowed| {
+            try cache.every_guard_type_params.put(gpa, inherited.type, narrowed);
         }
         try members.append(gpa, inherited);
     }

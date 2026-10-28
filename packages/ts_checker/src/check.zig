@@ -5283,6 +5283,11 @@ pub const Checker = struct {
     /// the call site sees a signature value rather than a bare
     /// function declaration name, e.g. `obj.isFoo(): this is Foo`.
     signature_predicates: std.AutoHashMapUnmanaged(TypeId, FnPredicate),
+    /// For overloaded receiver methods with a `this is ...` candidate, keep
+    /// the actual selected signature at each call. Looking up the member's
+    /// first signature during flow analysis would narrow even when a later
+    /// non-predicate overload was selected.
+    resolved_method_predicate_signatures: std.AutoHashMapUnmanaged(NodeId, TypeId),
     /// `(receiver TypeId, member name)` ÃÂ¢ÃÂÃÂ type-predicate info. This
     /// preserves method predicates whose lowered signatures are
     /// otherwise identical (`() => boolean`) but narrow to different
@@ -6247,6 +6252,7 @@ pub const Checker = struct {
             .constructor_signature_visibility = .empty,
             .fn_predicates = .empty,
             .signature_predicates = .empty,
+            .resolved_method_predicate_signatures = .empty,
             .member_predicates = .empty,
             .signature_param_predicates = .empty,
             .signature_param_this_types = .empty,
@@ -7106,6 +7112,7 @@ pub const Checker = struct {
         self.constructor_signature_visibility.deinit(self.gpa);
         self.fn_predicates.deinit(self.gpa);
         self.signature_predicates.deinit(self.gpa);
+        self.resolved_method_predicate_signatures.deinit(self.gpa);
         self.member_predicates.deinit(self.gpa);
         self.signature_param_predicates.deinit(self.gpa);
         self.signature_param_this_types.deinit(self.gpa);
@@ -112681,6 +112688,37 @@ pub const Checker = struct {
             try self.signature_min_args.put(self.gpa, signature, 1);
         }
         if (self.generic_signature_params.contains(signature)) return;
+        if (std.mem.eql(u8, method, "every")) {
+            if (self.lib_cache.every_guard_type_params.get(signature)) |narrowed| {
+                const params = self.interner.signatureParams(signature);
+                if (params.len != 2 or !self.interner.isSignature(params[0])) return;
+                const callback_params = self.interner.signatureParams(params[0]);
+                if (callback_params.len != 3) return;
+                const target = if (self.typeIsReadonlyArrayLike(callback_params[2]))
+                    try self.internReadonlyArrayType(narrowed)
+                else
+                    self.interner.internArrayType(self.string_interner, narrowed) catch return error.OutOfMemory;
+                const owned = try self.gpa.alloc(TypeId, 1);
+                owned[0] = narrowed;
+                try self.generic_signature_params.put(self.gpa, signature, owned);
+                const callback_predicate: FnPredicate = .{
+                    .param_index = 0,
+                    .target_type = narrowed,
+                    .is_asserts = false,
+                };
+                try self.signature_predicates.put(self.gpa, params[0], callback_predicate);
+                try self.signature_param_predicates.put(self.gpa, .{
+                    .signature = signature,
+                    .param_index = 0,
+                }, callback_predicate);
+                try self.signature_predicates.put(self.gpa, signature, .{
+                    .param_index = 0xFFFF,
+                    .target_type = target,
+                    .is_asserts = false,
+                });
+                return;
+            }
+        }
         if (std.mem.eql(u8, method, "filter") or is_predicate_search) {
             const params = self.interner.signatureParams(signature);
             if (params.len != 2 or !self.interner.isSignature(params[0]) or
@@ -135850,6 +135888,16 @@ pub const Checker = struct {
             const ret = self.interner.signatureReturn(effective_sig) orelse types.Primitive.any;
             return try self.optionalChainResult(ret, call_is_optional_chain);
         }
+        if (self.hir.kindOf(callee) == .member_access) {
+            for (sigs.items) |candidate| {
+                const predicate = self.signature_predicates.get(candidate) orelse continue;
+                if (predicate.param_index != 0xFFFF) continue;
+                // A missing applicable overload is deliberately recorded as
+                // `none`: it must not inherit the first overload's guard.
+                try self.resolved_method_predicate_signatures.put(self.gpa, call_node, types.Primitive.none);
+                break;
+            }
+        }
         const type_arg_nodes = hir_mod.callTypeArgs(self.hir, call_node);
         if (type_arg_nodes.len > 0) {
             var first_matching_arity: TypeId = types.Primitive.none;
@@ -135860,12 +135908,16 @@ pub const Checker = struct {
                 const effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(call_node, sig, type_arg_nodes, &used_explicit_type_args);
                 if (first_matching_arity == types.Primitive.none) first_matching_arity = effective_sig;
                 if (try self.signatureAccepts(call_node, effective_sig, args, arg_types)) {
+                    if (self.resolved_method_predicate_signatures.contains(call_node))
+                        try self.resolved_method_predicate_signatures.put(self.gpa, call_node, effective_sig);
                     try self.checkArgsAgainstSignature(call_node, args, arg_types, effective_sig);
                     const ret = self.interner.signatureReturn(effective_sig) orelse types.Primitive.any;
                     return try self.optionalChainResult(ret, call_is_optional_chain);
                 }
             }
             if (first_matching_arity != types.Primitive.none) {
+                if (self.resolved_method_predicate_signatures.contains(call_node))
+                    try self.resolved_method_predicate_signatures.put(self.gpa, call_node, first_matching_arity);
                 try self.checkArgsAgainstSignature(call_node, args, arg_types, first_matching_arity);
                 const ret = self.interner.signatureReturn(first_matching_arity) orelse types.Primitive.any;
                 return try self.optionalChainResult(ret, call_is_optional_chain);
@@ -135889,6 +135941,8 @@ pub const Checker = struct {
             }
         }
         if (selected_applicable != types.Primitive.none) {
+            if (self.resolved_method_predicate_signatures.contains(call_node))
+                try self.resolved_method_predicate_signatures.put(self.gpa, call_node, selected_applicable);
             try self.checkArgsAgainstSignature(call_node, args, arg_types, selected_applicable);
             const ret = self.interner.signatureReturn(selected_applicable) orelse types.Primitive.any;
             const param_ts = self.interner.signatureParams(selected_applicable);
@@ -135904,6 +135958,8 @@ pub const Checker = struct {
             sole_arity_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
         }
         if (arity_candidate_count == 1) {
+            if (self.resolved_method_predicate_signatures.contains(call_node))
+                try self.resolved_method_predicate_signatures.put(self.gpa, call_node, sole_arity_sig);
             // Overloads can be present while only one accepts this argument
             // count. Diagnose its parameter directly (TS2345), as for named
             // overloads and union signatures, instead of aggregating TS2769.
@@ -138553,7 +138609,11 @@ pub const Checker = struct {
             const param_t = param_ts[i];
             if (param_t >= self.interner.pool.typeCount()) continue;
             const param_flags = self.interner.pool.flagsOf(param_t);
-            if (param_flags.is_signature and self.containsFreeTypeParameter(param_t)) {
+            const predicate_has_type_param = if (self.signature_predicates.get(param_t)) |predicate|
+                self.containsFreeTypeParameter(predicate.target_type)
+            else
+                false;
+            if (param_flags.is_signature and (self.containsFreeTypeParameter(param_t) or predicate_has_type_param)) {
                 if (try self.inferFromPredicateSignatureArgument(param_t, null, args[i], arg_types[i], subs)) continue;
                 if (self.interner.signatureReturn(param_t)) |param_ret| {
                     if (param_ret != types.Primitive.boolean_t) {
@@ -139659,26 +139719,35 @@ pub const Checker = struct {
             const c = hir_mod.callOf(self.hir, cond);
             if (self.hir.kindOf(c.callee) == .member_access) {
                 const m = hir_mod.memberOf(self.hir, c.callee);
-                var receiver_t = self.hir.typeOf(m.object);
-                if (receiver_t == types.Primitive.none) receiver_t = try self.checkExpression(m.object);
-                if (self.lookupMemberPredicate(receiver_t, m.name)) |pred| {
-                    if (pred.param_index == 0xFFFF) {
-                        const target = try self.resolvePredicateTarget(pred);
-                        if (try self.recordPredicateNarrowForExpression(m.object, target, when_true)) return;
+                if (self.resolved_method_predicate_signatures.get(cond)) |selected_sig| {
+                    if (self.signature_predicates.get(selected_sig)) |pred| {
+                        if (pred.param_index == 0xFFFF) {
+                            const target = try self.instantiatePredicateTarget(cond, pred);
+                            if (try self.recordPredicateNarrowForExpression(m.object, target, when_true)) return;
+                        }
                     }
-                }
-                var callee_t = self.hir.typeOf(c.callee);
-                if (callee_t == types.Primitive.none) callee_t = try self.checkExpression(c.callee);
-                if (self.signature_predicates.get(callee_t)) |pred| {
-                    if (pred.param_index == 0xFFFF) {
-                        const target = try self.resolvePredicateTarget(pred);
-                        if (try self.recordPredicateNarrowForExpression(m.object, target, when_true)) return;
+                } else {
+                    var receiver_t = self.hir.typeOf(m.object);
+                    if (receiver_t == types.Primitive.none) receiver_t = try self.checkExpression(m.object);
+                    if (self.lookupMemberPredicate(receiver_t, m.name)) |pred| {
+                        if (pred.param_index == 0xFFFF) {
+                            const target = try self.instantiatePredicateTarget(cond, pred);
+                            if (try self.recordPredicateNarrowForExpression(m.object, target, when_true)) return;
+                        }
                     }
-                }
-                if (self.fn_predicates.get(m.name)) |pred| {
-                    if (pred.param_index == 0xFFFF) {
-                        const target = try self.resolvePredicateTarget(pred);
-                        if (try self.recordPredicateNarrowForExpression(m.object, target, when_true)) return;
+                    var callee_t = self.hir.typeOf(c.callee);
+                    if (callee_t == types.Primitive.none) callee_t = try self.checkExpression(c.callee);
+                    if (self.signature_predicates.get(callee_t)) |pred| {
+                        if (pred.param_index == 0xFFFF) {
+                            const target = try self.instantiatePredicateTarget(cond, pred);
+                            if (try self.recordPredicateNarrowForExpression(m.object, target, when_true)) return;
+                        }
+                    }
+                    if (self.fn_predicates.get(m.name)) |pred| {
+                        if (pred.param_index == 0xFFFF) {
+                            const target = try self.instantiatePredicateTarget(cond, pred);
+                            if (try self.recordPredicateNarrowForExpression(m.object, target, when_true)) return;
+                        }
                     }
                 }
             }
@@ -285803,6 +285872,31 @@ test "checker: Array every and some callbacks accept truthy non-boolean returns"
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: every narrows only when its selected overload has a type predicate" {
+    const s = try newSetup(
+        \\declare const readonlyValues: readonly (number | string)[];
+        \\declare const mutableValues: (number | string)[];
+        \\const isNumber = (value: number | string): value is number => typeof value === 'number';
+        \\if (readonlyValues.every(isNumber)) {
+        \\  const wrong: string = readonlyValues[0];
+        \\}
+        \\if (mutableValues.every(isNumber)) {
+        \\  const wrong: string = mutableValues[0];
+        \\}
+        \\if (readonlyValues.every((value): value is number => typeof value === 'number')) {
+        \\  const wrong: string = readonlyValues[0];
+        \\}
+        \\if (readonlyValues.every(value => value)) {
+        \\  const wrong: number = readonlyValues[0];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 4), s.checker.diagnostics.items.len);
 }
 
 test "checker: readonly and mutable array callbacks accept optional thisArg" {
