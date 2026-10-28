@@ -64,6 +64,14 @@ valid calls and reports only the deliberately invalid `string[]` assignment
 at `generic-scope.ts(9,7)`; the stream step pins that exact diagnostic in
 both modes. This is the regression for #962.
 
+`tsconfig-predicate.json` and its no-`checkJs` control test the type-predicate
+overload of `filter` on admitted readonly and mutable JavaScript owners whose
+elements are `number | string`. A callback asserting `value is number`
+returns `number[]` on both surfaces. The ordinary truthy-value callback must
+retain the original union type. TypeScript 5.7.3 and Home agree on the three
+deliberate TS2322 diagnostics at `predicate.ts(5,7)`, `(8,7)`, and `(11,7)`,
+with exact stdout, empty stderr, and error exit pinned by the stream suite.
+
 `tsconfig-surface.json` selects the ES2023 library and tests copying
 methods on both imported readonly and mutable arrays. TypeScript 5.7.3
 returns mutable `number[]` from `toReversed`, both `toSpliced` overloads,

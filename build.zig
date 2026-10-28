@@ -2846,6 +2846,11 @@ pub fn build(b: *std.Build) void {
         const readonly_generic_scope_output =
             "generic-scope.ts(9,7): error TS2322: Type 'number[]' is not assignable to type 'string[]'.\n" ++
             "  Type 'number' is not assignable to type 'string'.\n";
+        const readonly_predicate_output =
+            "predicate.ts(5,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "predicate.ts(8,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "predicate.ts(11,7): error TS2322: Type 'string | number' is not assignable to type 'number'.\n" ++
+            "  Type 'string' is not assignable to type 'number'.\n";
         inline for (.{
             .{ "tsconfig.json", readonly_import_output },
             .{ "tsconfig-no-checkjs.json", readonly_import_output },
@@ -2858,6 +2863,8 @@ pub fn build(b: *std.Build) void {
             .{ "tsconfig-flat-map-no-checkjs.json", readonly_flat_map_output },
             .{ "tsconfig-generic-scope.json", readonly_generic_scope_output },
             .{ "tsconfig-generic-scope-no-checkjs.json", readonly_generic_scope_output },
+            .{ "tsconfig-predicate.json", readonly_predicate_output },
+            .{ "tsconfig-predicate-no-checkjs.json", readonly_predicate_output },
         }) |case| {
             const readonly_array = b.addRunArtifact(home_tsc_exe);
             readonly_array.setCwd(readonly_array_dir);
