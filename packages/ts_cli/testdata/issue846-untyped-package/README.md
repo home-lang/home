@@ -32,3 +32,10 @@ TS1471 for `import = require(...)`, or TS1541 and TS1542 (with conversion
 message chains) for the type-only declaration and `typeof import(...)`.
 Both `checkJs` modes preserve these importer diagnostics. The six additional
 exact streams and exits are part of `zig build test-tsc-streams`.
+
+`import-type-indexed.ts` checks the parser's distinct representation of
+`typeof import('untyped-esm')['box']` and a `typeof box` query on a type-only
+named import. TypeScript 5.7.3 emits the same two module-format errors as
+the bare import-type fixture at depth one, and two TS7016 errors at depth
+zero; neither typed read introduces an extra diagnostic. Both `checkJs`
+modes and the depth-zero boundary are asserted as exact CLI streams.
