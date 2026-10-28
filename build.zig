@@ -2640,6 +2640,32 @@ pub fn build(b: *std.Build) void {
                 tsc_streams_step.dependOn(&admitted.step);
             }
         }
+        inline for (.{ .{ false, false }, .{ false, true }, .{ true, false } }) |mode| {
+            const indexed_import_type = b.addRunArtifact(home_tsc_exe);
+            indexed_import_type.setCwd(untyped_package_dir);
+            indexed_import_type.clearEnvironment();
+            indexed_import_type.addArgs(&.{ "-p", "tsconfig-import-type-indexed.json" });
+            if (mode[0]) {
+                indexed_import_type.addArgs(&.{ "--maxNodeModuleJsDepth", "0" });
+            } else if (mode[1]) {
+                indexed_import_type.addArgs(&.{ "--checkJs", "false" });
+            }
+            indexed_import_type.addArgs(&.{ "--pretty", "false" });
+            const expected = if (mode[0]) b.fmt(
+                "import-type-indexed.ts(1,26): error TS7016: Could not find a declaration file for module 'untyped-esm'. '{s}' implicitly has an 'any' type.\n" ++
+                    "  Try `npm i --save-dev @types/untyped-esm` if it exists or add a new declaration (.d.ts) file containing `declare module 'untyped-esm';`\n" ++
+                    "import-type-indexed.ts(3,34): error TS7016: Could not find a declaration file for module 'untyped-esm'. '{s}' implicitly has an 'any' type.\n" ++
+                    "  Try `npm i --save-dev @types/untyped-esm` if it exists or add a new declaration (.d.ts) file containing `declare module 'untyped-esm';`\n",
+                .{ untyped_esm_path, untyped_esm_path },
+            ) else "import-type-indexed.ts(1,26): error TS1541: Type-only import of an ECMAScript module from a CommonJS module must have a 'resolution-mode' attribute.\n" ++
+                "  To convert this file to an ECMAScript module, change its file extension to '.mts' or create a local package.json file with `{ \"type\": \"module\" }`.\n" ++
+                "import-type-indexed.ts(3,34): error TS1542: Type import of an ECMAScript module from a CommonJS module must have a 'resolution-mode' attribute.\n" ++
+                "  To convert this file to an ECMAScript module, change its file extension to '.mts' or create a local package.json file with `{ \"type\": \"module\" }`.\n";
+            indexed_import_type.expectStdOutEqual(expected);
+            indexed_import_type.expectStdErrEqual("");
+            indexed_import_type.expectExitCode(2);
+            tsc_streams_step.dependOn(&indexed_import_type.step);
+        }
 
         // An explicitly listed JavaScript root is admitted even at the
         // default node_modules depth, while its imports are not. checkJs

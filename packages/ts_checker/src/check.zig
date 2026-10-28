@@ -81690,6 +81690,32 @@ pub const Checker = struct {
                 // path identifier expressions go through, so the
                 // result honors module-level scoping + nested scopes.
                 const tt = hir_mod.typeofTypeOf(self.hir, type_node);
+                if (self.hir.kindOf(tt.operand) == .indexed_access_type) {
+                    const indexed = hir_mod.indexedAccessTypeOf(self.hir, tt.operand);
+                    if (self.hir.kindOf(indexed.object) == .type_ref) {
+                        if (self.importTypeModuleSpecifier(indexed.object)) |import_spec| {
+                            // The parser represents `typeof import("mod")["key"]`
+                            // as a typeof node over an indexed-access node.
+                            // Resolve its module in value space before indexing;
+                            // lowering the inner import as a type would lose
+                            // both TS1542 and the exported member type.
+                            try self.checkImportTypeEsmFromCjs(indexed.object);
+                            if (!self.sourceHasVirtualFilenameSections() and self.external_resolver != null) {
+                                if (try self.reportMissingImportTypeModule(indexed.object)) |code| return self.diagnosedAnyRecovery(indexed.object, code);
+                                if (try self.reportExternalFileIsNotAModule(indexed.object, import_spec)) return self.diagnosedAnyRecovery(indexed.object, TsCodes.file_is_not_a_module);
+                            }
+                            const specifier = self.string_interner.intern(import_spec) catch return error.OutOfMemory;
+                            if (try self.moduleNamespaceTypeForSpecifier(specifier, indexed.object)) |namespace| {
+                                if (self.typeIsAnyLike(namespace)) return namespace;
+                                const key = try self.lowererLowerWithTypeParams(indexed.index);
+                                if (try self.resolveObjectIndexedAccessType(namespace, key)) |member| return member;
+                                try self.checkInvalidIndexedAccessType(type_node, indexed.index, indexed.object, namespace, key, true);
+                                return self.interner.internIndexedAccess(namespace, key) catch return error.OutOfMemory;
+                            }
+                            return self.recordUnmodeledAny(indexed.object);
+                        }
+                    }
+                }
                 if (self.hir.kindOf(tt.operand) == .type_ref) {
                     // TS1542 — `typeof import("./esm.mts")` of an ESM file
                     // from a CommonJS file under node16/18 needs a
@@ -81731,6 +81757,12 @@ pub const Checker = struct {
                 if (self.hir.kindOf(tt.operand) == .identifier) {
                     const name = hir_mod.identifierOf(self.hir, tt.operand).name;
                     const raw = self.string_interner.get(name);
+                    // A type-only import cannot be read as a runtime value,
+                    // but its value-side type remains available to a `typeof`
+                    // query in a type position (e.g. `typeof box`).
+                    if (self.typeOnlyImportLocal(name, tt.operand)) {
+                        if (try self.virtualImportTypeForLocal(name, tt.operand)) |import_t| return import_t;
+                    }
                     if (std.mem.startsWith(u8, raw, "Symbol.")) {
                         return types.Primitive.symbol_t;
                     }
@@ -234791,10 +234823,11 @@ test "checker: TS1542 typeof-import of ESM from CJS needs resolution-mode" {
     const s = try newSetup(
         \\// @module: node16
         \\// @filename: /module.mts
-        \\export {};
+        \\export const box = { count: 42 };
         \\// @filename: /common.cts
         \\type _1 = typeof import("./module.mts");
         \\type _2 = typeof import("./module.mts", { with: { "resolution-mode": "import" } });
+        \\type _3 = typeof import("./module.mts")["box"];
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -234807,7 +234840,7 @@ test "checker: TS1542 typeof-import of ESM from CJS needs resolution-mode" {
             d.message,
         );
     }
-    try T.expectEqual(@as(usize, 1), count);
+    try T.expectEqual(@as(usize, 2), count);
 }
 
 test "checker: TS1149 relative import differing only in casing" {
