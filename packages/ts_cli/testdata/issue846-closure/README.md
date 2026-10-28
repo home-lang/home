@@ -69,3 +69,14 @@ The `tsconfig-checkjs-no-allowjs*.json` controls explicitly set
 `checkJs: true` and `allowJs: false` in both key orders. TypeScript emits
 TS5052 at both option keys, in source order; the stream suite asserts
 both diagnostics and exit 2.
+
+## Cross-fixture oracle audit
+
+From the repository root, build a fresh `home-tsc` under the 3,840 MB guard,
+then run `node scripts/tests/compare-issue846-oracles.mjs` under the same guard.
+The script requires TypeScript 5.7.3 and compares the exact stdout, stderr,
+and exit status for every `issue846-*` `tsconfig*.json` (78 configs as of
+2026-10-28). It passes `--noEmit` to both CLIs so the audit cannot modify
+fixture outputs. The fresh 2026-10-28 CLI matched all 78 configs. This
+enumerated fixture result does not establish arbitrary JavaScript inference
+or LSP revision parity; those need their own focused and editor tests.
