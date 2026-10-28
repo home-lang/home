@@ -23,4 +23,6 @@ main-cjs.ts(5,1): error TS2322: Type 'string' is not assignable to type 'number'
 Both commands exit 2 with empty stderr. The LSP revision test changes the
 package metadata in place from ESM to CommonJS and back without changing the
 JavaScript source. The importer must lose and regain TS1479 while preserving
-its typed read and write errors.
+its typed read and write errors. The test also deletes and recreates
+`package.json`: a TypeScript 5.7.3 compiler-host overlay with this path
+absent returns exactly the two TS2322 diagnostics shown for CommonJS above.

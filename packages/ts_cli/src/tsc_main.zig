@@ -8773,6 +8773,32 @@ test "LspProject: package metadata revisions refresh an admitted JavaScript impo
         try std.testing.expect(project.program.lookupPath(metadata_path) == null);
         try std.testing.expect(project.takePendingDiagnostic() == null);
     }
+
+    // A removed package.json is a CommonJS-format revision too. Its failed
+    // lookup must remain watched so recreating it restores TS1479 without a
+    // source edit or a new JavaScript FileId.
+    inline for (.{ .{ @as(i64, 3), false }, .{ @as(i64, 1), true } }) |revision| {
+        if (revision[0] == 3) {
+            try tmp.dir.deleteFile(io, "node_modules/pkg/package.json");
+        } else {
+            var metadata = try tmp.dir.createFile(io, "node_modules/pkg/package.json", .{ .truncate = true });
+            defer metadata.close(io);
+            try metadata.writeStreamingAll(io, "{\"name\":\"pkg\",\"type\":\"module\",\"main\":\"index.js\"}");
+        }
+        const metadata_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = metadata_uri, .type = revision[0] }} } }, .{});
+        defer a.free(metadata_event);
+        const response = try project.handle(metadata_event);
+        defer a.free(response);
+        try std.testing.expectEqual(@as(usize, 0), response.len);
+        const refreshed = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+        defer a.free(refreshed);
+        try std.testing.expect(std.mem.indexOf(u8, refreshed, ts_uri) != null);
+        try std.testing.expectEqual(revision[1], std.mem.indexOf(u8, refreshed, "\"code\":1479") != null);
+        try std.testing.expect(std.mem.indexOf(u8, refreshed, "\"code\":2322") != null);
+        try std.testing.expectEqual(owner_id, project.program.lookupPath(js_path).?);
+        try std.testing.expect(project.program.lookupPath(metadata_path) == null);
+        try std.testing.expect(project.takePendingDiagnostic() == null);
+    }
 }
 
 test "LspProject: watched creation admits a previously missing JavaScript import" {
