@@ -2590,6 +2590,26 @@ pub fn build(b: *std.Build) void {
             }
         }
 
+        // Identical admitted JS sources have different Node16 import formats
+        // solely because of their package metadata. These are the exact
+        // TypeScript 5.7.3 streams for both package.json type variants.
+        const metadata_dir = b.path("packages/ts_cli/testdata/issue846-package-metadata");
+        inline for (.{
+            .{ "tsconfig-esm.json", "main-esm.ts", "main-esm.ts(1,21): error TS1479: The current file is a CommonJS module whose imports will produce 'require' calls; however, the referenced file is an ECMAScript module and cannot be imported with 'require'. Consider writing a dynamic 'import(\"pkg-esm\")' call instead.\n" ++
+                "  To convert this file to an ECMAScript module, change its file extension to '.mts' or create a local package.json file with `{ \"type\": \"module\" }`.\n" },
+            .{ "tsconfig-cjs.json", "main-cjs.ts", "" },
+        }) |case| {
+            const metadata_format = b.addRunArtifact(home_tsc_exe);
+            metadata_format.setCwd(metadata_dir);
+            metadata_format.clearEnvironment();
+            metadata_format.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            metadata_format.expectStdOutEqual(case[2] ++ case[1] ++ "(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+                case[1] ++ "(5,1): error TS2322: Type 'string' is not assignable to type 'number'.\n");
+            metadata_format.expectStdErrEqual("");
+            metadata_format.expectExitCode(2);
+            tsc_streams_step.dependOn(&metadata_format.step);
+        }
+
         // The same admitted ESM owner reaches `import = require`, type-only
         // import declarations, and `typeof import(...)` through distinct
         // checker paths. Depth zero remains TS7016, with no phantom module

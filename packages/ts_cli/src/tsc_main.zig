@@ -126,11 +126,61 @@ pub const WatchInterest = struct {
         return true;
     }
 
+    fn stageMetadata(
+        self: *WatchInterest,
+        program: *const ts_program.Program,
+        next: *std.StringHashMapUnmanaged(void),
+        next_metadata: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(MetadataImporter)),
+    ) !void {
+        const package_paths = try program.resolver.watchPackageJsonPaths(self.gpa);
+        defer self.gpa.free(package_paths);
+        for (package_paths) |path| {
+            const importers = program.resolver.watchPackageJsonImporters(path).?;
+            var it = importers.iterator();
+            while (it.next()) |entry| {
+                const id = program.lookupPath(entry.key_ptr.*) orelse continue;
+                try self.stageMetadataImporter(next, next_metadata, path, program.fileById(id));
+            }
+        }
+        // Resolver invalidation drops its metadata map. Preserve dependencies
+        // of files that were not recompiled in this revision; changed files
+        // must provide their current package probes above.
+        var previous = self.metadata_importers.iterator();
+        while (previous.next()) |entry| {
+            for (entry.value_ptr.items) |importer| {
+                const id = program.lookupPath(importer.path) orelse continue;
+                const file = program.fileById(id);
+                if (file.watch_revision != importer.watch_revision) continue;
+                try self.stageMetadataImporter(next, next_metadata, entry.key_ptr.*, file);
+            }
+        }
+    }
+
+    /// LSP clients supply file events themselves. Keep only the metadata
+    /// dependency snapshot, without installing a polling Watcher.
+    pub fn refreshMetadataOnly(self: *WatchInterest, program: *const ts_program.Program) !void {
+        var next: std.StringHashMapUnmanaged(void) = .empty;
+        errdefer {
+            var it = next.iterator();
+            while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
+            next.deinit(self.gpa);
+        }
+        var next_metadata: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(MetadataImporter)) = .empty;
+        errdefer {
+            var it = next_metadata.iterator();
+            while (it.next()) |entry| entry.value_ptr.deinit(self.gpa);
+            next_metadata.deinit(self.gpa);
+        }
+        try self.stageMetadata(program, &next, &next_metadata);
+        self.clearMetadataImporters();
+        self.clearWatchedPaths();
+        self.watched_paths = next;
+        self.metadata_importers = next_metadata;
+    }
+
     pub fn refresh(self: *WatchInterest, watcher: *ts_watch.Watcher, program: *const ts_program.Program) !void {
         const failed_paths = try program.resolver.watchFailedLookupPaths(self.gpa);
         defer self.gpa.free(failed_paths);
-        const package_paths = try program.resolver.watchPackageJsonPaths(self.gpa);
-        defer self.gpa.free(package_paths);
 
         var next: std.StringHashMapUnmanaged(void) = .empty;
         errdefer {
@@ -151,26 +201,7 @@ pub const WatchInterest = struct {
         // A physically removed import may have a stable FileId tombstone,
         // but its new failed lookup still needs a watch for recreation.
         for (failed_paths) |path| try self.stagePath(&next, path);
-        for (package_paths) |path| {
-            const importers = program.resolver.watchPackageJsonImporters(path).?;
-            var it = importers.iterator();
-            while (it.next()) |entry| {
-                const id = program.lookupPath(entry.key_ptr.*) orelse continue;
-                try self.stageMetadataImporter(&next, &next_metadata, path, program.fileById(id));
-            }
-        }
-        // Resolver cache invalidation drops its entire metadata map. Retain
-        // dependencies of files whose compilation revision did not change;
-        // changed files must supply their current probes above instead.
-        var previous = self.metadata_importers.iterator();
-        while (previous.next()) |entry| {
-            for (entry.value_ptr.items) |importer| {
-                const id = program.lookupPath(importer.path) orelse continue;
-                const file = program.fileById(id);
-                if (file.watch_revision != importer.watch_revision) continue;
-                try self.stageMetadataImporter(&next, &next_metadata, entry.key_ptr.*, file);
-            }
-        }
+        try self.stageMetadata(program, &next, &next_metadata);
 
         const paths = try self.gpa.alloc([]const u8, next.count());
         defer self.gpa.free(paths);
@@ -2427,6 +2458,8 @@ pub const LspProject = struct {
     program: ts_program.Program,
     adapter: CheckerResolverAdapter,
     service: ts_lsp.Service,
+    /// Package metadata probes from the last successful editor revision.
+    watch_interest: WatchInterest,
     /// Last diagnostic revision published for each editor-open document.
     open_documents: std.StringHashMapUnmanaged(u64) = .empty,
     /// Additional, separately framed notifications for affected importers.
@@ -2443,6 +2476,7 @@ pub const LspProject = struct {
         self.pending_diagnostics = .empty;
         self.config_root_diagnostics = .{};
         self.last_config_root_hash = null;
+        self.watch_interest = WatchInterest.init(gpa);
         self.config_arena = std.heap.ArenaAllocator.init(gpa);
         self.config_source = &.{};
         self.config_source_owned = false;
@@ -2467,6 +2501,7 @@ pub const LspProject = struct {
         else
             .{};
         self.resolver = ts_resolver.Resolver.init(gpa, self.fs.fs(), resolver_config);
+        self.resolver.watch_failed_lookup_capture = true;
         self.program = ts_program.Program.init(gpa, &self.resolver);
         self.adapter = CheckerResolverAdapter.init(gpa, &self.resolver);
         self.service = ts_lsp.Service.init(gpa, &self.program);
@@ -2610,6 +2645,7 @@ pub const LspProject = struct {
 
         self.service.deinit();
         self.adapter.deinit();
+        self.watch_interest.deinit();
         self.program.deinit();
         self.resolver.deinit();
         self.config_root_diagnostics.deinit(self.gpa);
@@ -2627,7 +2663,9 @@ pub const LspProject = struct {
         else
             .{};
         self.resolver = ts_resolver.Resolver.init(self.gpa, self.fs.fs(), resolver_config);
+        self.resolver.watch_failed_lookup_capture = true;
         self.program = ts_program.Program.init(self.gpa, &self.resolver);
+        self.watch_interest = WatchInterest.init(self.gpa);
         self.adapter = CheckerResolverAdapter.init(self.gpa, &self.resolver);
         self.service = ts_lsp.Service.init(self.gpa, &self.program);
         var compile_options: ts_driver.CompileOptions = if (self.config) |*config| ts_driver.optionsFromConfig(config) else .{};
@@ -2662,6 +2700,7 @@ pub const LspProject = struct {
         self.config_root_diagnostics.deinit(gpa);
         self.service.deinit();
         self.adapter.deinit();
+        self.watch_interest.deinit();
         self.program.deinit();
         self.resolver.deinit();
         self.fs.deinit();
@@ -2707,6 +2746,8 @@ pub const LspProject = struct {
                     continue;
                 }
             }
+            const metadata_changed = try self.watch_interest.appendMetadataImporters(&self.program, path, &changed_paths);
+            if (metadata_changed and self.program.lookupPath(path) == null) continue;
             if (self.open_documents.contains(uri)) continue;
             if (kind_value.integer == 3) {
                 _ = try self.program.removeSource(path);
@@ -2756,6 +2797,7 @@ pub const LspProject = struct {
         const response = try ts_lsp_server.dispatchRequest(&self.service, self.gpa, message);
         errdefer if (response.len != 0) self.gpa.free(response);
         if (watched) try self.refreshWatchedFiles(message);
+        if (opening or changing or watched) try self.watch_interest.refreshMetadataOnly(&self.program);
 
         if (opening or changing or watched) {
             // Source revisions invalidate affected importers. The dispatcher
@@ -8663,6 +8705,74 @@ test "LspProject: watched unopened JavaScript changes refresh open importer" {
     const importer_after_watch = try project.service.diagnostics(a, ts_path);
     defer a.free(importer_after_watch);
     try std.testing.expect(std.mem.indexOf(u8, importer_after_watch, "TS2322") == null);
+}
+
+test "LspProject: package metadata revisions refresh an admitted JavaScript importer" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, "node_modules/pkg");
+    const source = "import { box } from 'pkg';\nconst good: number = box.count;\nconst bad: string = box.count;\nbox.count = 'wrong';\nvoid [good, bad];\n";
+    {
+        var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config.close(io);
+        try config.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"checkJs\":true,\"strict\":true,\"noEmit\":true,\"module\":\"node16\",\"moduleResolution\":\"node16\",\"maxNodeModuleJsDepth\":1},\"files\":[\"main.ts\"]}");
+        var importer = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer importer.close(io);
+        try importer.writeStreamingAll(io, source);
+        var owner = try tmp.dir.createFile(io, "node_modules/pkg/index.js", .{ .truncate = true });
+        defer owner.close(io);
+        try owner.writeStreamingAll(io, "export const box = { count: 42 };\n");
+        var metadata = try tmp.dir.createFile(io, "node_modules/pkg/package.json", .{ .truncate = true });
+        defer metadata.close(io);
+        try metadata.writeStreamingAll(io, "{\"name\":\"pkg\",\"type\":\"module\",\"main\":\"index.js\"}");
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+    defer a.free(config_path);
+    const ts_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+    defer a.free(ts_path);
+    const js_path = try tmp.dir.realPathFileAlloc(io, "node_modules/pkg/index.js", a);
+    defer a.free(js_path);
+    const metadata_path = try tmp.dir.realPathFileAlloc(io, "node_modules/pkg/package.json", a);
+    defer a.free(metadata_path);
+    const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
+    defer a.free(ts_uri);
+    const metadata_uri = try std.fmt.allocPrint(a, "file://{s}", .{metadata_path});
+    defer a.free(metadata_uri);
+
+    const project = try LspProject.create(a, config_path);
+    defer project.destroy();
+    const opening = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = ts_uri, .languageId = "typescript", .version = 1, .text = source } } }, .{});
+    defer a.free(opening);
+    const initial = try project.handle(opening);
+    defer a.free(initial);
+    try std.testing.expect(std.mem.indexOf(u8, initial, "\"code\":1479") != null);
+    try std.testing.expect(std.mem.indexOf(u8, initial, "\"code\":2322") != null);
+    const owner_id = project.program.lookupPath(js_path) orelse return error.MissingAdmittedJavaScript;
+    try std.testing.expect(project.program.fileById(owner_id).present);
+    try std.testing.expect(project.program.lookupPath(metadata_path) == null);
+
+    const event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = metadata_uri, .type = 2 }} } }, .{});
+    defer a.free(event);
+    inline for (.{ .{ "commonjs", false }, .{ "module", true } }) |revision| {
+        {
+            var metadata = try tmp.dir.createFile(io, "node_modules/pkg/package.json", .{ .truncate = true });
+            defer metadata.close(io);
+            try metadata.writeStreamingAll(io, "{\"name\":\"pkg\",\"type\":\"" ++ revision[0] ++ "\",\"main\":\"index.js\"}");
+        }
+        const response = try project.handle(event);
+        defer a.free(response);
+        try std.testing.expectEqual(@as(usize, 0), response.len);
+        const refreshed = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+        defer a.free(refreshed);
+        try std.testing.expect(std.mem.indexOf(u8, refreshed, ts_uri) != null);
+        try std.testing.expectEqual(revision[1], std.mem.indexOf(u8, refreshed, "\"code\":1479") != null);
+        try std.testing.expect(std.mem.indexOf(u8, refreshed, "\"code\":2322") != null);
+        try std.testing.expectEqual(owner_id, project.program.lookupPath(js_path).?);
+        try std.testing.expect(project.program.lookupPath(metadata_path) == null);
+        try std.testing.expect(project.takePendingDiagnostic() == null);
+    }
 }
 
 test "LspProject: watched creation admits a previously missing JavaScript import" {
