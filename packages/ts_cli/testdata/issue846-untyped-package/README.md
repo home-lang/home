@@ -24,3 +24,11 @@ TS2322 property diagnostics. The ESM format follows the package owner for
 `.js`, not the importing file's format. All cases were compared against
 TypeScript 5.7.3; `zig build test-tsc-streams` asserts the exact Home CLI
 streams and exit codes.
+
+`import-equals.ts` and `import-type.ts` pin three more Node16 import forms
+against the same ESM package. With depth zero, both use TS7016 and downstream
+untyped accesses recover as `any`; admitting the package instead yields
+TS1471 for `import = require(...)`, or TS1541 and TS1542 (with conversion
+message chains) for the type-only declaration and `typeof import(...)`.
+Both `checkJs` modes preserve these importer diagnostics. The six additional
+exact streams and exits are part of `zig build test-tsc-streams`.

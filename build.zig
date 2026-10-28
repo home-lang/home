@@ -2590,6 +2590,57 @@ pub fn build(b: *std.Build) void {
             }
         }
 
+        // The same admitted ESM owner reaches `import = require`, type-only
+        // import declarations, and `typeof import(...)` through distinct
+        // checker paths. Depth zero remains TS7016, with no phantom module
+        // namespace members after recovery; admitted JS reports TS1471 or
+        // TS1541/TS1542 and their exact TypeScript message chains.
+        const untyped_esm_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-untyped-package/node_modules/untyped-esm/index.mjs") catch @panic("OOM");
+        if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, untyped_esm_path, '\\', '/');
+        inline for (.{
+            .{ "tsconfig-import-equals.json", "import-equals.ts", "(1,22)", "" },
+            .{ "tsconfig-import-type.json", "import-type.ts", "(1,26)", "(3,37)" },
+        }) |case| {
+            const excluded = b.addRunArtifact(home_tsc_exe);
+            excluded.setCwd(untyped_package_dir);
+            excluded.clearEnvironment();
+            excluded.addArgs(&.{ "-p", case[0], "--maxNodeModuleJsDepth", "0", "--pretty", "false" });
+            const first_untyped = b.fmt(
+                "{s}{s}: error TS7016: Could not find a declaration file for module 'untyped-esm'. '{s}' implicitly has an 'any' type.\n" ++
+                    "  Try `npm i --save-dev @types/untyped-esm` if it exists or add a new declaration (.d.ts) file containing `declare module 'untyped-esm';`\n",
+                .{ case[1], case[2], untyped_esm_path },
+            );
+            const second_untyped = if (case[3].len > 0) b.fmt(
+                "{s}{s}: error TS7016: Could not find a declaration file for module 'untyped-esm'. '{s}' implicitly has an 'any' type.\n" ++
+                    "  Try `npm i --save-dev @types/untyped-esm` if it exists or add a new declaration (.d.ts) file containing `declare module 'untyped-esm';`\n",
+                .{ case[1], case[3], untyped_esm_path },
+            ) else "";
+            excluded.expectStdOutEqual(b.fmt("{s}{s}", .{ first_untyped, second_untyped }));
+            excluded.expectStdErrEqual("");
+            excluded.expectExitCode(2);
+            tsc_streams_step.dependOn(&excluded.step);
+
+            inline for (.{ false, true }) |disable_check_js| {
+                const admitted = b.addRunArtifact(home_tsc_exe);
+                admitted.setCwd(untyped_package_dir);
+                admitted.clearEnvironment();
+                admitted.addArgs(&.{ "-p", case[0] });
+                if (disable_check_js) admitted.addArgs(&.{ "--checkJs", "false" });
+                admitted.addArgs(&.{ "--pretty", "false" });
+                const expected = if (case[3].len == 0)
+                    "import-equals.ts(1,22): error TS1471: Module 'untyped-esm' cannot be imported using this construct. The specifier only resolves to an ES module, which cannot be imported with 'require'. Use an ECMAScript import instead.\n"
+                else
+                    "import-type.ts(1,26): error TS1541: Type-only import of an ECMAScript module from a CommonJS module must have a 'resolution-mode' attribute.\n" ++
+                        "  To convert this file to an ECMAScript module, change its file extension to '.mts' or create a local package.json file with `{ \"type\": \"module\" }`.\n" ++
+                        "import-type.ts(3,37): error TS1542: Type import of an ECMAScript module from a CommonJS module must have a 'resolution-mode' attribute.\n" ++
+                        "  To convert this file to an ECMAScript module, change its file extension to '.mts' or create a local package.json file with `{ \"type\": \"module\" }`.\n";
+                admitted.expectStdOutEqual(expected);
+                admitted.expectStdErrEqual("");
+                admitted.expectExitCode(2);
+                tsc_streams_step.dependOn(&admitted.step);
+            }
+        }
+
         // An explicitly listed JavaScript root is admitted even at the
         // default node_modules depth, while its imports are not. checkJs
         // alone implies allowJs, so it diagnoses both excluded requires.

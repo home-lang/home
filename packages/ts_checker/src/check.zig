@@ -31053,6 +31053,7 @@ pub const Checker = struct {
         const spec = self.string_interner.get(imp.module);
         if (imp.namespace_binding != decl and
             !(imp.default_binding == decl and self.importDeclIsRequireAssignment(parent))) return null;
+        if (self.importBindingTargetsUnadmittedJs(spec)) return types.Primitive.any;
         // For `import x = require("./m")` where `./m` uses `export =`,
         // type `x` as the export-assignment target (the expression value
         // such as `() => void`, else the named decl's static type) rather
@@ -31104,6 +31105,7 @@ pub const Checker = struct {
             if (binding == hir_mod.none_node_id or self.hir.kindOf(binding) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, binding);
             if (id.name != name) continue;
+            if (self.importBindingTargetsUnadmittedJs(self.string_interner.get(imp.module))) return types.Primitive.any;
             if (self.importDeclIsRequireAssignment(stmt)) {
                 if (try self.virtualExportAssignmentExpressionType(stmt, imp.module)) |expr_t| return expr_t;
                 if (try self.virtualExportAssignmentTargetStaticType(stmt, imp.module)) |static_t| return static_t;
@@ -31123,6 +31125,16 @@ pub const Checker = struct {
             return try self.moduleNamespaceTypeForSpecifier(imp.module, stmt);
         }
         return null;
+    }
+
+    /// The resolver can locate a JavaScript implementation without admitting
+    /// it into the typed Program graph. Its import binding then has `any`
+    /// type after TS7016, not a synthesized namespace from the raw file.
+    fn importBindingTargetsUnadmittedJs(self: *Checker, spec: []const u8) bool {
+        if (self.sourceHasVirtualFilenameSections()) return false;
+        const resolver = self.external_resolver orelse return false;
+        const resolution = resolver.resolve(spec, self.importer_path) orelse return false;
+        return isResolverImplementationExtension(resolution.path) and !resolution.is_declaration;
     }
 
     /// For a top-level CommonJS `exports.X = value`, `exports["X"] = value`,
@@ -58300,6 +58312,16 @@ pub const Checker = struct {
         return related;
     }
 
+    /// TS1541/TS1542 put the conversion suggestion in the diagnostic
+    /// message chain (without a source location), whereas TS1479 attaches
+    /// the same suggestion as related information with an importer location.
+    fn esmConversionHintChain(self: *Checker, node: NodeId) CheckError![]const DiagnosticChainEntry {
+        const related = try self.esmConversionRelatedInfo(node);
+        const chain = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+        chain[0] = .{ .code = related[0].code, .message = related[0].message };
+        return chain;
+    }
+
     fn pathIsPackageJson(path: []const u8) bool {
         return std.mem.eql(u8, path, "package.json") or
             std.mem.endsWith(u8, path, "/package.json");
@@ -58509,12 +58531,13 @@ pub const Checker = struct {
             if (pos) |p| {
                 if (self.hasDiagnosticAtPosition(TsCodes.type_only_esm_from_cjs_needs_resolution_mode, p)) return;
             }
-            try self.reportAt(
-                node,
-                pos,
-                TsCodes.type_only_esm_from_cjs_needs_resolution_mode,
-                "Type-only import of an ECMAScript module from a CommonJS module must have a 'resolution-mode' attribute.",
-            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = pos,
+                .code = TsCodes.type_only_esm_from_cjs_needs_resolution_mode,
+                .message = "Type-only import of an ECMAScript module from a CommonJS module must have a 'resolution-mode' attribute.",
+                .chain = try self.esmConversionHintChain(node),
+            });
             return;
         }
         if (pos) |p| {
@@ -58540,9 +58563,7 @@ pub const Checker = struct {
     /// format (unlike TS1479). Anchored at the module specifier.
     fn checkImportEqualsRequiringEsm(self: *Checker, node: NodeId, spec: []const u8) CheckError!void {
         if (!self.sourceModuleIsNode16Or18()) return;
-        if (!std.mem.startsWith(u8, spec, ".")) return;
-        const target = (try self.resolvedImportSectionFilename(node, spec)) orelse return;
-        if (!sectionFilenameIsEsmFormat(target)) return;
+        if (!try self.resolvedImportIsEsmFormat(node, spec)) return;
         const pos = self.moduleSpecifierQuotePos(node, spec);
         if (pos) |p| {
             if (self.hasDiagnosticAtPosition(TsCodes.module_only_resolves_to_esm, p)) return;
@@ -58569,9 +58590,7 @@ pub const Checker = struct {
         if (!self.sourceModuleIsNode16Or18()) return;
         if (!self.sectionFileIsCommonJsFormatForNodeMode(node)) return;
         const spec = self.importTypeModuleSpecifier(node) orelse return;
-        if (!std.mem.startsWith(u8, spec, ".")) return;
-        const target = (try self.resolvedImportSectionFilename(node, spec)) orelse return;
-        if (!sectionFilenameIsEsmFormat(target)) return;
+        if (!try self.resolvedImportIsEsmFormat(node, spec)) return;
         // A `resolution-mode` attribute in the import-type options object
         // satisfies the requirement.
         const sp = self.hir.spanOf(node);
@@ -58583,12 +58602,13 @@ pub const Checker = struct {
         if (pos) |p| {
             if (self.hasDiagnosticAtPosition(TsCodes.type_import_esm_from_cjs_needs_resolution_mode, p)) return;
         }
-        try self.reportAt(
-            node,
-            pos,
-            TsCodes.type_import_esm_from_cjs_needs_resolution_mode,
-            "Type import of an ECMAScript module from a CommonJS module must have a 'resolution-mode' attribute.",
-        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = pos,
+            .code = TsCodes.type_import_esm_from_cjs_needs_resolution_mode,
+            .message = "Type import of an ECMAScript module from a CommonJS module must have a 'resolution-mode' attribute.",
+            .chain = try self.esmConversionHintChain(node),
+        });
     }
 
     /// TS1293/TS1286 ÃÂ¢ÃÂÃÂ ESM `import` syntax (default, namespace, or named
@@ -67036,6 +67056,10 @@ pub const Checker = struct {
     }
 
     fn memberAccessOnVirtualJsDefaultImport(self: *Checker, object_node: NodeId, member_name: hir_mod.StringId) CheckError!bool {
+        // Physical Program imports use the admitted-source type graph. An
+        // excluded JS implementation produces TS7016 and an `any` binding;
+        // this virtual-fixture fallback must not add a phantom TS2339.
+        if (!self.sourceHasVirtualFilenameSections()) return false;
         if (!self.sourceHasAllowJsDirective()) return false;
         if (self.source != null and !self.source_may_have_import_declaration) return false;
         if (self.hir.kindOf(object_node) != .identifier) return false;
@@ -68028,6 +68052,27 @@ pub const Checker = struct {
 
     fn reportMissingImportTypeModule(self: *Checker, node: NodeId) CheckError!?u32 {
         const spec = self.importTypeModuleSpecifier(node) orelse return null;
+        // An implementation that resolved on disk but was not admitted to
+        // this Program is still untyped. Import-type expressions follow the
+        // same TS7016 boundary as import declarations, rather than treating
+        // every successful filesystem lookup as a typed module.
+        if (!self.sourceHasVirtualFilenameSections()) {
+            if (try self.resolveBareModuleViaExternal(node, spec)) |external| {
+                if (external.kind == .implementation and
+                    !(external.source_is_admitted and self.sourceHasAllowJsDirective()) and
+                    self.strict_flags.no_implicit_any)
+                {
+                    try self.appendUntypedModuleDiagnosticAlt(
+                        node,
+                        spec,
+                        external.diagnostic_path orelse external.resolved_path,
+                        external.alternate_result,
+                        external.package_id != null,
+                    );
+                    return TsCodes.untyped_module;
+                }
+            }
+        }
         if (try self.importTypeModuleExists(node, spec)) return null;
         // tsc anchors TS2307 on the opening quote of the module
         // specifier inside `import("ÃÂ¢ÃÂÃÂ¦")`, not on the `import`
@@ -114749,6 +114794,10 @@ pub const Checker = struct {
         const resolver = self.external_resolver orelse return null;
         if (resolver.vtable.moduleExportNames == null or resolver.vtable.moduleExport == null) return null;
         const resolved = resolver.resolve(spec, self.importer_path) orelse return null;
+        // A JS implementation outside the Program's admitted source graph
+        // has no checked namespace shape. The import site reports TS7016;
+        // downstream accesses recover as `any`, as they do in TypeScript.
+        if (isResolverImplementationExtension(resolved.path) and !resolved.is_declaration) return types.Primitive.any;
         return self.programModuleNamespaceTypeForPath(resolved.path, anchor);
     }
 
