@@ -58312,9 +58312,8 @@ pub const Checker = struct {
         return related;
     }
 
-    /// TS1541/TS1542 put the conversion suggestion in the diagnostic
-    /// message chain (without a source location), whereas TS1479 attaches
-    /// the same suggestion as related information with an importer location.
+    /// TS1479/TS1541/TS1542 put the conversion suggestion in the diagnostic
+    /// message chain without a second source location.
     fn esmConversionHintChain(self: *Checker, node: NodeId) CheckError![]const DiagnosticChainEntry {
         const related = try self.esmConversionRelatedInfo(node);
         const chain = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
@@ -58553,7 +58552,7 @@ pub const Checker = struct {
             .pos = pos,
             .code = TsCodes.commonjs_importing_esm_require,
             .message = msg,
-            .related = try self.esmConversionRelatedInfo(node),
+            .chain = try self.esmConversionHintChain(node),
         });
     }
 
@@ -234638,11 +234637,12 @@ test "checker: TS1479 cts importing mjs under node16 reports require-of-esm" {
             "The current file is a CommonJS module whose imports will produce 'require' calls; however, the referenced file is an ECMAScript module and cannot be imported with 'require'. Consider writing a dynamic 'import(\"./module.mjs\")' call instead.",
             d.message,
         );
-        try T.expectEqual(@as(usize, 1), d.related.len);
-        try T.expectEqual(@as(u32, TsCodes.convert_to_esm_create_package), d.related[0].code);
+        try T.expectEqual(@as(usize, 0), d.related.len);
+        try T.expectEqual(@as(usize, 1), d.chain.len);
+        try T.expectEqual(@as(u32, TsCodes.convert_to_esm_create_package), d.chain[0].code);
         try T.expectEqualStrings(
             "To convert this file to an ECMAScript module, create a local package.json file with `{ \"type\": \"module\" }`.",
-            d.related[0].message,
+            d.chain[0].message,
         );
     }
     try T.expectEqual(@as(usize, 1), count);
@@ -234662,11 +234662,12 @@ test "checker: TS1479 adds TS1480 conversion hint for ambiguous ts without packa
     for (s.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.commonjs_importing_esm_require) continue;
         found = true;
-        try T.expectEqual(@as(usize, 1), d.related.len);
-        try T.expectEqual(@as(u32, TsCodes.convert_to_esm_change_extension_or_create_package), d.related[0].code);
+        try T.expectEqual(@as(usize, 0), d.related.len);
+        try T.expectEqual(@as(usize, 1), d.chain.len);
+        try T.expectEqual(@as(u32, TsCodes.convert_to_esm_change_extension_or_create_package), d.chain[0].code);
         try T.expectEqualStrings(
             "To convert this file to an ECMAScript module, change its file extension to '.mts' or create a local package.json file with `{ \"type\": \"module\" }`.",
-            d.related[0].message,
+            d.chain[0].message,
         );
     }
     try T.expect(found);
@@ -234688,11 +234689,12 @@ test "checker: TS1479 adds TS1481 conversion hint when package lacks type" {
     for (s.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.commonjs_importing_esm_require) continue;
         found = true;
-        try T.expectEqual(@as(usize, 1), d.related.len);
-        try T.expectEqual(@as(u32, TsCodes.convert_to_esm_change_extension_or_add_package_type), d.related[0].code);
+        try T.expectEqual(@as(usize, 0), d.related.len);
+        try T.expectEqual(@as(usize, 1), d.chain.len);
+        try T.expectEqual(@as(u32, TsCodes.convert_to_esm_change_extension_or_add_package_type), d.chain[0].code);
         try T.expectEqualStrings(
             "To convert this file to an ECMAScript module, change its file extension to '.mts', or add the field `\"type\": \"module\"` to '/package.json'.",
-            d.related[0].message,
+            d.chain[0].message,
         );
     }
     try T.expect(found);
@@ -234714,11 +234716,12 @@ test "checker: TS1479 adds TS1482 conversion hint for cts inside package without
     for (s.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.commonjs_importing_esm_require) continue;
         found = true;
-        try T.expectEqual(@as(usize, 1), d.related.len);
-        try T.expectEqual(@as(u32, TsCodes.convert_to_esm_add_package_type), d.related[0].code);
+        try T.expectEqual(@as(usize, 0), d.related.len);
+        try T.expectEqual(@as(usize, 1), d.chain.len);
+        try T.expectEqual(@as(u32, TsCodes.convert_to_esm_add_package_type), d.chain[0].code);
         try T.expectEqualStrings(
             "To convert this file to an ECMAScript module, add the field `\"type\": \"module\"` to '/package.json'.",
-            d.related[0].message,
+            d.chain[0].message,
         );
     }
     try T.expect(found);

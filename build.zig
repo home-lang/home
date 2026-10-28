@@ -2576,8 +2576,8 @@ pub fn build(b: *std.Build) void {
                 admitted.addArgs(&.{ "--pretty", "false" });
                 const format_error = if (case[6]) b.fmt(
                     "{s}(1,21): error TS1479: The current file is a CommonJS module whose imports will produce 'require' calls; however, the referenced file is an ECMAScript module and cannot be imported with 'require'. Consider writing a dynamic 'import(\"{s}\")' call instead.\n" ++
-                        "  {s}(1,1): To convert this file to an ECMAScript module, change its file extension to '.mts' or create a local package.json file with `{{ \"type\": \"module\" }}`.\n",
-                    .{ source_name, package_name, source_name },
+                        "  To convert this file to an ECMAScript module, change its file extension to '.mts' or create a local package.json file with `{{ \"type\": \"module\" }}`.\n",
+                    .{ source_name, package_name },
                 ) else "";
                 admitted.expectStdOutEqual(b.fmt(
                     "{s}{s}(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
