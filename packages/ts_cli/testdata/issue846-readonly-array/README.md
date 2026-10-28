@@ -80,6 +80,14 @@ passes a `thisArg` through `find`, `findLast`, and `filter`; both modes pin seve
 deliberate TS2322 diagnostics, including the possibility that `find` returns
 `undefined`, and no callback or arity errors.
 
+`tsconfig-every-predicate.json` and its no-`checkJs` control cover the
+predicate overload of `every`. A named guard narrows both imported readonly
+and mutable arrays; an inline guard also narrows. A plain truthy callback
+selects the ordinary overload and must leave the element union intact.
+TypeScript 5.7.3 and Home report exactly four deliberate TS2322 diagnostics
+at `every-predicate.ts(7,9)`, `(13,9)`, `(18,9)`, and `(23,9)` in both modes.
+The stream suite pins stdout, empty stderr, and exit 2.
+
 `tsconfig-surface.json` selects the ES2023 library and tests copying
 methods on both imported readonly and mutable arrays. TypeScript 5.7.3
 returns mutable `number[]` from `toReversed`, both `toSpliced` overloads,
