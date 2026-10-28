@@ -112670,7 +112670,14 @@ pub const Checker = struct {
             return;
         }
         const is_predicate_search = std.mem.eql(u8, method, "find") or std.mem.eql(u8, method, "findLast");
-        if (std.mem.eql(u8, method, "filter") or is_predicate_search) {
+        if (std.mem.eql(u8, method, "filter") or is_predicate_search or
+            std.mem.eql(u8, method, "map") or
+            std.mem.eql(u8, method, "forEach") or
+            std.mem.eql(u8, method, "every") or
+            std.mem.eql(u8, method, "some") or
+            std.mem.eql(u8, method, "findIndex") or
+            std.mem.eql(u8, method, "findLastIndex"))
+        {
             try self.signature_min_args.put(self.gpa, signature, 1);
         }
         if (self.generic_signature_params.contains(signature)) return;
@@ -285796,6 +285803,34 @@ test "checker: Array every and some callbacks accept truthy non-boolean returns"
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: readonly and mutable array callbacks accept optional thisArg" {
+    const s = try newSetup(
+        \\const readonlyValues: readonly number[] = [1, 2];
+        \\const mutableValues: number[] = [1, 2];
+        \\const context = { tag: 1 };
+        \\readonlyValues.map(value => value + 1, context);
+        \\readonlyValues.forEach(value => void value, context);
+        \\readonlyValues.every(value => value > 0, context);
+        \\readonlyValues.some(value => value > 0, context);
+        \\readonlyValues.findIndex(value => value > 0, context);
+        \\readonlyValues.findLastIndex(value => value > 0, context);
+        \\mutableValues.map(value => value + 1, context);
+        \\mutableValues.forEach(value => void value, context);
+        \\mutableValues.every(value => value > 0, context);
+        \\mutableValues.some(value => value > 0, context);
+        \\mutableValues.findIndex(value => value > 0, context);
+        \\mutableValues.findLastIndex(value => value > 0, context);
+        \\const wrong: string = readonlyValues.map(value => value + 1, context)[0];
+        \\readonlyValues.some(value => value > 0, context, context);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
 }
 
 test "checker: Array.prototype.reduce<U> infers result type from the initial value" {

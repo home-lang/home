@@ -560,7 +560,7 @@ pub fn arrayProto(
     try rest_set.put(gpa, sig_push, {});
     const sig_pop = try ti.internSignature(&[_]TypeId{}, t_or_undef, false);
     // `map<U>(cb: (value: T) => U): U[]`.
-    const sig_map = try ti.internSignature(&[_]TypeId{cb_t_u}, u_arr, false);
+    const sig_map = try ti.internSignature(&[_]TypeId{ cb_t_u, any_t }, u_arr, false);
     // `flatMap<U>(cb: (value: T) => U | U[]): U[]` — the callback
     // may return either a single value or an array; flatMap flattens
     // one level so the result is always `U[]`. Without the union the
@@ -570,9 +570,9 @@ pub fn arrayProto(
     // thisArg. Their one required argument is recorded by the checker.
     const sig_filter_guard = try ti.internSignature(&[_]TypeId{ cb_t_guard, any_t }, narrowed_arr, false);
     const sig_filter = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, arr_t, false);
-    const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
-    const sig_every = try ti.internSignature(&[_]TypeId{cb_t_unknown}, boolean_t, false);
-    const sig_some = try ti.internSignature(&[_]TypeId{cb_t_unknown}, boolean_t, false);
+    const sig_forEach = try ti.internSignature(&[_]TypeId{ cb_t_void, any_t }, void_t, false);
+    const sig_every = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, boolean_t, false);
+    const sig_some = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, boolean_t, false);
     // `includes(searchElement: T, fromIndex?: number): boolean`. The
     // optional fromIndex was missing; upstream lib.d.ts declares it.
     const sig_includes = try ti.internSignature(&[_]TypeId{ elem, optional_number_t }, boolean_t, false);
@@ -633,7 +633,7 @@ pub fn arrayProto(
     const sig_reduce = try ti.internSignature(&[_]TypeId{ cb_reduce, u_tp }, u_tp, false);
     const sig_reduce_no_init = try ti.internSignature(&[_]TypeId{cb_reduce_no_init}, elem, false);
     // `findIndex(pred): number` / `findLastIndex(pred): number`.
-    const sig_find_index = try ti.internSignature(&[_]TypeId{cb_t_unknown}, number_t, false);
+    const sig_find_index = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, number_t, false);
     // `findLast(pred): T | undefined` (es2023).
     const sig_find_last_guard = try ti.internSignature(&[_]TypeId{ cb_t_guard, any_t }, narrowed_or_undef, false);
     const sig_find_last = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, t_or_undef, false);
@@ -1518,9 +1518,20 @@ test "lib: arrayProto map/flatMap/reduce signatures are generic over U" {
     try T.expect(ti.pool.flagsOf(map_ret_elem).is_type_parameter);
     // The callback parameter's return type is the same free `U`.
     const map_params = ti.signatureParams(map_sig);
-    try T.expectEqual(@as(usize, 1), map_params.len);
+    try T.expectEqual(@as(usize, 2), map_params.len);
+    try T.expectEqual(types.Primitive.any, map_params[1]);
     const map_cb_ret = ti.signatureReturn(map_params[0]).?;
     try T.expectEqual(map_ret_elem, map_cb_ret);
+
+    // The optional thisArg is a second parameter on each method whose
+    // TypeScript 5.7.3 declaration uses `thisArg?: any`. Arity is tracked
+    // separately by the checker so the callback remains required.
+    inline for (.{ "forEach", "every", "some", "findIndex", "findLastIndex" }) |name| {
+        const signature = ti.objectMember(proto, try sint.intern(name)).?;
+        const params = ti.signatureParams(signature);
+        try T.expectEqual(@as(usize, 2), params.len);
+        try T.expectEqual(types.Primitive.any, params[1]);
+    }
 
     // `flatMap<U>` mirrors `map<U>`.
     const fm_sig = ti.objectMember(proto, try sint.intern("flatMap")).?;
