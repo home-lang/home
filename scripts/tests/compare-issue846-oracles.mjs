@@ -51,6 +51,7 @@ if (files.error || files.status !== 0) {
 const configs = files.stdout.trim().split('\n').filter(path =>
   path.includes('/issue846-') || path.includes('/issue965-') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
+  path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
 if (configs.length === 0) {
   console.error('No admitted-JavaScript fixture configs found')
@@ -65,6 +66,7 @@ const uncheckedCommonJsConfigs = [
   'typed',
 ].map(name => `packages/ts_cli/testdata/issue965-commonjs-expando/tsconfig-${name}.json`)
 uncheckedCommonJsConfigs.push('packages/ts_cli/testdata/issue967-repeated-commonjs/tsconfig-clean.json')
+uncheckedCommonJsConfigs.push('packages/ts_cli/testdata/issue967-repeated-commonjs/tsconfig-overlap.json')
 uncheckedCommonJsConfigs.push('packages/ts_cli/testdata/issue967-repeated-commonjs/tsconfig.json')
 for (const config of uncheckedCommonJsConfigs) {
   if (!configs.includes(config)) {

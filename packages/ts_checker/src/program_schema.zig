@@ -147,6 +147,9 @@ pub const Expression = union(enum) {
     array: *const Expression,
     readonly_array: *const Expression,
     object: []const Member,
+    /// A source class's constructor value. Its inferred name belongs to the
+    /// value, including when that value is nested inside a union.
+    class_value: struct { name: []const u8, members: []const Member },
     indexed_object: IndexedObject,
     record: Record,
     utility: Utility,
@@ -332,6 +335,10 @@ pub const Schema = struct {
                 .builtin_reference => |reference| try pending.appendSlice(gpa, reference.arguments),
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
+                    try pending.append(gpa, member.type);
+                    if (member.write_type) |write_type| try pending.append(gpa, write_type);
+                },
+                .class_value => |value| for (value.members) |member| {
                     try pending.append(gpa, member.type);
                     if (member.write_type) |write_type| try pending.append(gpa, write_type);
                 },

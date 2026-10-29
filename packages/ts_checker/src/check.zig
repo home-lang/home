@@ -114279,6 +114279,15 @@ pub const Checker = struct {
                     return member_t;
                 }
             },
+            .class_value => |value| {
+                for (value.members) |member| {
+                    if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
+                    var member_t = self.programDeferredLowerExpression(member.type, context, active, depth + 1) catch return null;
+                    if (member.optional and !self.typeIncludesUndefined(member_t))
+                        member_t = try self.interner.internUnion(&.{ member_t, types.Primitive.undefined_t });
+                    return member_t;
+                }
+            },
             .indexed_object => |object| {
                 for (object.members) |member| {
                     if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
@@ -114460,6 +114469,31 @@ pub const Checker = struct {
                 }
                 break :blk try self.interner.internObjectType(values);
             },
+            .class_value => |value| blk: {
+                const values = try self.gpa.alloc(types.ObjectMember, value.members.len);
+                defer self.gpa.free(values);
+                for (value.members, values) |member, *out| {
+                    var member_t = try self.programDeferredLowerExpression(member.type, context, active, depth + 1);
+                    if (member.optional and !self.typeIncludesUndefined(member_t))
+                        member_t = try self.interner.internUnion(&.{ member_t, types.Primitive.undefined_t });
+                    out.* = .{
+                        .name = self.string_interner.intern(member.name) catch return error.OutOfMemory,
+                        .type = member_t,
+                        .write_type = if (member.write_type) |write_type|
+                            try self.programDeferredLowerExpression(write_type, context, active, depth + 1)
+                        else
+                            null,
+                        .is_optional = member.optional,
+                        .is_readonly = member.readonly,
+                        .is_method = member.method,
+                        .visibility = member.visibility,
+                    };
+                }
+                const fresh = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+                self.interner.completeFreshObjectType(fresh, values) catch return error.OutOfMemory;
+                try self.class_name_by_static.put(self.gpa, fresh, self.string_interner.intern(value.name) catch return error.OutOfMemory);
+                break :blk fresh;
+            },
             .record => |record| blk: {
                 const key_t = try self.programDeferredLowerExpression(record.key, context, active, depth + 1);
                 const value_t = try self.programDeferredLowerExpression(record.value, context, active, depth + 1);
@@ -114521,6 +114555,13 @@ pub const Checker = struct {
         switch (expression.*) {
             .object => |members| {
                 for (members) |member| {
+                    if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
+                    const owner = if (contextual) try self.contextualProgramDeclaration(declaration) else declaration;
+                    return self.lowerProgramExpression(member.type, owner, args) catch null;
+                }
+            },
+            .class_value => |value| {
+                for (value.members) |member| {
                     if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
                     const owner = if (contextual) try self.contextualProgramDeclaration(declaration) else declaration;
                     return self.lowerProgramExpression(member.type, owner, args) catch null;
@@ -114597,6 +114638,9 @@ pub const Checker = struct {
         switch (expression.*) {
             .object => |members| {
                 for (members) |member| if (std.mem.eql(u8, member.name, member_name)) return true;
+            },
+            .class_value => |value| {
+                for (value.members) |member| if (std.mem.eql(u8, member.name, member_name)) return true;
             },
             .indexed_object => |object| {
                 for (object.members) |member| if (std.mem.eql(u8, member.name, member_name)) return true;
@@ -115949,6 +115993,13 @@ pub const Checker = struct {
                 }
                 break :blk false;
             },
+            .class_value => |value| blk: {
+                for (value.members) |member| {
+                    if (programExpressionHasDeclarationLeaf(member.type)) break :blk true;
+                    if (member.write_type) |write_type| if (programExpressionHasDeclarationLeaf(write_type)) break :blk true;
+                }
+                break :blk false;
+            },
             .indexed_object => |object| blk: {
                 for (object.members) |member| {
                     if (programExpressionHasDeclarationLeaf(member.type)) break :blk true;
@@ -116164,6 +116215,7 @@ pub const Checker = struct {
                 break :blk try self.programContextualProjectionForTarget(target.body.?, target_t, &nested, active);
             },
             .object => |members| try self.programContextualProjectionObject(members, target_t, bindings, active),
+            .class_value => |value| try self.programContextualProjectionObject(value.members, target_t, bindings, active),
             .indexed_object => |object| try self.programContextualProjectionObject(object.members, target_t, bindings, active),
             .union_type => |members| blk: {
                 var projected: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -116429,6 +116481,18 @@ pub const Checker = struct {
                 const result = try self.programExpressionMembers(members, declaration, args);
                 defer self.gpa.free(result);
                 return self.interner.internObjectType(result);
+            },
+            .class_value => |value| {
+                const members = try self.programExpressionMembers(value.members, declaration, args);
+                defer self.gpa.free(members);
+                const fresh = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+                self.interner.completeFreshObjectType(fresh, members) catch return error.OutOfMemory;
+                try self.class_name_by_static.put(
+                    self.gpa,
+                    fresh,
+                    self.string_interner.intern(value.name) catch return error.OutOfMemory,
+                );
+                return fresh;
             },
             .indexed_object => |object| {
                 const members = try self.programExpressionMembers(object.members, declaration, args);
@@ -134905,6 +134969,14 @@ pub const Checker = struct {
         args: []const NodeId,
         arg_types: []const TypeId,
     ) CheckError!?TypeId {
+        if (callee_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(callee_t).is_union) {
+            // Collecting one constructor from a union does not make the
+            // whole expression constructable. Every constituent must
+            // provide a construct signature at this call site.
+            for (self.interner.unionMembers(callee_t)) |member| {
+                if (!self.typeHasConstructSignature(member)) return null;
+            }
+        }
         const construct_diagnostic_start = self.diagnostics.items.len;
         var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
         defer construct_sigs.deinit(self.gpa);
@@ -163154,15 +163226,47 @@ pub const Checker = struct {
                 "Property '{s}' does not exist on type '{s}'.",
                 .{ name_str, target_text },
             );
+            const chain = try self.propertyMissingUnionChain(target_t, name);
             try self.diagnostics.append(self.gpa, .{
                 .node = node,
                 .pos = self.memberAccessNamePos(node),
                 .code = TsCodes.property_does_not_exist,
                 .message = msg,
+                .chain = chain,
             });
             return;
         }
         try self.reportPropertyDoesNotExist(node, name);
+    }
+
+    fn propertyMissingUnionChain(self: *Checker, target_t: TypeId, name: hir_mod.StringId) CheckError![]const DiagnosticChainEntry {
+        if (target_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(target_t).is_union) return &.{};
+        const branches = try self.gpa.dupe(TypeId, self.interner.unionMembers(target_t));
+        defer self.gpa.free(branches);
+        var has_member = false;
+        var first_missing: ?TypeId = null;
+        for (branches) |branch| {
+            const member = (try self.primitivePrototypeMember(branch, name)) orelse
+                (try self.lookupObjectMember(branch, name)) orelse
+                (try self.signaturePrototypeMember(branch, name));
+            if (member != null) {
+                has_member = true;
+            } else if (first_missing == null) {
+                first_missing = branch;
+            }
+        }
+        if (!has_member) return &.{};
+        const missing = first_missing orelse return &.{};
+        const type_name = (try self.allocPropertyMissingTargetTypeName(missing)) orelse return &.{};
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' does not exist on type '{s}'.",
+            .{ self.string_interner.get(name), type_name },
+        );
+        return try self.diag_arena.allocator().dupe(DiagnosticChainEntry, &.{.{
+            .code = TsCodes.property_does_not_exist,
+            .message = message,
+        }});
     }
 
     fn memberAccessReceiverIsJsDocEnumObject(self: *Checker, node: NodeId) bool {
@@ -163450,7 +163554,8 @@ pub const Checker = struct {
         }
         if (target_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target_t).is_union and
-            !self.alias_display_names.contains(target_t))
+            !self.alias_display_names.contains(target_t) and
+            self.source_ordered_union_members.contains(target_t))
         {
             try self.registerDiagnosticUnionDisplayName(target_t, self.interner.unionMembers(target_t));
         }
@@ -213156,6 +213261,26 @@ test "checker: primitive prototype members require every union branch to provide
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.property_does_not_exist) continue;
+        try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
+        try T.expectEqualStrings("Property 'toFixed' does not exist on type 'typeof Baz'.", diagnostic.chain[0].message);
+    }
+}
+
+test "checker: a constructor in one union branch does not make the whole union constructable" {
+    const s = try newSetup(
+        \\class Baz {}
+        \\declare const mixed: 1 | typeof Baz;
+        \\new mixed();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 2351));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != 2351) continue;
+        try T.expectEqualStrings("Not all constituents of type '1 | typeof Baz' are constructable.", diagnostic.chain[0].message);
+    }
 }
 
 test "checker: no TS1380 when the import alias references a normal (value) import" {

@@ -380,6 +380,11 @@ const Builder = struct {
     fn lowerUncached(self: *Builder, typ: TypeId) error{OutOfMemory}!*const schema.Expression {
         const interner = &self.compilation.type_interner;
         const flags = interner.pool.flagsOf(typ);
+        if (self.classValueName(typ)) |name| {
+            const body = try self.objectBody(typ, null);
+            if (body.* != .object) return body;
+            return self.expression(.{ .class_value = .{ .name = name, .members = body.object } });
+        }
         if (self.compilation.checked_types.builtin_generic_kinds.get(typ)) |kind| {
             const source = self.compilation.checked_types.alias_type_args.get(typ) orelse return self.unsupported();
             const arguments = try self.arena.alloc(*const schema.Expression, source.len);
@@ -460,6 +465,44 @@ const Builder = struct {
         return self.expression(.{ .object = members });
     }
 
+    fn classValueName(self: *Builder, typ: TypeId) ?[]const u8 {
+        const key = self.compilation.checked_types.class_name_by_static.get(typ) orelse return null;
+        const raw = self.compilation.interner.get(key);
+        if (!std.mem.startsWith(u8, raw, "(anonymous:") or !std.mem.endsWith(u8, raw, ")")) return raw;
+        const class_node = std.fmt.parseInt(hir.NodeId, raw["(anonymous:".len .. raw.len - 1], 10) catch return null;
+        if (class_node >= self.compilation.hir.nodeCount()) return null;
+        var child = class_node;
+        var parent = self.compilation.hir.parentOf(child);
+        while (parent != hir.none_node_id) : ({
+            child = parent;
+            parent = self.compilation.hir.parentOf(parent);
+        }) {
+            switch (self.compilation.hir.kindOf(parent)) {
+                .var_decl, .let_decl, .const_decl => {
+                    const variable = hir.varDeclOf(&self.compilation.hir, parent);
+                    if (variable.init != child or variable.name == hir.none_node_id or
+                        self.compilation.hir.kindOf(variable.name) != .identifier) return null;
+                    return self.compilation.interner.get(hir.identifierOf(&self.compilation.hir, variable.name).name);
+                },
+                .assignment => {
+                    const assignment = hir.assignmentOf(&self.compilation.hir, parent);
+                    if (assignment.value != child or assignment.target == hir.none_node_id or
+                        self.compilation.hir.kindOf(assignment.target) != .identifier) return null;
+                    return self.compilation.interner.get(hir.identifierOf(&self.compilation.hir, assignment.target).name);
+                },
+                .object_property => {
+                    const property = hir.objectPropertyOf(&self.compilation.hir, parent);
+                    if (property.value != child or property.key == hir.none_node_id or
+                        self.compilation.hir.kindOf(property.key) != .identifier) return null;
+                    return self.compilation.interner.get(hir.identifierOf(&self.compilation.hir, property.key).name);
+                },
+                .class_decl, .class_expr, .fn_decl, .fn_expr, .arrow_fn => return null,
+                else => {},
+            }
+        }
+        return null;
+    }
+
     fn signature(self: *Builder, typ: TypeId) error{OutOfMemory}!*const schema.Expression {
         if (self.compilation.checked_types.generic_signature_params.contains(typ) and
             (self.generic_signature == null or self.generic_signature.? != typ)) return self.unsupported();
@@ -515,9 +558,10 @@ test "checked schema: CommonJS object preserves an inline class constructor" {
     const body = result.declaration.body orelse return error.TestUnexpectedResult;
     try T.expect(body.* == .object);
     try T.expectEqualStrings("Baz", body.object[0].name);
-    try T.expect(body.object[0].type.* == .object);
+    try T.expect(body.object[0].type.* == .class_value);
+    try T.expectEqualStrings("Baz", body.object[0].type.class_value.name);
     var saw_constructor = false;
-    for (body.object[0].type.object) |member| {
+    for (body.object[0].type.class_value.members) |member| {
         if (!std.mem.eql(u8, member.name, "__construct")) continue;
         try T.expect(member.type.* == .function);
         try T.expect(member.type.function.is_construct);

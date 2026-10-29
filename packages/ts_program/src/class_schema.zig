@@ -586,7 +586,7 @@ pub const Builder = struct {
             const entry = try visited.getOrPut(self.gpa, expr);
             if (entry.found_existing) continue;
             switch (expr.*) {
-                .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean, .object, .indexed_object => {},
+                .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean, .object, .class_value, .indexed_object => {},
                 .builtin_reference => |builtin| try pending.appendSlice(self.gpa, builtin.arguments),
                 .array, .readonly_array => |element| try pending.append(self.gpa, element),
                 .tuple => |elements| for (elements) |element| try pending.append(self.gpa, element.type),
@@ -624,6 +624,10 @@ pub const Builder = struct {
                 .primitive, .builtin_object, .parameter, .string, .number, .boolean, .polymorphic_this => {},
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(self.gpa, element),
                 .object => |members| for (members) |member| {
+                    try pending.append(self.gpa, member.type);
+                    if (member.write_type) |write_type| try pending.append(self.gpa, write_type);
+                },
+                .class_value => |value| for (value.members) |member| {
                     try pending.append(self.gpa, member.type);
                     if (member.write_type) |write_type| try pending.append(self.gpa, write_type);
                 },
