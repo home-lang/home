@@ -65691,15 +65691,20 @@ pub const Checker = struct {
                             try keys.append(self.gpa, member.name);
                     }
                 }
-                // An explicit named write to a key already in a whole-export
-                // branch needs its own assignment-order merge semantics.
-                if (plain_objects) for (additions.items) |addition| {
-                    if (std.mem.indexOfScalar(hir_mod.StringId, keys.items, addition.name) != null) {
-                        plain_objects = false;
-                        break;
-                    }
-                };
                 if (plain_objects) {
+                    var named_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                    defer named_members.deinit(self.gpa);
+                    for (self.programCommonJsExportsForPath(resolved_path)) |named| {
+                        if (!std.mem.eql(u8, named.module_path, exported.module_path) or named.name.len == 0) continue;
+                        const member_t = (try self.programCommonJsNamedExportSchemaType(named, false)) orelse continue;
+                        try self.appendOrReplaceObjectMember(&named_members, .{
+                            .name = self.string_interner.intern(named.name) catch return error.OutOfMemory,
+                            .type = member_t,
+                            .is_optional = false,
+                            .is_readonly = false,
+                            .is_method = false,
+                        });
+                    }
                     const normalized = try self.gpa.alloc(TypeId, branches.len);
                     defer self.gpa.free(normalized);
                     for (branches, normalized) |branch, *out| {
@@ -65707,16 +65712,33 @@ pub const Checker = struct {
                         defer members.deinit(self.gpa);
                         try members.appendSlice(self.gpa, self.interner.objectMembers(branch));
                         for (keys.items) |key| {
-                            if (self.interner.objectMemberInfo(branch, key) != null) continue;
+                            var named_value: ?TypeId = null;
+                            for (named_members.items) |named| {
+                                if (named.name == key) named_value = named.type;
+                            }
+                            var found = false;
+                            for (members.items) |*member| {
+                                if (member.name != key) continue;
+                                found = true;
+                                if (named_value) |value| {
+                                    member.type = self.interner.internUnion(&.{ value, member.type }) catch return error.OutOfMemory;
+                                    member.is_optional = false;
+                                }
+                                break;
+                            }
+                            if (found) continue;
                             try members.append(self.gpa, .{
                                 .name = key,
-                                .type = types.Primitive.undefined_t,
-                                .is_optional = true,
+                                .type = named_value orelse types.Primitive.undefined_t,
+                                .is_optional = named_value == null,
                                 .is_readonly = false,
                                 .is_method = false,
                             });
                         }
-                        try members.appendSlice(self.gpa, additions.items);
+                        for (named_members.items) |named| {
+                            if (std.mem.indexOfScalar(hir_mod.StringId, keys.items, named.name) == null)
+                                try members.append(self.gpa, named);
+                        }
                         out.* = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
                     }
                     return self.interner.internUnion(normalized) catch return error.OutOfMemory;
@@ -108697,6 +108719,21 @@ pub const Checker = struct {
     }
 
     fn primitivePrototypeMember(self: *Checker, receiver_t: TypeId, member_name: hir_mod.StringId) CheckError!?TypeId {
+        if (receiver_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(receiver_t).is_union) {
+            const branches = try self.gpa.dupe(TypeId, self.interner.unionMembers(receiver_t));
+            defer self.gpa.free(branches);
+            var resolved: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer resolved.deinit(self.gpa);
+            for (branches) |branch| {
+                const member = (try self.primitivePrototypeMember(branch, member_name)) orelse
+                    (try self.lookupObjectMember(branch, member_name)) orelse
+                    (try self.signaturePrototypeMember(branch, member_name)) orelse
+                    return null;
+                try resolved.append(self.gpa, member);
+            }
+            if (resolved.items.len == 0) return null;
+            return self.interner.internUnion(resolved.items) catch return error.OutOfMemory;
+        }
         if (self.typeHasStringPrimitivePart(receiver_t)) {
             if (try self.declaredInterfaceMember("String", member_name)) |t| return t;
             if (lib.stringProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, &self.rest_signatures)) |proto| {
@@ -213106,6 +213143,19 @@ test "checker: type alias and class duplicates have no TS6203 related info" {
         try T.expectEqual(@as(usize, 0), diagnostic.related.len);
     }
     try T.expectEqual(@as(usize, 2), duplicates);
+}
+
+test "checker: primitive prototype members require every union branch to provide them" {
+    const s = try newSetup(
+        \\class Baz {}
+        \\declare const mixed: 1 | typeof Baz;
+        \\mixed.toFixed();
+        \\declare const numeric: 1 | 2;
+        \\numeric.toFixed();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: no TS1380 when the import alias references a normal (value) import" {
