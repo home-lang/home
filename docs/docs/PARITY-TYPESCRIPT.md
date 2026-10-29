@@ -113,10 +113,21 @@ now checks inferred function, object, and class whole exports, an `exports`
 alias write, a re-exported callable, and a declared JSDoc object that must
 stay closed. Imported function call signatures and typed property reads/writes
 match TypeScript 5.7.3 in both `checkJs` modes; the typed-object negative
-control keeps its TS2339. This is not general CommonJS constructor or
-repeated-whole-export parity: those gaps remain in
-[#966](https://github.com/home-lang/home/issues/966) and
-[#967](https://github.com/home-lang/home/issues/967).
+control keeps its TS2339. Constructor and repeated whole-export forms have
+separate fixtures and issue histories below.
+
+The [CommonJS constructor fixtures](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue966-commonjs-constructor)
+cover inline whole and named function exports, JSDoc-tagged constructors,
+and two exported constructors sharing a chained prototype assignment. Their
+five configs match TypeScript 5.7.3 with `checkJs` on and off: ten exact
+stdout, stderr, and exit streams. The chained fixture retains the method's
+numeric parameter on both imported instance types and reports two TS2345
+errors for string arguments. This is a verified subset; broader constructor
+and source-revision behavior remains tracked in
+[#966](https://github.com/home-lang/home/issues/966). The
+[repeated whole-export fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue967-repeated-commonjs)
+checks unioned optional members and source revisions; its focused gap was
+closed in [#967](https://github.com/home-lang/home/issues/967).
 
 An [imported JSDoc function fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-generic-functions)
 also checks an unconstrained identity function, a constrained template, and
