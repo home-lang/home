@@ -468,9 +468,11 @@ distinction.
 For an enumerated CLI check, the
 [#846 oracle auditor](https://github.com/home-lang/home/blob/main/scripts/tests/compare-issue846-oracles.mjs)
 compares exact stdout, stderr, and exit status against TypeScript 5.7.3 for
-every `issue846-*` config, with `--noEmit` on both sides. A fresh Home CLI
-matched all 113 configs on 2026-10-29. This verifies those inputs, not every
-JavaScript inference form or LSP behavior.
+every `issue846-*` and `issue965-*` config, with `--noEmit` on both sides.
+It also checks five explicit `--checkJs false` CommonJS controls. A fresh
+Home CLI matched all 118 streams (113 configs plus those five overrides) on
+2026-10-29. This verifies those inputs, not every JavaScript inference form
+or LSP behavior.
 
 ## Watch mode
 

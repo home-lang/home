@@ -55,8 +55,26 @@ if (configs.length === 0) {
   process.exit(2)
 }
 
-function run(command, config) {
-  return spawnSync(command, ['-p', config.split('/').at(-1), '--pretty', 'false', '--noEmit'], {
+const uncheckedCommonJsConfigs = [
+  'function',
+  'alias',
+  'object',
+  'class',
+  'typed',
+].map(name => `packages/ts_cli/testdata/issue965-commonjs-expando/tsconfig-${name}.json`)
+for (const config of uncheckedCommonJsConfigs) {
+  if (!configs.includes(config)) {
+    console.error(`Missing unchecked CommonJS oracle config: ${config}`)
+    process.exit(2)
+  }
+}
+const checks = [
+  ...configs.map(config => ({ config, flags: [] })),
+  ...uncheckedCommonJsConfigs.map(config => ({ config, flags: ['--checkJs', 'false'] })),
+]
+
+function run(command, config, flags) {
+  return spawnSync(command, ['-p', config.split('/').at(-1), '--pretty', 'false', '--noEmit', ...flags], {
     cwd: resolve(repo, dirname(config)),
     encoding: 'utf8',
     timeout: 30_000,
@@ -70,19 +88,20 @@ function excerpt(value, index) {
 }
 
 let mismatches = 0
-for (const config of configs) {
-  const oracle = run('tsc', config)
-  const actual = run(home, config)
+for (const { config, flags } of checks) {
+  const label = `${config}${flags.length ? ` ${flags.join(' ')}` : ''}`
+  const oracle = run('tsc', config, flags)
+  const actual = run(home, config, flags)
   if (oracle.error || actual.error || oracle.signal || actual.signal) {
     mismatches++
-    console.log(`ERROR ${config}: oracle=${oracle.error?.message ?? oracle.signal ?? 'ok'} home=${actual.error?.message ?? actual.signal ?? 'ok'}`)
+    console.log(`ERROR ${label}: oracle=${oracle.error?.message ?? oracle.signal ?? 'ok'} home=${actual.error?.message ?? actual.signal ?? 'ok'}`)
     continue
   }
   const streams = ['stdout', 'stderr']
   const different = streams.filter(stream => oracle[stream] !== actual[stream])
   if (oracle.status !== actual.status || different.length) {
     mismatches++
-    console.log(`DIFF ${config}: exit ${oracle.status}/${actual.status}; ${different.join(', ') || 'streams equal'}`)
+    console.log(`DIFF ${label}: exit ${oracle.status}/${actual.status}; ${different.join(', ') || 'streams equal'}`)
     for (const stream of different) {
       const left = oracle[stream]
       const right = actual[stream]
@@ -92,5 +111,5 @@ for (const config of configs) {
     }
   }
 }
-console.log(`Compared ${configs.length} admitted-JavaScript config streams: ${configs.length - mismatches} exact matches, ${mismatches} mismatches.`)
+console.log(`Compared ${checks.length} admitted-JavaScript oracle streams: ${checks.length - mismatches} exact matches, ${mismatches} mismatches.`)
 process.exit(mismatches === 0 ? 0 : 1)
