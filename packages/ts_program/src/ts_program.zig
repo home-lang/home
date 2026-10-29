@@ -21650,6 +21650,52 @@ test "Program: CommonJS expando revisions refresh requiring consumers" {
     }
 }
 
+test "Program: repeated CommonJS whole-export revisions refresh optional importer members" {
+    const repeated = "module.exports = { Baz: class {} }; module.exports = { Quack: 2 };";
+    const only_baz = "module.exports = { Baz: class {} };";
+    const only_quack = "module.exports = { Quack: 2 };";
+    const consumer_source = "const mod = require('./owner.js'); new mod.Baz();";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", repeated);
+    try vfs.addFile("/consumer.js", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/owner.js", repeated);
+    const consumer = try p.add("/consumer.js", consumer_source);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try p.compileAll(options);
+    try expectCompilationHasDiagnosticCode(p.fileById(consumer).compilation.?, 18048);
+    try expectCompilationLacksDiagnosticCode(p.fileById(consumer).compilation.?, 2339);
+
+    for ([_]struct { source: []const u8, expected: ?u32 }{
+        .{ .source = only_baz, .expected = null },
+        .{ .source = only_quack, .expected = 2339 },
+        .{ .source = repeated, .expected = 18048 },
+    }) |revision| {
+        try vfs.addFile("/owner.js", revision.source);
+        _ = try p.updateSource("/owner.js", revision.source);
+        resolver.invalidateCaches();
+        try T.expectEqual(@as(u32, 2), try p.recompileChanged(&.{"/owner.js"}, options));
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        if (revision.expected) |code| {
+            try T.expectEqual(@as(usize, 1), diagnostics.len);
+            try T.expectEqual(code, diagnostics[0].code);
+        } else {
+            try T.expectEqual(@as(usize, 0), diagnostics.len);
+        }
+    }
+}
+
 test "Program: imported checked-JS JSDoc index signatures constrain reads and writes" {
     const owner_source =
         \\// @ts-check

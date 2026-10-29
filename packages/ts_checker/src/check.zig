@@ -14729,8 +14729,11 @@ pub const Checker = struct {
                 .virtual_section_start = self.virtualSectionStartForNode(alias),
             }) orelse continue;
             for (targets.items) |target| {
-                try self.reportDuplicateIdentifierWithOther(alias, name, target);
-                try self.reportDuplicateIdentifierWithOther(target, name, alias);
+                // TypeScript's type-alias/class and type-alias/interface
+                // collisions have two TS2300 primaries with no TS6203
+                // related information on either declaration.
+                try self.reportDuplicateIdentifier(alias, name);
+                try self.reportDuplicateIdentifier(target, name);
             }
         }
     }
@@ -48902,17 +48905,23 @@ pub const Checker = struct {
             "Duplicate identifier '{s}'.",
             .{name_str},
         );
-        const rel_msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "'{s}' was also declared here.",
-            .{name_str},
-        );
-        const related = try self.diag_arena.allocator().dupe(RelatedInfo, &.{.{
-            .node = node,
-            .pos = other_pos,
-            .code = TsCodes.was_also_declared_here,
-            .message = rel_msg,
-        }});
+        // tsc attaches TS6203 for collisions between virtual source files,
+        // but not for two declarations in the same JavaScript source file.
+        // This includes a JSDoc typedef followed by a class declaration.
+        var related: []const RelatedInfo = &.{};
+        if (self.virtualSectionStartForPos(pos) != self.virtualSectionStartForPos(other_pos)) {
+            const rel_msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' was also declared here.",
+                .{name_str},
+            );
+            related = try self.diag_arena.allocator().dupe(RelatedInfo, &.{.{
+                .node = node,
+                .pos = other_pos,
+                .code = TsCodes.was_also_declared_here,
+                .message = rel_msg,
+            }});
+        }
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .pos = pos,
@@ -213083,6 +213092,22 @@ test "checker: duplicate identifier (function vs var) carries TS6203 related-inf
     try T.expectEqual(@as(usize, 2), with_related);
 }
 
+test "checker: type alias and class duplicates have no TS6203 related info" {
+    const s = try newSetup(
+        \\type Foo = number;
+        \\class Foo {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var duplicates: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.duplicate_identifier) continue;
+        duplicates += 1;
+        try T.expectEqual(@as(usize, 0), diagnostic.related.len);
+    }
+    try T.expectEqual(@as(usize, 2), duplicates);
+}
+
 test "checker: no TS1380 when the import alias references a normal (value) import" {
     const b = try newBoundSetup(
         \\import { Foo } from "./mod";
@@ -258488,6 +258513,10 @@ test "checker: repeated CommonJS object exports preserve typedef and union seman
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.duplicate_identifier)
+            try T.expectEqual(@as(usize, 0), diagnostic.related.len);
+    }
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
@@ -258695,6 +258724,8 @@ test "checker: checkjs JSDoc typedef participates in script-global duplicate che
             std.mem.indexOf(u8, d.message, "'Foo'") != null)
         {
             foo_duplicates += 1;
+            try T.expectEqual(@as(usize, 1), d.related.len);
+            try T.expectEqual(TsCodes.was_also_declared_here, d.related[0].code);
             relevant_codes[relevant_count] = d.code;
             relevant_count += 1;
         }
