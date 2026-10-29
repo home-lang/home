@@ -186989,6 +186989,15 @@ pub const Checker = struct {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         try self.collectJsConstructorThisMembers(fn_node, name, &members);
+        if (name) |key| {
+            // Prototype methods can refer back to the constructor instance.
+            // Seed the same map used by named function declarations before
+            // collecting those methods, then replace it with the full type.
+            const seed = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+            try self.class_instance_types.put(self.gpa, key, seed);
+            try self.class_name_by_instance.put(self.gpa, seed, key);
+            try self.collectJsConstructorPrototypeMembers(key, fn_node, &members);
+        }
         const instance = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         if (name) |key| {
             try self.class_instance_types.put(self.gpa, key, instance);
@@ -187256,32 +187265,39 @@ pub const Checker = struct {
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.hir.kindOf(stmt) != .assignment) continue;
-            const assignment = hir_mod.assignmentOf(self.hir, stmt);
-            if (assignment.op != null or assignment.value == hir_mod.none_node_id) continue;
-            if (self.prototypeAssignmentPropertyName(assignment.target, constructor_name) != null) {
-                try self.collectJsConstructorPrototypeMethodValueInference(
-                    fn_node,
-                    assignment.value,
-                    fn_params,
-                    sig_params,
-                    inferred,
-                );
-                continue;
+            var final_value = stmt;
+            while (self.hir.kindOf(final_value) == .assignment) {
+                const assignment = hir_mod.assignmentOf(self.hir, final_value);
+                if (assignment.op != null or assignment.value == hir_mod.none_node_id) break;
+                final_value = assignment.value;
             }
-            if (!self.targetIsCtorPrototype(assignment.target, constructor_name) or
-                self.hir.kindOf(assignment.value) != .object_literal)
-            {
-                continue;
-            }
-            for (hir_mod.objectLiteralProps(self.hir, assignment.value)) |property| {
-                if (self.hir.kindOf(property) != .object_property) continue;
-                try self.collectJsConstructorPrototypeMethodValueInference(
-                    fn_node,
-                    hir_mod.objectPropertyOf(self.hir, property).value,
-                    fn_params,
-                    sig_params,
-                    inferred,
-                );
+            var current = stmt;
+            while (self.hir.kindOf(current) == .assignment) {
+                const assignment = hir_mod.assignmentOf(self.hir, current);
+                if (assignment.op != null or assignment.value == hir_mod.none_node_id) break;
+                if (self.prototypeAssignmentPropertyName(assignment.target, constructor_name) != null) {
+                    try self.collectJsConstructorPrototypeMethodValueInference(
+                        fn_node,
+                        final_value,
+                        fn_params,
+                        sig_params,
+                        inferred,
+                    );
+                } else if (self.targetIsCtorPrototype(assignment.target, constructor_name) and
+                    self.hir.kindOf(final_value) == .object_literal)
+                {
+                    for (hir_mod.objectLiteralProps(self.hir, final_value)) |property| {
+                        if (self.hir.kindOf(property) != .object_property) continue;
+                        try self.collectJsConstructorPrototypeMethodValueInference(
+                            fn_node,
+                            hir_mod.objectPropertyOf(self.hir, property).value,
+                            fn_params,
+                            sig_params,
+                            inferred,
+                        );
+                    }
+                }
+                current = assignment.value;
             }
         }
     }
@@ -187717,7 +187733,15 @@ pub const Checker = struct {
                         .fn_expr, .arrow_fn, .fn_decl => true,
                         else => false,
                     };
-                    const vt = if (cached_vt != types.Primitive.none) cached_vt else types.Primitive.any;
+                    // The constructor may be projected before the later
+                    // prototype assignment is visited. Resolve a function's
+                    // signature without checking its body a second time.
+                    const vt = if (cached_vt != types.Primitive.none)
+                        cached_vt
+                    else if (value_is_fn)
+                        try self.prototypeMemberAssignmentValueType(op.value)
+                    else
+                        types.Primitive.any;
                     const is_m = value_is_fn or (vt < self.interner.pool.typeCount() and self.interner.pool.flagsOf(vt).is_signature);
                     try members.append(self.gpa, .{
                         .name = pname,

@@ -69,7 +69,7 @@ const uncheckedCommonJsConfigs = [
 uncheckedCommonJsConfigs.push('packages/ts_cli/testdata/issue967-repeated-commonjs/tsconfig-clean.json')
 uncheckedCommonJsConfigs.push('packages/ts_cli/testdata/issue967-repeated-commonjs/tsconfig-overlap.json')
 uncheckedCommonJsConfigs.push('packages/ts_cli/testdata/issue967-repeated-commonjs/tsconfig.json')
-for (const name of ['', '-whole', '-named', '-tagged']) {
+for (const name of ['', '-whole', '-named', '-tagged', '-chained']) {
   uncheckedCommonJsConfigs.push(`packages/ts_cli/testdata/issue966-commonjs-constructor/tsconfig${name}.json`)
 }
 for (const config of uncheckedCommonJsConfigs) {
