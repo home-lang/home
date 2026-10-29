@@ -65651,6 +65651,68 @@ pub const Checker = struct {
                     .is_method = false,
                 });
             }
+            // Repeated whole-object assignments form a union of snapshots.
+            // TypeScript makes a property missing from one snapshot optional
+            // in that branch, while named exports remain present in each one.
+            // Keep this at the CommonJS boundary: an ordinary object union
+            // with a missing member must still report TS2339.
+            if (self.interner.pool.flagsOf(whole_t).is_union) {
+                const branches = try self.gpa.dupe(TypeId, self.interner.unionMembers(whole_t));
+                defer self.gpa.free(branches);
+                var keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+                defer keys.deinit(self.gpa);
+                var plain_objects = branches.len > 1;
+                for (branches) |branch| {
+                    const flags = self.interner.pool.flagsOf(branch);
+                    if (!flags.is_object_type or flags.is_union or flags.is_intersection) {
+                        plain_objects = false;
+                        break;
+                    }
+                    const payload = self.interner.pool.object_type_payloads.items[self.interner.pool.payloadOf(branch)];
+                    if (payload.call_sig != 0 or payload.construct_sig != 0 or
+                        payload.string_index_type != types.Primitive.none or
+                        payload.number_index_type != types.Primitive.none or
+                        payload.symbol_index_type != types.Primitive.none)
+                    {
+                        plain_objects = false;
+                        break;
+                    }
+                    for (self.interner.objectMembers(branch)) |member| {
+                        if (std.mem.indexOfScalar(hir_mod.StringId, keys.items, member.name) == null)
+                            try keys.append(self.gpa, member.name);
+                    }
+                }
+                // An explicit named write to a key already in a whole-export
+                // branch needs its own assignment-order merge semantics.
+                if (plain_objects) for (additions.items) |addition| {
+                    if (std.mem.indexOfScalar(hir_mod.StringId, keys.items, addition.name) != null) {
+                        plain_objects = false;
+                        break;
+                    }
+                };
+                if (plain_objects) {
+                    const normalized = try self.gpa.alloc(TypeId, branches.len);
+                    defer self.gpa.free(normalized);
+                    for (branches, normalized) |branch, *out| {
+                        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                        defer members.deinit(self.gpa);
+                        try members.appendSlice(self.gpa, self.interner.objectMembers(branch));
+                        for (keys.items) |key| {
+                            if (self.interner.objectMemberInfo(branch, key) != null) continue;
+                            try members.append(self.gpa, .{
+                                .name = key,
+                                .type = types.Primitive.undefined_t,
+                                .is_optional = true,
+                                .is_readonly = false,
+                                .is_method = false,
+                            });
+                        }
+                        try members.appendSlice(self.gpa, additions.items);
+                        out.* = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+                    }
+                    return self.interner.internUnion(normalized) catch return error.OutOfMemory;
+                }
+            }
             if (additions.items.len == 0) return whole_t;
             const object_t = self.interner.internObjectType(additions.items) catch return error.OutOfMemory;
             return self.interner.internIntersection(&.{ whole_t, object_t }) catch return error.OutOfMemory;

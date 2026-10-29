@@ -465,7 +465,6 @@ const Builder = struct {
             (self.generic_signature == null or self.generic_signature.? != typ)) return self.unsupported();
         const interner = &self.compilation.type_interner;
         const payload = interner.pool.signature_payloads.items[interner.pool.payloadOf(typ)];
-        if (payload.is_construct) return self.unsupported();
         const source = interner.signatureParams(typ);
         const parameters = try self.arena.alloc(schema.Element, source.len);
         const minimum = self.compilation.checked_types.signature_min_args.get(typ) orelse source.len;
@@ -488,12 +487,44 @@ const Builder = struct {
             .parameters = parameters,
             .result = try self.lower(payload.return_type),
             .this_type = if (payload.has_this_type) try self.lower(payload.this_type) else null,
+            .is_construct = payload.is_construct,
             .has_literal_types = payload.has_literal_types,
         } });
     }
 };
 
 const T = std.testing;
+
+test "checked schema: CommonJS object preserves an inline class constructor" {
+    const compilation = try driver.compileSource(T.allocator, "module.exports = { Baz: class {} };", .{
+        .allow_js = true,
+        .check_js = true,
+        .no_emit = true,
+        .importer_path = "/owner.js",
+    });
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+    const export_types = try wholeExportTypes(T.allocator, compilation);
+    defer T.allocator.free(export_types);
+    try T.expectEqual(@as(usize, 1), export_types.len);
+    const result = try collect(T.allocator, "/owner.js", compilation, export_types, 0);
+    defer @constCast(result).deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const body = result.declaration.body orelse return error.TestUnexpectedResult;
+    try T.expect(body.* == .object);
+    try T.expectEqualStrings("Baz", body.object[0].name);
+    try T.expect(body.object[0].type.* == .object);
+    var saw_constructor = false;
+    for (body.object[0].type.object) |member| {
+        if (!std.mem.eql(u8, member.name, "__construct")) continue;
+        try T.expect(member.type.* == .function);
+        try T.expect(member.type.function.is_construct);
+        saw_constructor = true;
+    }
+    try T.expect(saw_constructor);
+}
 
 test "checked schema: whole CommonJS export retains inferred class fields and reassignment unions" {
     const source =
