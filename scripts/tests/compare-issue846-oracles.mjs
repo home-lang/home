@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Compare every #846 project with TypeScript 5.7.3 using the same config,
+// Compare admitted-JavaScript projects (#846 and its #965 expando follow-up)
+// with TypeScript 5.7.3 using the same config,
 // working directory, CLI flags, and exact stdout/stderr/exit status. The
 // explicit noEmit override keeps this audit read-only even when a new fixture
 // forgets to set it in tsconfig.json. Build home-tsc before invoking this.
@@ -47,9 +48,10 @@ if (files.error || files.status !== 0) {
   console.error('Could not enumerate fixture configs:', files.error?.message ?? files.stderr)
   process.exit(2)
 }
-const configs = files.stdout.trim().split('\n').filter(path => path.includes('/issue846-')).sort()
+const configs = files.stdout.trim().split('\n').filter(path =>
+  path.includes('/issue846-') || path.includes('/issue965-')).sort()
 if (configs.length === 0) {
-  console.error('No #846 fixture configs found')
+  console.error('No admitted-JavaScript fixture configs found')
   process.exit(2)
 }
 
@@ -90,5 +92,5 @@ for (const config of configs) {
     }
   }
 }
-console.log(`Compared ${configs.length} #846 config streams: ${configs.length - mismatches} exact matches, ${mismatches} mismatches.`)
+console.log(`Compared ${configs.length} admitted-JavaScript config streams: ${configs.length - mismatches} exact matches, ${mismatches} mismatches.`)
 process.exit(mismatches === 0 ? 0 : 1)
