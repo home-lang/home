@@ -836,6 +836,10 @@ pub const ProgramCommonJsExport = struct {
     /// owner. Null while that owner has not been checked or when its type is
     /// outside the lossless program-schema subset.
     whole_export_schema: ?*const ProgramClassSchema.Schema = null,
+    /// A leading JSDoc @type on the whole assignment fixes its public shape.
+    /// Inferred JavaScript whole exports can gain later named properties;
+    /// declared shapes must retain their closed property checks.
+    whole_export_is_declared: bool = false,
     private_type_name: []const u8 = "",
     private_module_name: []const u8 = "",
     /// The declaration module's `export =` target is explicitly `any`.
@@ -65627,10 +65631,29 @@ pub const Checker = struct {
             if (exported.whole_export_is_any) return types.Primitive.any;
             const owner_schema = exported.whole_export_schema orelse continue;
             if (!try self.programSchemaSupported(owner_schema)) continue;
-            return self.instantiateProgramDeclaration(owner_schema.declaration, &.{}, &.{}) catch |err| switch (err) {
+            const whole_t = self.instantiateProgramDeclaration(owner_schema.declaration, &.{}, &.{}) catch |err| switch (err) {
                 error.UnsupportedProgramType => continue,
                 error.OutOfMemory => return error.OutOfMemory,
             };
+            if (exported.whole_export_is_declared) return whole_t;
+            var additions: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer additions.deinit(self.gpa);
+            for (self.programCommonJsExportsForPath(resolved_path)) |named| {
+                if (!std.mem.eql(u8, named.module_path, exported.module_path) or named.name.len == 0) continue;
+                const member_name = self.string_interner.intern(named.name) catch return error.OutOfMemory;
+                if ((try self.lookupObjectMember(whole_t, member_name)) != null) continue;
+                const member_t = (try self.programCommonJsNamedExportSchemaType(named, true)) orelse continue;
+                try self.appendOrReplaceObjectMember(&additions, .{
+                    .name = member_name,
+                    .type = member_t,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = false,
+                });
+            }
+            if (additions.items.len == 0) return whole_t;
+            const object_t = self.interner.internObjectType(additions.items) catch return error.OutOfMemory;
+            return self.interner.internIntersection(&.{ whole_t, object_t }) catch return error.OutOfMemory;
         }
         return null;
     }
@@ -117817,11 +117840,9 @@ pub const Checker = struct {
                             try self.commonJsModuleExportsDirectKey(),
                         );
                         if (exports_t_opt) |exports_t| {
-                            const collides_with_typedef = self.visibleJsDocTypedefNameExistsAt(a.target, prop_name);
+                            const has_declared_whole_export = try self.commonJsWholeExportHasDeclaredTypeInSection(a.target);
                             if (!self.assignmentTargetValueIsVoidExpression(a.target) and
-                                (collides_with_typedef or
-                                    whole_export_t != null or
-                                    !self.typeCanReceiveCommonJsExportProperty(exports_t)) and
+                                (has_declared_whole_export or !self.typeCanReceiveCommonJsExportProperty(exports_t)) and
                                 (try self.lookupObjectMember(exports_t, prop_name)) == null)
                             {
                                 const display_t = (try self.commonJsWholeExportSourceFunctionTypeFromText(a.target)) orelse
@@ -121190,8 +121211,24 @@ pub const Checker = struct {
                     break :blk types.Primitive.any;
                 }
                 if (try self.commonJsExportMemberKey(node)) |key| {
-                    const whole_export_blocks_expando = self.nodeIsModuleExportsAccess(m.object) and
+                    const has_whole_export = self.nodeIsModuleExportsAccess(m.object) and
                         self.commonJsSectionHasWholeExportAssignment(node);
+                    const exports_t = if (has_whole_export)
+                        (try self.commonJsWholeExportSourceFunctionTypeFromText(node)) orelse
+                            (try self.commonJsWholeExportSourceFunctionTypeInSection(node)) orelse
+                            (try self.commonJsWholeExportAliasVariableType(node)) orelse
+                            (try self.commonJsWholeExportTypeInSection(node)) orelse
+                            self.lookupCommonJsExportNarrow(try self.commonJsModuleExportsDirectKey()) orelse types.Primitive.none
+                    else
+                        types.Primitive.none;
+                    const existing_member = if (exports_t != types.Primitive.none)
+                        try self.lookupObjectMember(exports_t, m.name)
+                    else
+                        null;
+                    const whole_export_blocks_expando = has_whole_export and
+                        (!self.isInAssignmentTargetChain(node) or
+                            existing_member != null or
+                            try self.commonJsWholeExportHasDeclaredTypeInSection(node));
                     if (!whole_export_blocks_expando) {
                         if (self.lookupCommonJsExportNarrow(key)) |nt| {
                             if (nt == types.Primitive.undefined_t and self.sourceDirectiveIsTrue("@declaration")) {
@@ -121204,13 +121241,8 @@ pub const Checker = struct {
                         }
                     }
                     if (whole_export_blocks_expando) {
-                        const exports_t = (try self.commonJsWholeExportSourceFunctionTypeFromText(node)) orelse
-                            (try self.commonJsWholeExportSourceFunctionTypeInSection(node)) orelse
-                            (try self.commonJsWholeExportAliasVariableType(node)) orelse
-                            (try self.commonJsWholeExportTypeInSection(node)) orelse
-                            self.lookupCommonJsExportNarrow(try self.commonJsModuleExportsDirectKey()) orelse types.Primitive.none;
                         if (exports_t != types.Primitive.none) {
-                            if (try self.lookupObjectMember(exports_t, m.name)) |member_t| {
+                            if (existing_member) |member_t| {
                                 break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
                             }
                             try self.reportPropertyDoesNotExistOnType(node, m.name, exports_t);
@@ -121219,10 +121251,9 @@ pub const Checker = struct {
                         }
                         break :blk types.Primitive.any;
                     }
-                    // A property write defines a CommonJS expando only when
-                    // the section has no whole export assignment. Current
-                    // tsgo diagnoses the mixed form and checks
-                    // `module.exports.X` against the assigned value.
+                    // An assignment target may define a named property on an
+                    // inferred JavaScript whole export. Explicit JSDoc whole
+                    // types take the closed-member path above instead.
                     if (self.isInAssignmentTargetChain(node)) {
                         break :blk types.Primitive.any;
                     }
@@ -131517,6 +131548,26 @@ pub const Checker = struct {
             if (self.virtualSectionStartForNode(node) != section) continue;
             const assignment = hir_mod.assignmentOf(self.hir, node);
             if (self.assignmentContainsWholeCommonJsExport(assignment)) return true;
+        }
+        return false;
+    }
+
+    fn commonJsWholeExportHasDeclaredTypeInSection(self: *Checker, anchor: NodeId) CheckError!bool {
+        const section = self.virtualSectionStartForNode(anchor);
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .assignment or !self.virtualSectionIsJsLike(node) or
+                self.virtualSectionStartForNode(node) != section) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (assignment.op != null or !self.nodeIsModuleExportsAccess(assignment.target) or
+                self.commonJsModuleExportsPropertyName(assignment.target) != null) continue;
+            if (self.commonjs_whole_export_declared_types.contains(node)) return true;
+            const parent = self.hir.parentOf(node);
+            const jsdoc_anchor = if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .expression_stmt)
+                parent
+            else
+                node;
+            if ((try self.jsDocTypeForLeadingNodeUnchecked(jsdoc_anchor)) != null) return true;
         }
         return false;
     }
@@ -200776,6 +200827,8 @@ pub const Checker = struct {
         if (!rebound_to_whole_export) return false;
         const exports_t = (try self.commonJsWholeExportTypeInSection(node)) orelse return false;
         if ((try self.lookupObjectMember(exports_t, member_name)) != null) return false;
+        if (self.isInAssignmentTargetChain(node) and
+            !try self.commonJsWholeExportHasDeclaredTypeInSection(node)) return false;
         try self.reportPropertyDoesNotExistOnType(node, member_name, exports_t);
         return true;
     }
@@ -258373,15 +258426,10 @@ test "checker: repeated CommonJS object exports preserve typedef and union seman
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, 2351));
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.property_does_not_exist,
-        "Property 'Bar' does not exist on type '{ Baz: typeof Baz; Quack?: undefined; } | { Baz?: undefined; Quack: number; }'.",
-    ));
 }
 
 test "checker: tsgo current direct default class conflicts with JSDoc default typedef" {
@@ -261273,7 +261321,7 @@ test "checker: checkjs imported callable expando target reports TS2339" {
     try T.expectEqual(@as(usize, 1), count);
 }
 
-test "checker: checkjs CommonJS re-exported callable rejects new expandos" {
+test "checker: checkjs CommonJS re-exported callable accepts new expandos" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -261288,12 +261336,7 @@ test "checker: checkjs CommonJS re-exported callable rejects new expandos" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expect(hasDiagnosticCodeMessage(
-        s,
-        TsCodes.property_does_not_exist,
-        "Property 'memberName' does not exist on type '() => void'.",
-    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: checkjs object namespace class expando is visible to new and extends" {
@@ -290249,15 +290292,10 @@ test "checker: CommonJS typedef export property is not an export assignment conf
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.property_does_not_exist,
-        "Property 'T' does not exist on type 'typeof ModuleGraphConnection'.",
-    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: anonymous CommonJS class exports use the exports symbol in missing expandos" {
+test "checker: anonymous CommonJS class exports accept static expandos" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -290271,12 +290309,7 @@ test "checker: anonymous CommonJS class exports use the exports symbol in missin
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.property_does_not_exist,
-        "Property 'Sub' does not exist on type 'typeof exports'.",
-    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: CommonJS sub-functions use the prior whole-export function type" {
@@ -290297,7 +290330,9 @@ test "checker: CommonJS sub-functions use the prior whole-export function type" 
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+    // #966: contextual constructor `this` and `new module.exports` are still
+    // unmodeled; the `Sub` expando itself must not add a TS2339.
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
     try T.expect(checkerHasCodeAndMessage(
         s,
@@ -290375,7 +290410,7 @@ test "checker: CommonJS export declaration writes are not early reads" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_used_before_assigned));
 }
 
-test "checker: checked JS whole CommonJS exports reject later expandos" {
+test "checker: checked JS whole CommonJS exports accept later expandos" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -290390,11 +290425,11 @@ test "checker: checked JS whole CommonJS exports reject later expandos" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expect(checkerHasCodeAndMessage(
         s,
         TsCodes.property_does_not_exist,
-        "Property 'f' does not exist on type '() => void'.",
+        "Property 'missing' does not exist on type 'Window & typeof globalThis'.",
     ));
 }
 

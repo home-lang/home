@@ -2889,6 +2889,7 @@ pub const Program = struct {
             ) catch return error.OutOfMemory;
             if (exported.name.len == 0) {
                 exported.whole_export_schema = schema;
+                exported.whole_export_is_declared = compilation.checked_types.commonjs_whole_export_declared_types.count() != 0;
             } else {
                 exported.named_export_schema = schema;
             }
@@ -21557,6 +21558,59 @@ test "Program: admitted CommonJS JSDoc export retains readonly and optional fiel
         try T.expectEqual(@as(u32, 2322), diagnostics[1].code);
         try T.expectEqual(@as(u32, 2322), diagnostics[2].code);
         try T.expectEqual(@as(u32, 2322), diagnostics[3].code);
+    }
+}
+
+test "Program: inferred CommonJS whole exports gain named writes but declared shapes stay closed" {
+    const cases = .{
+        .{
+            .owner = "module.exports = function () {}; module.exports.extra = () => 1;",
+            .consumer = "import value = require('./owner.js'); const n: number = value.extra(); void n;",
+            .closed = false,
+        },
+        .{
+            .owner = "module.exports = { count: 1 }; module.exports.extra = 2;",
+            .consumer = "import value = require('./owner.js'); const n: number = value.extra; void n;",
+            .closed = false,
+        },
+        .{
+            .owner = "module.exports = class Exported {}; module.exports.extra = 1;",
+            .consumer = "import value = require('./owner.js'); const n: number = value.extra; void n;",
+            .closed = false,
+        },
+        .{
+            .owner = "/** @type {{count: number}} */\nmodule.exports = { count: 1 };\nmodule.exports.extra = 2;",
+            .consumer = "import value = require('./owner.js'); const n: number = value.extra; void n;",
+            .closed = true,
+        },
+    };
+    inline for (cases) |case| {
+        for ([_]bool{ false, true }) |check_js| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/owner.js", case.owner);
+            try vfs.addFile("/main.ts", case.consumer);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+            var p = Program.init(T.allocator, &resolver);
+            defer p.deinit();
+            const owner = try p.add("/owner.js", case.owner);
+            const consumer = try p.add("/main.ts", case.consumer);
+            try p.compileAll(.{
+                .allow_js = true,
+                .check_js = check_js,
+                .no_emit = true,
+                .strict = true,
+                .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+            });
+            const owner_diagnostics = p.fileById(owner).compilation.?.diagnostics.items;
+            const consumer_diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, if (case.closed and check_js) 1 else 0), owner_diagnostics.len);
+            try T.expectEqual(@as(usize, if (case.closed) 1 else 0), consumer_diagnostics.len);
+            if (owner_diagnostics.len > 0) try T.expectEqual(@as(u32, 2339), owner_diagnostics[0].code);
+            if (consumer_diagnostics.len > 0) try T.expectEqual(@as(u32, 2339), consumer_diagnostics[0].code);
+        }
     }
 }
 
