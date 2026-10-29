@@ -3428,6 +3428,56 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&commonjs_augmentation.step);
         }
 
+        // Inferred CommonJS whole exports acquire later named properties,
+        // including through the `exports` alias. The imported property keeps
+        // its checked type; a whole export with an explicit JSDoc object type
+        // remains closed. Exact TypeScript 5.7.3 owner/importer streams.
+        const commonjs_expando_dir = b.path("packages/ts_cli/testdata/issue965-commonjs-expando");
+        const function_expando_output =
+            "function-main.ts(5,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "function-main.ts(6,1): error TS2322: Type 'string' is not assignable to type '() => number'.\n";
+        const alias_expando_output =
+            "alias-main.ts(5,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "alias-main.ts(6,1): error TS2322: Type 'string' is not assignable to type '() => number'.\n";
+        const object_expando_output =
+            "object-main.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "object-main.ts(5,1): error TS2322: Type '\"wrong\"' is not assignable to type '2'.\n";
+        const class_expando_output =
+            "class-main.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "class-main.ts(5,1): error TS2322: Type '\"wrong\"' is not assignable to type '1'.\n";
+        const closed_expando_output =
+            "typed-main.ts(3,33): error TS2339: Property 'extra' does not exist on type '{ count: number; }'.\n" ++
+            "typed-owner.js(3,16): error TS2339: Property 'extra' does not exist on type '{ count: number; }'.\n";
+        const unchecked_closed_expando_output =
+            "typed-main.ts(3,33): error TS2339: Property 'extra' does not exist on type '{ count: number; }'.\n";
+        const unknown_expando_output =
+            "alias-unknown.js(1,25): error TS2339: Property 'missing' does not exist on type 'Window & typeof globalThis'.\n" ++
+            "alias-unknown.js(2,15): error TS2304: Cannot find name 'missing'.\n";
+        inline for (.{
+            .{ "tsconfig-function.json", function_expando_output, false },
+            .{ "tsconfig-alias.json", alias_expando_output, false },
+            .{ "tsconfig-object.json", object_expando_output, false },
+            .{ "tsconfig-class.json", class_expando_output, false },
+            .{ "tsconfig-typed.json", closed_expando_output, false },
+            .{ "tsconfig-reexport.json", "", false },
+            .{ "tsconfig-unknown.json", unknown_expando_output, false },
+            .{ "tsconfig-function.json", function_expando_output, true },
+            .{ "tsconfig-alias.json", alias_expando_output, true },
+            .{ "tsconfig-object.json", object_expando_output, true },
+            .{ "tsconfig-class.json", class_expando_output, true },
+            .{ "tsconfig-typed.json", unchecked_closed_expando_output, true },
+        }) |case| {
+            const commonjs_expando = b.addRunArtifact(home_tsc_exe);
+            commonjs_expando.setCwd(commonjs_expando_dir);
+            commonjs_expando.clearEnvironment();
+            commonjs_expando.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            if (case[2]) commonjs_expando.addArgs(&.{ "--checkJs", "false" });
+            commonjs_expando.expectStdOutEqual(case[1]);
+            commonjs_expando.expectStdErrEqual("");
+            commonjs_expando.expectExitCode(if (case[1].len == 0) 0 else 2);
+            tsc_streams_step.dependOn(&commonjs_expando.step);
+        }
+
         // Mixed readonly string/number indices keep their own write rules
         // through checked-JS imports, local declarations, generics, and
         // inheritance. This is the exact TypeScript 5.7.3 CLI oracle.

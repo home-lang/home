@@ -150,7 +150,7 @@ pub fn wholeExportTypes(
 
 pub fn namedExportTypes(
     gpa: std.mem.Allocator,
-    compilation: *const driver.Compilation,
+    compilation: *driver.Compilation,
     name: []const u8,
 ) ![]const TypeId {
     var result: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -169,6 +169,7 @@ pub fn namedExportTypes(
                     // fresh `1` for writes such as
                     // `require("./owner").value = 2`.
                     const typ = namedExportFlowType(compilation, assignment.target) orelse
+                        (try directAssignmentLiteralType(compilation, assignment.value)) orelse
                         compilation.hir.typeOf(assignment.value);
                     if (typ != Primitive.none and std.mem.indexOfScalar(TypeId, result.items, typ) == null)
                         try result.append(gpa, typ);
@@ -180,6 +181,26 @@ pub fn namedExportTypes(
         }
     }
     return result.toOwnedSlice(gpa);
+}
+
+/// Unchecked JavaScript still exports the fresh type of a direct literal
+/// property assignment. Its checker flow table is empty when checkJs is off,
+/// but widening the HIR value here would also widen the importer's write
+/// constraint (for example, `exports.value = 2` must reject a string against
+/// `2`, not against `number`).
+fn directAssignmentLiteralType(compilation: *driver.Compilation, value: hir.NodeId) !?TypeId {
+    return switch (compilation.hir.kindOf(value)) {
+        .literal_string => try compilation.type_interner.internStringLiteral(
+            hir.literalStringOf(&compilation.hir, value).value,
+        ),
+        .literal_number => try compilation.type_interner.internNumberLiteral(
+            hir.literalNumberOf(&compilation.hir, value),
+        ),
+        .literal_bool => if (hir.literalBoolOf(&compilation.hir, value)) Primitive.true_lit else Primitive.false_lit,
+        .literal_null => Primitive.null_t,
+        .literal_undefined => Primitive.undefined_t,
+        else => null,
+    };
 }
 
 fn namedExportFlowType(compilation: *const driver.Compilation, target: hir.NodeId) ?TypeId {
@@ -530,6 +551,28 @@ test "checked schema: named CommonJS export retains its fresh checked assignment
     const body = result.declaration.body orelse return error.TestUnexpectedResult;
     try T.expect(body.* == .number);
     try T.expectEqual(@as(f64, 1), body.number);
+}
+
+test "checked schema: unchecked JavaScript CommonJS literal export stays fresh" {
+    const compilation = try driver.compileSource(T.allocator, "module.exports = {}; module.exports.extra = 2;", .{
+        .allow_js = true,
+        .no_emit = true,
+        .suppress_js_check_diagnostics = true,
+        .importer_path = "/owner.js",
+    });
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+    const export_types = try namedExportTypes(T.allocator, compilation, "extra");
+    defer T.allocator.free(export_types);
+    try T.expectEqual(@as(usize, 1), export_types.len);
+    const result = try collect(T.allocator, "/owner.js", compilation, export_types, 0);
+    defer @constCast(result).deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const body = result.declaration.body orelse return error.TestUnexpectedResult;
+    try T.expect(body.* == .number);
+    try T.expectEqual(@as(f64, 2), body.number);
 }
 
 test "checked schema: projected callable retains declared literal priority" {
