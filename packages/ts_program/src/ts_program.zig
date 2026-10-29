@@ -21614,6 +21614,42 @@ test "Program: inferred CommonJS whole exports gain named writes but declared sh
     }
 }
 
+test "Program: CommonJS expando revisions refresh requiring consumers" {
+    const with_expando = "module.exports = function () {}; module.exports.extra = () => 1;";
+    const without_expando = "module.exports = function () {};";
+    const consumer_source = "import value = require('./owner.js'); const n: number = value.extra(); void n;";
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", with_expando);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/owner.js", with_expando);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = check_js,
+            .strict = true,
+            .no_emit = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        try p.compileAll(options);
+        try expectCompilationLacksDiagnosticCode(p.fileById(consumer).compilation.?, 2339);
+
+        _ = try p.updateSource("/owner.js", without_expando);
+        _ = try p.recompileChanged(&.{"/owner.js"}, options);
+        try expectCompilationHasDiagnosticCode(p.fileById(consumer).compilation.?, 2339);
+
+        _ = try p.updateSource("/owner.js", with_expando);
+        _ = try p.recompileChanged(&.{"/owner.js"}, options);
+        try expectCompilationLacksDiagnosticCode(p.fileById(consumer).compilation.?, 2339);
+    }
+}
+
 test "Program: imported checked-JS JSDoc index signatures constrain reads and writes" {
     const owner_source =
         \\// @ts-check
