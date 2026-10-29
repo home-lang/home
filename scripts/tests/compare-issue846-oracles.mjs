@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Compare admitted-JavaScript projects (#846 and its #965 expando follow-up)
+// Compare admitted-JavaScript projects (#846 and its CommonJS follow-ups)
 // with TypeScript 5.7.3 using the same config,
 // working directory, CLI flags, and exact stdout/stderr/exit status. The
 // explicit noEmit override keeps this audit read-only even when a new fixture
@@ -49,7 +49,8 @@ if (files.error || files.status !== 0) {
   process.exit(2)
 }
 const configs = files.stdout.trim().split('\n').filter(path =>
-  path.includes('/issue846-') || path.includes('/issue965-')).sort()
+  path.includes('/issue846-') || path.includes('/issue965-') ||
+  path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json')).sort()
 if (configs.length === 0) {
   console.error('No admitted-JavaScript fixture configs found')
   process.exit(2)
@@ -62,6 +63,7 @@ const uncheckedCommonJsConfigs = [
   'class',
   'typed',
 ].map(name => `packages/ts_cli/testdata/issue965-commonjs-expando/tsconfig-${name}.json`)
+uncheckedCommonJsConfigs.push('packages/ts_cli/testdata/issue967-repeated-commonjs/tsconfig-clean.json')
 for (const config of uncheckedCommonJsConfigs) {
   if (!configs.includes(config)) {
     console.error(`Missing unchecked CommonJS oracle config: ${config}`)
