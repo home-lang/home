@@ -50,6 +50,7 @@ if (files.error || files.status !== 0) {
 }
 const configs = files.stdout.trim().split('\n').filter(path =>
   path.includes('/issue846-') || path.includes('/issue965-') ||
+  path.includes('/issue966-commonjs-constructor/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
@@ -68,6 +69,9 @@ const uncheckedCommonJsConfigs = [
 uncheckedCommonJsConfigs.push('packages/ts_cli/testdata/issue967-repeated-commonjs/tsconfig-clean.json')
 uncheckedCommonJsConfigs.push('packages/ts_cli/testdata/issue967-repeated-commonjs/tsconfig-overlap.json')
 uncheckedCommonJsConfigs.push('packages/ts_cli/testdata/issue967-repeated-commonjs/tsconfig.json')
+for (const name of ['', '-whole', '-named', '-tagged']) {
+  uncheckedCommonJsConfigs.push(`packages/ts_cli/testdata/issue966-commonjs-constructor/tsconfig${name}.json`)
+}
 for (const config of uncheckedCommonJsConfigs) {
   if (!configs.includes(config)) {
     console.error(`Missing unchecked CommonJS oracle config: ${config}`)

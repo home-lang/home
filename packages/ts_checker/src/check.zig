@@ -19856,8 +19856,19 @@ pub const Checker = struct {
         if (try self.reuseFunctionSignatureForBody(node) == null) {
             _ = try self.checkFnSignatureOnly(node);
         }
-        try self.seedRepeatedVarsFromPolymorphicThisParameters(node);
         const f = hir_mod.fnDeclOf(self.hir, node);
+        const function_parent = self.hir.parentOf(node);
+        const js_constructor = self.virtualSectionIsJsLike(node) and
+            !f.flags.is_arrow and !f.flags.is_method and !f.flags.is_constructor and
+            !f.flags.is_getter and !f.flags.is_setter and
+            (self.checkJsFunctionHasConstructThisAssignment(node) or self.fnHasJsDocTag(node, "@constructor")) and
+            (function_parent == hir_mod.none_node_id or self.hir.kindOf(function_parent) != .object_property or
+                self.fnHasJsDocTag(node, "@constructor"));
+        if (js_constructor and !self.functionDeclHasExplicitThisParam(node)) {
+            const initial_instance = try self.jsConstructorInstanceTypeForFunction(node);
+            try self.contextual_function_this_types.put(self.gpa, node, initial_instance);
+        }
+        try self.seedRepeatedVarsFromPolymorphicThisParameters(node);
         const jsdoc_declared_return = if (f.return_type == hir_mod.none_node_id)
             try self.jsDocDeclaredReturnForFunction(node)
         else
@@ -19896,6 +19907,22 @@ pub const Checker = struct {
         try self.checkFunctionOverloadCompatibilityAfterBody(node);
         try self.checkFnReturnPathExits(node);
         try self.checkSetterReturnValue(node);
+        if (js_constructor) {
+            const instance = try self.jsConstructorInstanceTypeForFunction(node);
+            const call_sig = self.hir.typeOf(node);
+            const construct_sig = try self.jsConstructorConstructSignature(node, instance);
+            const call_name = self.string_interner.intern("__call") catch return error.OutOfMemory;
+            const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+            const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
+            const static_members = [_]types.ObjectMember{
+                .{ .name = call_name, .type = call_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+                .{ .name = construct_name, .type = construct_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+                .{ .name = prototype_name, .type = instance, .is_optional = false, .is_readonly = false, .is_method = false },
+            };
+            const static_type = self.interner.internObjectType(&static_members) catch return error.OutOfMemory;
+            self.hir.setType(node, static_type);
+            if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, static_type);
+        }
     }
 
     fn reuseFunctionSignatureForBody(self: *Checker, node: NodeId) CheckError!?TypeId {
@@ -119113,7 +119140,12 @@ pub const Checker = struct {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
                 }
-                const imported_call_only = try self.newCalleeIsImportedCallOnlyFunction(c.callee);
+                // Resolver metadata may describe the exported syntax as a
+                // function before the checked JavaScript owner has inferred
+                // its constructor instance. The checked callee's construct
+                // signature is authoritative once available.
+                const imported_call_only = !self.typeHasConstructSignature(callee_t) and
+                    try self.newCalleeIsImportedCallOnlyFunction(c.callee);
                 if (checked_js_cross_virtual_function_class) {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
                     break :blk try self.recordUnmodeledAny(node);
@@ -121065,7 +121097,9 @@ pub const Checker = struct {
                         obj_t = types.Primitive.any;
                     }
                 } else {
-                    obj_t = if (self.hir.kindOf(m.object) == .identifier)
+                    obj_t = if (self.hir.kindOf(m.object) == .identifier and
+                        !(self.nodeIsThisReference(m.object) and
+                            self.contextualFunctionExpressionThis(m.object) != null))
                         self.stableCapturedCallSiteNarrow(
                             m.object,
                             hir_mod.identifierOf(self.hir, m.object).name,
@@ -121078,7 +121112,12 @@ pub const Checker = struct {
                             object_is_catch_binding = true;
                             obj_t = self.lookupNarrow(object_id.name) orelse catch_t;
                         } else if (self.lookupNarrow(object_id.name)) |flow_t| {
-                            obj_t = flow_t;
+                            // A nested non-arrow function binds its own `this`.
+                            // Keep that constructor instance over an outer
+                            // assignment's flow fact.
+                            if (!self.nodeIsThisReference(m.object) or
+                                self.contextualFunctionExpressionThis(m.object) == null)
+                                obj_t = flow_t;
                         } else if (self.sectionLocalIdentifierHasUnresolvedAnnotation(m.object)) {
                             obj_t = types.Primitive.any;
                         } else if (self.visibleAnnotatedIdentifierTypeNode(m.object)) |type_node| {
@@ -158440,6 +158479,7 @@ pub const Checker = struct {
         {
             return types.Primitive.any;
         }
+        if (self.contextualFunctionExpressionThis(node)) |this_t| return this_t;
         if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
         if (self.checkJsPrototypeAssignmentThisType(node)) |this_t| return this_t;
         if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
@@ -159975,6 +160015,12 @@ pub const Checker = struct {
             self.commonJsExportsObjectPropertyName(target.object) == null) return;
         const value_kind = self.hir.kindOf(assignment.value);
         if (value_kind != .fn_decl and value_kind != .fn_expr) return;
+        // Constructor functions own the members written through `this`.
+        // The module export object is their static container, not their
+        // instance, so its shape cannot be used to diagnose those writes.
+        if (self.contextual_function_this_types.contains(assignment.value) and
+            (self.checkJsFunctionHasConstructThisAssignment(assignment.value) or
+                self.fnHasJsDocTag(assignment.value, "@constructor"))) return;
         var receiver_t = try self.checkExpression(target.object);
         if ((receiver_t == types.Primitive.none or receiver_t == types.Primitive.any or
             receiver_t == types.Primitive.unknown) and self.nodeIsExactModuleExportsAccess(target.object))
@@ -186914,10 +186960,47 @@ pub const Checker = struct {
         return construct_sig;
     }
 
+    fn jsConstructorNameForFunction(self: *Checker, fn_node: NodeId) ?hir_mod.StringId {
+        const function = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (function.name != hir_mod.none_node_id and self.hir.kindOf(function.name) == .identifier)
+            return hir_mod.identifierOf(self.hir, function.name).name;
+        const parent = self.hir.parentOf(fn_node);
+        if (parent == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(parent)) {
+            .var_decl, .let_decl, .const_decl => {
+                const variable = hir_mod.varDeclOf(self.hir, parent);
+                if (variable.init == fn_node and variable.name != hir_mod.none_node_id and
+                    self.hir.kindOf(variable.name) == .identifier)
+                    return hir_mod.identifierOf(self.hir, variable.name).name;
+            },
+            .assignment => {
+                const assignment = hir_mod.assignmentOf(self.hir, parent);
+                if (assignment.value == fn_node and assignment.target != hir_mod.none_node_id and
+                    self.hir.kindOf(assignment.target) == .identifier)
+                    return hir_mod.identifierOf(self.hir, assignment.target).name;
+            },
+            else => {},
+        }
+        return null;
+    }
+
+    fn jsConstructorInstanceTypeForFunction(self: *Checker, fn_node: NodeId) CheckError!TypeId {
+        const name = self.jsConstructorNameForFunction(fn_node);
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        try self.collectJsConstructorThisMembers(fn_node, name, &members);
+        const instance = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        if (name) |key| {
+            try self.class_instance_types.put(self.gpa, key, instance);
+            try self.class_name_by_instance.put(self.gpa, instance, key);
+        }
+        return instance;
+    }
+
     fn collectJsConstructorThisMembers(
         self: *Checker,
         fn_node: NodeId,
-        constructor_name: hir_mod.StringId,
+        constructor_name: ?hir_mod.StringId,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
     ) CheckError!void {
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
@@ -187026,7 +187109,7 @@ pub const Checker = struct {
     fn refineJsConstructorThisMemberTypes(
         self: *Checker,
         fn_node: NodeId,
-        constructor_name: hir_mod.StringId,
+        constructor_name: ?hir_mod.StringId,
         fn_params: []const NodeId,
         sig_params: []const TypeId,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
@@ -187047,13 +187130,15 @@ pub const Checker = struct {
             sig_params,
             &inferred,
         );
-        try self.collectJsConstructorPrototypeMethodInference(
-            fn_node,
-            constructor_name,
-            fn_params,
-            sig_params,
-            &inferred,
-        );
+        if (constructor_name) |name| {
+            try self.collectJsConstructorPrototypeMethodInference(
+                fn_node,
+                name,
+                fn_params,
+                sig_params,
+                &inferred,
+            );
+        }
 
         var it = inferred.iterator();
         while (it.next()) |entry| {
@@ -187842,6 +187927,17 @@ pub const Checker = struct {
     ) CheckError!bool {
         if (!self.sourceHasCheckJsDirective()) return false;
         if ((try self.prototypeObjectLiteralAssignmentValue(value)) == null) return false;
+        // A named CommonJS export can itself be a JavaScript constructor.
+        // Replacing its prototype object is an initialization of that
+        // constructor, even when the object literal does not list the
+        // fields assigned to instances inside the constructor body.
+        if (self.hir.kindOf(target) == .member_access) {
+            const prototype = hir_mod.memberOf(self.hir, target);
+            if (prototype.object != hir_mod.none_node_id and
+                std.mem.eql(u8, self.string_interner.get(prototype.name), "prototype") and
+                self.commonJsModuleExportsPropertyName(prototype.object) != null and
+                self.typeHasConstructSignature(self.hir.typeOf(prototype.object))) return true;
+        }
         const ctor_name = self.ctorPrototypeOwnerName(target) orelse return false;
         if (self.jsConstructorFunctionDeclForName(assignment_node, ctor_name)) |fn_node| {
             if (self.virtualSectionFilenameForNode(fn_node)) |filename| {

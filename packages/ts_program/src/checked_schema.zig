@@ -628,6 +628,36 @@ test "checked schema: named CommonJS export retains its fresh checked assignment
     try T.expectEqual(@as(f64, 1), body.number);
 }
 
+test "checked schema: named CommonJS function constructor retains its construct signature" {
+    const source = "module.exports.Sub = function () { this.t = 1; };";
+    const compilation = try driver.compileSource(T.allocator, source, .{
+        .allow_js = true,
+        .check_js = true,
+        .no_emit = true,
+        .importer_path = "/owner.js",
+    });
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+    const export_types = try namedExportTypes(T.allocator, compilation, "Sub");
+    defer T.allocator.free(export_types);
+    try T.expectEqual(@as(usize, 1), export_types.len);
+    const result = try collect(T.allocator, "/owner.js", compilation, export_types, 0);
+    defer @constCast(result).deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const body = result.declaration.body orelse return error.TestUnexpectedResult;
+    try T.expect(body.* == .object);
+    var saw_construct = false;
+    for (body.object) |member| {
+        if (!std.mem.eql(u8, member.name, "__construct")) continue;
+        try T.expect(member.type.* == .function);
+        try T.expect(member.type.function.is_construct);
+        saw_construct = true;
+    }
+    try T.expect(saw_construct);
+}
+
 test "checked schema: unchecked JavaScript CommonJS literal export stays fresh" {
     const compilation = try driver.compileSource(T.allocator, "module.exports = {}; module.exports.extra = 2;", .{
         .allow_js = true,

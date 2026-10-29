@@ -21650,6 +21650,43 @@ test "Program: CommonJS expando revisions refresh requiring consumers" {
     }
 }
 
+test "Program: JavaScript CommonJS constructor exports retain construct signatures" {
+    const cases = [_]struct { owner: []const u8, consumer: []const u8 }{
+        .{
+            .owner = "module.exports.Sub = function () { this.t = 1; };",
+            .consumer = "import owner = require('./owner.js'); const n: number = new owner.Sub().t; void n;",
+        },
+        .{
+            .owner = "/** @param {number} p */ module.exports = function (p) { this.t = p; }; module.exports.Sub = function () { this.instance = new module.exports(1); };",
+            .consumer = "import owner = require('./owner.js'); const n: number = new owner.Sub().instance.t; void n;",
+        },
+    };
+    for (cases) |case| {
+        for ([_]bool{ false, true }) |check_js| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/owner.js", case.owner);
+            try vfs.addFile("/consumer.ts", case.consumer);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+            var p = Program.init(T.allocator, &resolver);
+            defer p.deinit();
+            const owner = try p.add("/owner.js", case.owner);
+            const consumer = try p.add("/consumer.ts", case.consumer);
+            try p.compileAll(.{
+                .allow_js = true,
+                .check_js = check_js,
+                .strict = true,
+                .no_emit = true,
+                .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+            });
+            try T.expectEqual(@as(usize, 0), p.fileById(owner).compilation.?.diagnostics.items.len);
+            try T.expectEqual(@as(usize, 0), p.fileById(consumer).compilation.?.diagnostics.items.len);
+        }
+    }
+}
+
 test "Program: repeated CommonJS whole-export revisions refresh optional importer members" {
     const repeated = "module.exports = { Baz: class {} }; module.exports = { Quack: 2 };";
     const only_baz = "module.exports = { Baz: class {} };";
