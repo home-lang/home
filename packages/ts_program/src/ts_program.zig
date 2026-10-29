@@ -21693,7 +21693,10 @@ test "Program: chained CommonJS prototype assignments retain method parameter ty
         \\var B = function B() { this.b = 2; };
         \\exports.A = A;
         \\exports.B = B;
-        \\A.prototype = B.prototype = { /** @param {number} n */ m: function (n) { return n + 1; } };
+        \\A.prototype = B.prototype = {
+        \\  /** @param {number} n */
+        \\  m: function (n) { return n + 1; }
+        \\};
     ;
     const consumer_source =
         \\import mod = require('./owner.js');
@@ -21725,6 +21728,82 @@ test "Program: chained CommonJS prototype assignments retain method parameter ty
         const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
         try T.expectEqual(@as(usize, 2), diagnostics.len);
         for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2345), diagnostic.code);
+    }
+}
+
+test "Program: chained CommonJS prototype revisions refresh constructor importers" {
+    const number_owner =
+        \\var A = function A() { this.a = 1; };
+        \\var B = function B() { this.b = 2; };
+        \\exports.A = A;
+        \\exports.B = B;
+        \\A.prototype = B.prototype = {
+        \\  /** @param {number} n */
+        \\  m: function (n) { return n; }
+        \\};
+    ;
+    const string_owner =
+        \\var A = function A() { this.a = 1; };
+        \\var B = function B() { this.b = 2; };
+        \\exports.A = A;
+        \\exports.B = B;
+        \\A.prototype = B.prototype = {
+        \\  /** @param {string} n */
+        \\  m: function (n) { return n; }
+        \\};
+    ;
+    const empty_owner =
+        \\var A = function A() { this.a = 1; };
+        \\var B = function B() { this.b = 2; };
+        \\exports.A = A;
+        \\exports.B = B;
+        \\A.prototype = B.prototype = {};
+    ;
+    const consumer_source =
+        \\import mod = require('./owner.js');
+        \\new mod.A().m('ok');
+        \\new mod.B().m('ok');
+    ;
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", number_owner);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const owner = try p.add("/owner.js", number_owner);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = check_js,
+            .strict = true,
+            .no_emit = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        try p.compileAll(options);
+        try T.expectEqual(@as(usize, 0), p.fileById(owner).compilation.?.diagnostics.items.len);
+        for (p.fileById(consumer).compilation.?.diagnostics.items) |diagnostic| {
+            try T.expectEqual(@as(u32, 2345), diagnostic.code);
+        }
+        try T.expectEqual(@as(usize, 2), p.fileById(consumer).compilation.?.diagnostics.items.len);
+
+        for ([_]struct { source: []const u8, count: usize, code: u32 }{
+            .{ .source = string_owner, .count = 0, .code = 0 },
+            .{ .source = empty_owner, .count = 2, .code = 2339 },
+            .{ .source = number_owner, .count = 2, .code = 2345 },
+        }) |revision| {
+            try vfs.addFile("/owner.js", revision.source);
+            _ = try p.updateSource("/owner.js", revision.source);
+            resolver.invalidateCaches();
+            try T.expectEqual(@as(u32, 2), try p.recompileChanged(&.{"/owner.js"}, options));
+            try T.expectEqual(@as(usize, 0), p.fileById(owner).compilation.?.diagnostics.items.len);
+            const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+            try T.expectEqual(revision.count, diagnostics.len);
+            for (diagnostics) |diagnostic| try T.expectEqual(revision.code, diagnostic.code);
+        }
     }
 }
 

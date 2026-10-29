@@ -66808,6 +66808,10 @@ pub const Checker = struct {
         if (try self.commonJsRequireBindingMemberType(value)) |member_t| return member_t;
         if (self.hir.kindOf(value) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, value);
+            // A JavaScript function assigned to `exports.Ctor` may have an
+            // inferred construct signature. Preserve it before the plain
+            // function-signature fallback describes the value as call-only.
+            if (try self.jsConstructorStaticTypeForExportValue(value, id.name)) |constructor_t| return constructor_t;
             if (try self.checkJsCommonJsExportedFunctionStaticType(value, id.name)) |function_t| return function_t;
             if (self.checkJsFunctionVariableInVirtualSection(value, id.name) orelse
                 self.checkJsFunctionVariableInitializer(value, id.name)) |function|
@@ -66833,7 +66837,6 @@ pub const Checker = struct {
                 }
             }
             if (try self.jsConstructorStaticTypeForHeritage(value, id.name)) |constructor_t| return constructor_t;
-            if (try self.jsConstructorStaticTypeForExportValue(value, id.name)) |constructor_t| return constructor_t;
             if (self.checkJsFunctionVariableInitializer(value, id.name) orelse
                 self.checkJsFunctionDeclNamedInVirtualProgram(value, id.name) orelse
                 self.jsConstructorFunctionDeclForName(value, id.name)) |function|
@@ -119291,12 +119294,6 @@ pub const Checker = struct {
                 if (try self.namespaceClassInstanceTypeForNew(c.callee)) |namespace_class_t| {
                     break :blk namespace_class_t;
                 }
-                if (self.strict_flags.no_implicit_any and
-                    try self.newCalleeIsImportedChainedPrototypeFunction(c.callee))
-                {
-                    try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
-                    break :blk try self.recordUnmodeledAny(node);
-                }
                 if (self.sourceHasCheckJsDirective() and !self.strict_flags.no_implicit_any and
                     self.hir.kindOf(c.callee) == .identifier)
                 {
@@ -136875,41 +136872,6 @@ pub const Checker = struct {
             const declaration = self.findNamedDeclInVirtualSection(stmt, value_name) orelse continue;
             const declaration_kind = self.hir.kindOf(declaration);
             if (declaration_kind == .fn_decl or declaration_kind == .fn_expr or declaration_kind == .arrow_fn) return true;
-        }
-        return false;
-    }
-
-    fn newCalleeIsImportedChainedPrototypeFunction(self: *Checker, callee: NodeId) CheckError!bool {
-        if (!self.sourceHasVirtualFilenameSections() or callee == hir_mod.none_node_id or
-            self.hir.kindOf(callee) != .member_access) return false;
-        const member = hir_mod.memberOf(self.hir, callee);
-        if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return false;
-        const local_name = hir_mod.identifierOf(self.hir, member.object).name;
-        const spec = self.namespaceImportSpecifierForLocal(local_name, callee) orelse
-            self.requireSpecifierForLocal(local_name, callee) orelse return false;
-        if (!std.mem.startsWith(u8, spec, ".")) return false;
-        const resolved = (try self.resolveVirtualModuleSpecifierPath(callee, spec)) orelse return false;
-        defer self.gpa.free(resolved);
-        const root = self.rootBlockFor(callee);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
-
-        var exported_local: ?hir_mod.StringId = null;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            if (!self.virtualSectionMatchesResolvedModule(stmt, resolved, spec) or self.hir.kindOf(stmt) != .assignment) continue;
-            const assignment = hir_mod.assignmentOf(self.hir, stmt);
-            if (assignment.op != null or self.commonJsExportsObjectPropertyName(assignment.target) != member.name) continue;
-            if (assignment.value != hir_mod.none_node_id and self.hir.kindOf(assignment.value) == .identifier) {
-                exported_local = hir_mod.identifierOf(self.hir, assignment.value).name;
-                break;
-            }
-        }
-        const owner = exported_local orelse return false;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            if (!self.virtualSectionMatchesResolvedModule(stmt, resolved, spec) or self.hir.kindOf(stmt) != .assignment) continue;
-            const outer = hir_mod.assignmentOf(self.hir, stmt);
-            if (outer.op != null or outer.value == hir_mod.none_node_id or self.hir.kindOf(outer.value) != .assignment) continue;
-            const inner = hir_mod.assignmentOf(self.hir, outer.value);
-            if (self.targetIsCtorPrototype(outer.target, owner) or self.targetIsCtorPrototype(inner.target, owner)) return true;
         }
         return false;
     }
@@ -262017,7 +261979,7 @@ test "checker: strict checked JS prototype objects exclude variable-constructor 
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'addon' does not exist on type '{ set: () => void; get(): void; }'."));
 }
 
-test "checker: current tsgo chained CommonJS constructor values remain non-constructable" {
+test "checker: chained CommonJS constructors retain prototype method parameter types" {
     const s = try newSetup(
         \\// @target: es2015
         \\// @allowJs: true
@@ -262053,9 +262015,12 @@ test "checker: current tsgo chained CommonJS constructor values remain non-const
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    // TypeScript 5.7.3 reports only the two invalid string arguments for
+    // this exact virtual multi-file source.
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        try T.expectEqual(@as(u32, 2345), diagnostic.code);
+    }
 }
 
 test "checker: chained CommonJS exports retain every callable alias" {
@@ -290729,7 +290694,7 @@ test "checker: CommonJS sub-functions use the prior whole-export function type" 
     ));
 }
 
-test "checker: named CommonJS constructor functions use the current module namespace" {
+test "checker: named CommonJS constructor functions bind this to their instance" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -290743,13 +290708,9 @@ test "checker: named CommonJS constructor functions use the current module names
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.property_does_not_exist,
-        "Property 'x' does not exist on type 'typeof import(\"constructor\")'.",
-    ));
+    // TypeScript 5.7.3 checks this exact .js source with no diagnostics in
+    // either strict mode: `this.x` belongs to the constructor instance.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: CommonJS export reads before later writes report definite assignment" {
