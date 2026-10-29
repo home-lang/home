@@ -8243,6 +8243,73 @@ test "Service: CommonJS expando edits republish importer diagnostics" {
     }
 }
 
+test "Service: repeated CommonJS whole exports refresh constructor diagnostics" {
+    const Admitted = struct {
+        resolver: *ts_resolver.Resolver,
+        program: *ts_program.Program,
+        const vtable: ts_driver.ExternalResolver.VTable = .{ .resolve = resolve };
+
+        fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const result = self.resolver.resolve(specifier, containing_file) catch return null;
+            const admitted = self.program.lookupPath(result.path) != null;
+            return .{
+                .path = result.path,
+                .source_is_admitted = admitted,
+                .is_declaration = result.is_declaration or admitted,
+            };
+        }
+    };
+    const repeated = "exports.Baz = 1; module.exports = { Baz: class {} }; module.exports = { Quack: 2 };";
+    const class_only = "module.exports = { Baz: class {} };";
+    const quack_only = "module.exports = { Quack: 2 };";
+    const consumer = "import value = require('./owner.js'); new value.Baz();";
+
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", repeated);
+        try vfs.addFile("/consumer.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/owner.js", repeated);
+        _ = try program.add("/consumer.ts", consumer);
+        var admitted = Admitted{ .resolver = &resolver, .program = &program };
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = check_js,
+            .strict = true,
+            .no_emit = true,
+            .external_resolver = .{ .ptr = &admitted, .vtable = &Admitted.vtable },
+        };
+        try program.compileAll(options);
+
+        var svc = Service.init(T.allocator, &program);
+        defer svc.deinit();
+        svc.compile_options = options;
+        const initial = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingInitialDiagnostics;
+        defer freeLspDiagnostics(T.allocator, initial);
+        try T.expectEqual(@as(usize, 1), initial.len);
+        try T.expectEqual(@as(u32, 2351), initial[0].code);
+
+        for ([_]struct { source: []const u8, code: ?u32 }{
+            .{ .source = class_only, .code = null },
+            .{ .source = quack_only, .code = 2339 },
+            .{ .source = repeated, .code = 2351 },
+        }) |revision| {
+            const owner_changed = try svc.didChangeFile(T.allocator, "/owner.js", revision.source);
+            defer T.allocator.free(owner_changed);
+            const refreshed = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingRefreshedDiagnostics;
+            defer freeLspDiagnostics(T.allocator, refreshed);
+            try T.expectEqual(@as(usize, if (revision.code == null) 0 else 1), refreshed.len);
+            if (revision.code) |code| try T.expectEqual(code, refreshed[0].code);
+            try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+        }
+    }
+}
+
 test "Service: didChangeFile on unknown file returns empty diagnostics" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
