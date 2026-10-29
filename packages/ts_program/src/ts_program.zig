@@ -21687,6 +21687,47 @@ test "Program: JavaScript CommonJS constructor exports retain construct signatur
     }
 }
 
+test "Program: chained CommonJS prototype assignments retain method parameter types" {
+    const owner_source =
+        \\var A = function A() { this.a = 1; };
+        \\var B = function B() { this.b = 2; };
+        \\exports.A = A;
+        \\exports.B = B;
+        \\A.prototype = B.prototype = { /** @param {number} n */ m: function (n) { return n + 1; } };
+    ;
+    const consumer_source =
+        \\import mod = require('./owner.js');
+        \\const a = new mod.A();
+        \\const b = new mod.B();
+        \\a.m('nope');
+        \\b.m('not really');
+    ;
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const owner = try p.add("/owner.js", owner_source);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        try p.compileAll(.{
+            .allow_js = true,
+            .check_js = check_js,
+            .strict = true,
+            .no_emit = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        });
+        try T.expectEqual(@as(usize, 0), p.fileById(owner).compilation.?.diagnostics.items.len);
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 2), diagnostics.len);
+        for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2345), diagnostic.code);
+    }
+}
+
 test "Program: repeated CommonJS whole-export revisions refresh optional importer members" {
     const repeated = "module.exports = { Baz: class {} }; module.exports = { Quack: 2 };";
     const only_baz = "module.exports = { Baz: class {} };";
