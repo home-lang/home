@@ -2079,6 +2079,16 @@ pub const TypeChecker = struct {
                     iterable_type.Array.element_type.*
                 else
                     Type.Int;
+                // `for i, item in items` also binds `i`: for an array, string
+                // or integer iterable it is the position, an int, defined
+                // before the item as the interpreter does. A map binds its
+                // value there, and the checker cannot type that yet, so other
+                // iterables are left as they were.
+                if (for_stmt.index) |index_name| {
+                    if (iterable_type == .Array or iterable_type == .String or isIntegerType(iterable_type)) {
+                        try loop_env.define(index_name, Type.Int);
+                    }
+                }
                 try loop_env.define(for_stmt.iterator, iterator_type);
 
                 // Check body with loop scope
