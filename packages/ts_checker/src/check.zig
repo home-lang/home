@@ -31193,6 +31193,31 @@ pub const Checker = struct {
         };
     }
 
+    fn commonJsNestedExportAssignmentMember(self: *Checker, node: NodeId) CheckError!?CommonJsDefinePropertyNestedExportMember {
+        if (self.hir.kindOf(node) != .assignment) return null;
+        const assignment = hir_mod.assignmentOf(self.hir, node);
+        if (assignment.op != null or assignment.value == hir_mod.none_node_id) return null;
+        const name = self.propertyAccessName(assignment.target) orelse return null;
+        const receiver = self.propertyAccessObject(assignment.target) orelse return null;
+        const export_name = self.commonJsExportsObjectPropertyName(receiver) orelse return null;
+        if (!(try self.checkJsNestedCommonJsExportReceiverAllowsExpando(receiver))) return null;
+        const export_object = self.propertyAccessObject(receiver) orelse return null;
+        const value_t = try self.commonJsExportAssignmentValueType(assignment.value);
+        return .{
+            .member = .{
+                .export_name = export_name,
+                .member = .{
+                    .name = name,
+                    .type = value_t,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = false,
+                },
+            },
+            .is_module_write = self.nodeIsModuleExportsAccess(export_object),
+        };
+    }
+
     fn appendCommonJsAssignmentMembers(
         self: *Checker,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
@@ -31203,6 +31228,9 @@ pub const Checker = struct {
             const assignment = hir_mod.assignmentOf(self.hir, current);
             if (try self.commonJsExportsAssignmentMember(current)) |member| {
                 try self.upsertObjectMember(members, member);
+            }
+            if (try self.commonJsNestedExportAssignmentMember(current)) |nested| {
+                try self.upsertNestedCommonJsExportMember(members, nested.member);
             }
             if (assignment.value == hir_mod.none_node_id or self.hir.kindOf(assignment.value) != .assignment) break;
             current = assignment.value;
@@ -66736,6 +66764,7 @@ pub const Checker = struct {
         const member = hir_mod.memberOf(self.hir, target);
         if (member.object == hir_mod.none_node_id) return;
         const key = (try self.commonJsExportMemberKey(member.object)) orelse return;
+        if (try self.checkJsNestedCommonJsExportReceiverAllowsExpando(member.object)) return;
         const object_t = (try self.commonJsExportDeclaredType(target, key)) orelse
             (try self.priorCommonJsExportInitializerType(target, key)) orelse
             try self.checkExpression(member.object);
@@ -67080,6 +67109,8 @@ pub const Checker = struct {
                         current,
                         true,
                     );
+                } else if (try self.commonJsNestedExportAssignmentMember(current)) |nested| {
+                    try self.upsertNestedCommonJsExportEntry(entries, nested.member, current, nested.is_module_write);
                 } else if (export_alias) |alias_name| {
                     if (self.commonJsAliasExportPropertyName(assignment.target, alias_name)) |prop_name| {
                         try self.appendCommonJsExportEntry(
@@ -121909,7 +121940,8 @@ pub const Checker = struct {
                                 self.memberNameIsEcmaPrivate(m.name) or
                                 (self.checkJsAssignmentTargetShouldReportMissingMember(node, access_obj_t) and
                                     !void_expando_declaration) or
-                                self.commonJsExportsObjectPropertyName(m.object) != null or
+                                (self.commonJsExportsObjectPropertyName(m.object) != null and
+                                    !(try self.checkJsNestedCommonJsExportReceiverAllowsExpando(m.object))) or
                                 (try self.checkJsAssignmentTargetsImportedClassPrototype(m.object)) or
                                 (self.nodeIsThisReference(m.object) and
                                     (self.checkJsPrototypeAssignmentThisType(m.object) != null or
@@ -131859,6 +131891,36 @@ pub const Checker = struct {
             if (try self.jsDocTypeForLeadingNode(jsdoc_anchor)) |declared_t| return declared_t;
         }
         return null;
+    }
+
+    fn checkJsNestedCommonJsExportReceiverAllowsExpando(self: *Checker, receiver: NodeId) CheckError!bool {
+        const key = (try self.commonJsExportMemberKey(receiver)) orelse return false;
+        if ((try self.commonJsExportDeclaredType(receiver, key)) != null) return false;
+        const root = self.rootBlockFor(receiver);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForNode(receiver);
+        const receiver_start = self.hir.spanOf(receiver).start;
+        var open = false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .assignment or
+                self.virtualSectionStartForNode(stmt) != section or
+                self.hir.spanOf(stmt).start >= receiver_start) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id) continue;
+            const assigned_key = (try self.commonJsExportMemberKey(assignment.target)) orelse continue;
+            if (assigned_key.obj_name != key.obj_name or assigned_key.prop_name != key.prop_name) continue;
+            open = self.hir.kindOf(assignment.value) == .object_literal;
+            if (open) {
+                // An inline JSDoc cast closes the otherwise inferred object
+                // shape: `exports.n = /** @type {T} */ ({ ... })`.
+                if (self.source) |src| {
+                    if (self.leadingJsDocBodyBeforeExpressionWithStart(src, self.hir.spanOf(assignment.value).start)) |jsdoc| {
+                        if (jsDocBlockTagBracedTypeText(jsdoc.body, "@type") != null) open = false;
+                    }
+                }
+            }
+        }
+        return open;
     }
 
     fn commonJsExportAssignmentIsUndefinedDeclaration(self: *Checker, value: NodeId, value_t: TypeId) bool {
@@ -262169,7 +262231,7 @@ test "checker: chained CommonJS exports retain every callable alias" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: current tsgo CommonJS nested object writes keep literal export shape" {
+test "checker: checked JS nested CommonJS writes extend imported object shape" {
     const s = try newSetup(
         \\// @target: es2015
         \\// @allowJs: true
@@ -262194,8 +262256,9 @@ test "checker: current tsgo CommonJS nested object writes keep literal export sh
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'e' does not exist on type '{}'."));
+    // TypeScript 5.7.3 accepts this exact two-file control and exposes
+    // the nested `e` write through `require("./mod1")`.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: checkjs module exports property assignment flow narrows after reassignment" {
@@ -263105,9 +263168,11 @@ test "checker: checkjs computed whole-object prototype assignment merges members
     }
 }
 
-test "checker: current tsgo variable and nested expando functions stay ordinary" {
+test "checker: checked JS variable and nested expando functions infer instances" {
     const s = try newSetup(
+        \\// @allowJs: true
         \\// @checkJs: true
+        \\// @filename: index.js
         \\var SomeClass = function () {
         \\  this.otherProp = 0;
         \\};
@@ -263118,8 +263183,30 @@ test "checker: current tsgo variable and nested expando functions stay ordinary"
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    // TypeScript 5.7.3 accepts both `this` assignments in the exact .js
+    // control, including the nested CommonJS expando constructor.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: checked JS nested CommonJS export writes respect declared receivers" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\/** @type {{a: number}} */
+        \\exports.declared = { a: 1 };
+        \\exports.declared.K = 1;
+        \\exports.scalar = 1;
+        \\exports.scalar.K = 1;
+        \\exports.cast = /** @type {{a: number}} */ ({ a: 1 });
+        \\exports.cast.K = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // TypeScript 5.7.3 rejects all three writes: the two annotated
+    // objects and the scalar have closed property sets.
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
 }
 
 test "checker: checkjs top-level this assignment exposes global expando name" {
