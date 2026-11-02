@@ -205788,10 +205788,10 @@ test "checker: implicit constructor any reports traced recovery origins" {
     checked_js.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try checked_js.checker.checkSourceFile(checked_js.root);
 
-    try T.expectEqual(@as(usize, 1), checkerCountCode(checked_js, TsCodes.new_expression_implicitly_any));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(checked_js, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(checked_js, 9002));
-    try T.expectEqual(@as(u32, 2), checked_js.checker.unmodeled_any_sites.count());
+    // TypeScript 5.7.3 infers the checked-JS constructor and its instance;
+    // neither `new` nor `this` requires an implicit-any recovery.
+    try T.expectEqual(@as(usize, 0), checked_js.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 0), checked_js.checker.unmodeled_any_sites.count());
 }
 
 fn newTsxSetup(source: []const u8) !*TestSetup {
@@ -262209,7 +262209,7 @@ test "checker: checkjs expando namespace prototype assignment target does not re
     }
 }
 
-test "checker: current tsgo bare constructor function reports implicit this" {
+test "checker: checked-JS bare constructor and prototype method infer this" {
     const s = try newSetup(
         \\// @checkJs: true
         \\function C() {
@@ -262221,8 +262221,9 @@ test "checker: current tsgo bare constructor function reports implicit this" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    // Both the constructor body and its prototype method are valid in the
+    // TypeScript 5.7.3 real-file control.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: inferred JavaScript constructors remain value-only in JSDoc" {
