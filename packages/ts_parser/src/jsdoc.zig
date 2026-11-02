@@ -6,8 +6,8 @@
 //!
 //! This is the standalone tag scanner — given a comment block, it
 //! extracts each `@tag {Type} name description` triple and produces
-//! a structured `Tag` per line. Later phases plug the resulting
-//! tags onto the corresponding HIR nodes during binding so the
+//! a structured `Tag`, including multiple tags on one line. Later
+//! phases plug the resulting tags onto the corresponding HIR nodes during binding so the
 //! checker sees the same shape it would if the annotations had
 //! been written in TS syntax.
 //!
@@ -88,8 +88,8 @@ pub const Tag = struct {
 };
 
 /// Parse a single JSDoc comment block (the bytes *between* `/**`
-/// and `*/`, i.e. callers strip the comment markers). Each line
-/// starting with `@<tag>` produces a `Tag`. Caller owns the
+/// and `*/`, i.e. callers strip the comment markers). Every `@<tag>`
+/// outside a type expression produces a `Tag`. Caller owns the
 /// returned slice.
 pub fn parse(gpa: std.mem.Allocator, body: []const u8) ![]Tag {
     var tags: std.ArrayListUnmanaged(Tag) = .empty;
@@ -104,18 +104,80 @@ pub fn parse(gpa: std.mem.Allocator, body: []const u8) ![]Tag {
         const stripped = stripLeadingStar(line);
         if (stripped.len == 0) continue;
         if (stripped[0] != '@') continue;
-        var tag = parseLine(stripped) orelse continue;
-        if (tag.kind == .param_tag and tag.name.len == 0 and tag.description.len == 0 and i < body.len) {
-            const continuation_start = i + 1;
-            const continuation_end = std.mem.indexOfScalarPos(u8, body, continuation_start, '\n') orelse body.len;
-            const continuation = stripLeadingStar(body[continuation_start..continuation_end]);
-            if (continuation.len > 0 and continuation[0] != '@') {
-                applyParamContinuation(&tag, continuation);
+        var tag_start: usize = 0;
+        while (tag_start < stripped.len) {
+            const next_tag = nextInlineTagStart(stripped, tag_start + 1) orelse stripped.len;
+            const tag_text = std.mem.trimEnd(u8, stripped[tag_start..next_tag], " \t\r");
+            if (parseLine(tag_text)) |parsed| {
+                var tag = parsed;
+                if (next_tag == stripped.len and tag.kind == .param_tag and
+                    tag.name.len == 0 and tag.description.len == 0 and i < body.len)
+                {
+                    const continuation_start = i + 1;
+                    const continuation_end = std.mem.indexOfScalarPos(u8, body, continuation_start, '\n') orelse body.len;
+                    const continuation = stripLeadingStar(body[continuation_start..continuation_end]);
+                    if (continuation.len > 0 and continuation[0] != '@') {
+                        applyParamContinuation(&tag, continuation);
+                    }
+                }
+                try tags.append(gpa, tag);
             }
+            tag_start = next_tag;
         }
-        try tags.append(gpa, tag);
     }
     return tags.toOwnedSlice(gpa);
+}
+
+fn nextInlineTagStart(line: []const u8, start: usize) ?usize {
+    var braces: usize = 0;
+    var parens: usize = 0;
+    var brackets: usize = 0;
+    var angles: usize = 0;
+    var quote: u8 = 0;
+    var escaped = false;
+    var index = start;
+    while (index < line.len) : (index += 1) {
+        const ch = line[index];
+        if (quote != 0) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        switch (ch) {
+            '\'', '"', '`' => quote = ch,
+            '{' => braces += 1,
+            '}' => if (braces > 0) {
+                braces -= 1;
+            },
+            '(' => parens += 1,
+            ')' => if (parens > 0) {
+                parens -= 1;
+            },
+            '[' => brackets += 1,
+            ']' => if (brackets > 0) {
+                brackets -= 1;
+            },
+            '<' => angles += 1,
+            '>' => if (angles > 0) {
+                angles -= 1;
+            },
+            '@' => {
+                if (braces != 0 or parens != 0 or brackets != 0 or angles != 0 or
+                    index == 0 or !std.ascii.isWhitespace(line[index - 1])) continue;
+                var end = index + 1;
+                while (end < line.len and isTagNameChar(line[end])) : (end += 1) {}
+                if (end == index + 1) continue;
+                if (end == line.len or std.ascii.isWhitespace(line[end]) or line[end] == '{') return index;
+            },
+            else => {},
+        }
+    }
+    return null;
 }
 
 /// Strip `\s*\*\s?` from a line — JSDoc convention.
@@ -523,6 +585,31 @@ test "jsdoc: multi-tag block" {
     try T.expectEqualStrings("x", tags[0].name);
     try T.expectEqualStrings("y", tags[1].name);
     try T.expectEqual(TagKind.returns_tag, tags[2].kind);
+}
+
+test "jsdoc: template and parameter tags on one line" {
+    const tags = try parse(T.allocator, " @template T @param {T} value");
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 2), tags.len);
+    try T.expectEqual(TagKind.template_tag, tags[0].kind);
+    try T.expectEqualStrings("T", tags[0].name);
+    try T.expectEqual(TagKind.param_tag, tags[1].kind);
+    try T.expectEqualStrings("T", tags[1].type_text);
+    try T.expectEqualStrings("value", tags[1].name);
+}
+
+test "jsdoc: inline tags preserve email descriptions and scoped imports" {
+    const tags = try parse(
+        T.allocator,
+        " @param {import(\"@scope/pkg\").Value} address contact user@example.com @returns {number}",
+    );
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 2), tags.len);
+    try T.expectEqualStrings("import(\"@scope/pkg\").Value", tags[0].type_text);
+    try T.expectEqualStrings("address", tags[0].name);
+    try T.expectEqualStrings("contact user@example.com", tags[0].description);
+    try T.expectEqual(TagKind.returns_tag, tags[1].kind);
+    try T.expectEqualStrings("number", tags[1].type_text);
 }
 
 test "jsdoc: param type and name continue across starred lines" {
