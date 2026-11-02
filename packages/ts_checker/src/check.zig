@@ -100813,6 +100813,12 @@ pub const Checker = struct {
             if (try self.checkJsDestructuredRequireClassInstanceType(self.jsdoc_diagnostic_anchor, base_name)) |class_t| {
                 return class_t;
             }
+            // A checked-JS function that initializes `this` names its
+            // instance type in JSDoc. Resolve it before the bare-function
+            // value-only diagnostic below.
+            if (try self.jsConstructorInstanceTypeForHeritage(self.jsdoc_diagnostic_anchor, base_name)) |instance_t| {
+                return instance_t;
+            }
         }
         if (try self.reportJsDocDestructuredRequireValueUsedAsType(src, base)) return @as(?TypeId, try self.recordJsDocAnyRecovery());
         if (try self.reportJsDocRequireMemberAliasValueUsedAsType(src, base)) return @as(?TypeId, try self.recordJsDocAnyRecovery());
@@ -262218,7 +262224,7 @@ test "checker: checked-JS bare constructor and prototype method infer this" {
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
-test "checker: inferred JavaScript constructors remain value-only in JSDoc" {
+test "checker: inferred JavaScript constructors name instance types in JSDoc" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -262233,14 +262239,10 @@ test "checker: inferred JavaScript constructors remain value-only in JSDoc" {
     defer destroySetup(s);
     s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
-    // The checked-JS constructions contribute two TS7009 origins and their
-    // unbound receivers contribute two TS2683 origins; the JSDoc annotations
-    // contribute the two TS2749 origins under test here.
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 6), checkerCountCode(s, 9002));
-    try T.expectEqual(@as(u32, 6), s.checker.unmodeled_any_sites.count());
+    // The exact TypeScript 5.7.3 .js control has no diagnostics: both
+    // functions assign through `this`, so their names denote instance types.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: strict checked JavaScript infers untagged constructor fields" {
