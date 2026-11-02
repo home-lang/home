@@ -159394,13 +159394,6 @@ pub const Checker = struct {
             const instance_t = (self.constructReturnType(imported_t) catch null) orelse return null;
             return instance_t;
         }
-        // Current tsgo keeps bare/variable checked-JS functions ordinary
-        // under noImplicitAny, even when they assign through `this` or carry
-        // a legacy @constructor tag. Their prototype object supplies the
-        // contextual `this` shape; constructor-body fields do not merge in.
-        if (self.strict_flags.no_implicit_any) {
-            return self.priorCheckJsPrototypeObjectType(node, owner);
-        }
         const constructor_instance = self.jsConstructorInstanceTypeForHeritage(node, owner) catch null;
         if (constructor_instance) |instance_t| return instance_t;
         return self.priorCheckJsPrototypeObjectType(node, owner);
@@ -159417,7 +159410,6 @@ pub const Checker = struct {
         if (!self.nodeIsThisReference(access.object)) return null;
         const owner = self.checkJsPrototypeObjectLiteralOwnerName(node) orelse
             self.checkJsComputedPrototypeObjectLiteralOwnerName(node) orelse return null;
-        if (self.strict_flags.no_implicit_any) return null;
         if (!self.sourceHasCheckJsDirective() and !self.strict_flags.no_implicit_this) {
             return types.Primitive.any;
         }
@@ -262359,7 +262351,7 @@ test "checker: computed JavaScript prototype replacement keeps constructor membe
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: strict checkjs prototype methods keep ordinary function this" {
+test "checker: strict checkjs prototype methods type-check instance writes" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -262387,8 +262379,10 @@ test "checker: strict checkjs prototype methods keep ordinary function this" {
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    // TypeScript 5.7.3 reports both invalid writes for each constructor.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 4), s.checker.diagnostics.items.len);
 }
 
 test "checker: parity 2851-3250 checkjs chained function assignments share JSDoc signatures and members" {
@@ -262437,11 +262431,12 @@ test "checker: checkjs prototype object functions report implicit params and mis
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.parameter_implicitly_any));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.this_implicitly_any));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.property_does_not_exist) {
-            try T.expect(std.mem.indexOf(u8, d.message, "Property 'rgb' does not exist on type '{ lighten: (ratio: any) => any; toJSON: () => any; }'.") != null);
+            try T.expectEqualStrings("Property 'rgb' does not exist on type 'Color'.", d.message);
         }
     }
 }
