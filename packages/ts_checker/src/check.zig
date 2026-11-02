@@ -261909,7 +261909,7 @@ test "checker: checked JS default null and empty array parameters report implici
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
-test "checker: strict checked JS prototype objects exclude variable-constructor fields" {
+test "checker: strict checked JS prototype objects retain constructor fields" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -261932,8 +261932,9 @@ test "checker: strict checked JS prototype objects exclude variable-constructor 
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property '_map' does not exist on type '{ set: () => void; get(): void; }'."));
+    // TypeScript 5.7.3 accepts `_map` from the constructor. Only the
+    // subsequent `addon` write is absent from the replacement object type.
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'addon' does not exist on type '{ set: () => void; get(): void; }'."));
 }
 
@@ -290626,7 +290627,7 @@ test "checker: anonymous CommonJS class exports accept static expandos" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: CommonJS sub-functions use the prior whole-export function type" {
+test "checker: CommonJS sub-functions retain constructor instance types" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -290643,16 +290644,8 @@ test "checker: CommonJS sub-functions use the prior whole-export function type" 
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
-    // #966: contextual constructor `this` and `new module.exports` are still
-    // unmodeled; the `Sub` expando itself must not add a TS2339.
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.property_does_not_exist,
-        "Property 'instance' does not exist on type '(p: number) => void'.",
-    ));
+    // TypeScript 5.7.3 checks this exact CommonJS source without diagnostics.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: named CommonJS constructor functions bind this to their instance" {
