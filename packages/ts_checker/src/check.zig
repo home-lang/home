@@ -31200,7 +31200,7 @@ pub const Checker = struct {
         const name = self.propertyAccessName(assignment.target) orelse return null;
         const receiver = self.propertyAccessObject(assignment.target) orelse return null;
         const export_name = self.commonJsExportsObjectPropertyName(receiver) orelse return null;
-        if (!(try self.checkJsNestedCommonJsExportReceiverAllowsExpando(receiver))) return null;
+        if (!(try self.inferredCommonJsExportReceiverAllowsNestedMember(receiver))) return null;
         const export_object = self.propertyAccessObject(receiver) orelse return null;
         const value_t = try self.commonJsExportAssignmentValueType(assignment.value);
         return .{
@@ -66764,7 +66764,7 @@ pub const Checker = struct {
         const member = hir_mod.memberOf(self.hir, target);
         if (member.object == hir_mod.none_node_id) return;
         const key = (try self.commonJsExportMemberKey(member.object)) orelse return;
-        if (try self.checkJsNestedCommonJsExportReceiverAllowsExpando(member.object)) return;
+        if (try self.inferredCommonJsExportReceiverAllowsNestedMember(member.object)) return;
         const object_t = (try self.commonJsExportDeclaredType(target, key)) orelse
             (try self.priorCommonJsExportInitializerType(target, key)) orelse
             try self.checkExpression(member.object);
@@ -121941,7 +121941,7 @@ pub const Checker = struct {
                                 (self.checkJsAssignmentTargetShouldReportMissingMember(node, access_obj_t) and
                                     !void_expando_declaration) or
                                 (self.commonJsExportsObjectPropertyName(m.object) != null and
-                                    !(try self.checkJsNestedCommonJsExportReceiverAllowsExpando(m.object))) or
+                                    !(try self.inferredCommonJsExportReceiverAllowsNestedMember(m.object))) or
                                 (try self.checkJsAssignmentTargetsImportedClassPrototype(m.object)) or
                                 (self.nodeIsThisReference(m.object) and
                                     (self.checkJsPrototypeAssignmentThisType(m.object) != null or
@@ -131774,6 +131774,10 @@ pub const Checker = struct {
 
     fn commonJsExportMemberKey(self: *Checker, node: NodeId) CheckError!?MemberKey {
         if (!self.sourceHasCheckJsDirective()) return null;
+        return try self.commonJsExportMemberKeyUnchecked(node);
+    }
+
+    fn commonJsExportMemberKeyUnchecked(self: *Checker, node: NodeId) CheckError!?MemberKey {
         const prop_name = self.propertyAccessName(node) orelse return null;
         const object = self.propertyAccessObject(node) orelse return null;
         if (self.hir.kindOf(object) == .identifier) {
@@ -131881,20 +131885,20 @@ pub const Checker = struct {
             if (has_sections and self.virtualSectionStartForNode(stmt) != section) continue;
             const assignment = hir_mod.assignmentOf(self.hir, stmt);
             if (assignment.op != null) continue;
-            const candidate = (try self.commonJsExportMemberKey(assignment.target)) orelse continue;
+            const candidate = (try self.commonJsExportMemberKeyUnchecked(assignment.target)) orelse continue;
             if (candidate.obj_name != key.obj_name or candidate.prop_name != key.prop_name) continue;
             const parent = self.hir.parentOf(stmt);
             const jsdoc_anchor = if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .expression_stmt)
                 parent
             else
                 stmt;
-            if (try self.jsDocTypeForLeadingNode(jsdoc_anchor)) |declared_t| return declared_t;
+            if (try self.jsDocTypeForLeadingNodeUnchecked(jsdoc_anchor)) |declared_t| return declared_t;
         }
         return null;
     }
 
-    fn checkJsNestedCommonJsExportReceiverAllowsExpando(self: *Checker, receiver: NodeId) CheckError!bool {
-        const key = (try self.commonJsExportMemberKey(receiver)) orelse return false;
+    fn inferredCommonJsExportReceiverAllowsNestedMember(self: *Checker, receiver: NodeId) CheckError!bool {
+        const key = (try self.commonJsExportMemberKeyUnchecked(receiver)) orelse return false;
         if ((try self.commonJsExportDeclaredType(receiver, key)) != null) return false;
         const root = self.rootBlockFor(receiver);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
@@ -131907,7 +131911,7 @@ pub const Checker = struct {
                 self.hir.spanOf(stmt).start >= receiver_start) continue;
             const assignment = hir_mod.assignmentOf(self.hir, stmt);
             if (assignment.op != null or assignment.value == hir_mod.none_node_id) continue;
-            const assigned_key = (try self.commonJsExportMemberKey(assignment.target)) orelse continue;
+            const assigned_key = (try self.commonJsExportMemberKeyUnchecked(assignment.target)) orelse continue;
             if (assigned_key.obj_name != key.obj_name or assigned_key.prop_name != key.prop_name) continue;
             open = self.hir.kindOf(assignment.value) == .object_literal;
             if (open) {

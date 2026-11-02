@@ -8243,6 +8243,83 @@ test "Service: CommonJS expando edits republish importer diagnostics" {
     }
 }
 
+test "Service: nested CommonJS constructor edits republish importer diagnostics" {
+    const Admitted = struct {
+        resolver: *ts_resolver.Resolver,
+        program: *ts_program.Program,
+        const vtable: ts_driver.ExternalResolver.VTable = .{ .resolve = resolve };
+
+        fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const result = self.resolver.resolve(specifier, containing_file) catch return null;
+            const admitted = self.program.lookupPath(result.path) != null;
+            return .{
+                .path = result.path,
+                .source_is_admitted = admitted,
+                .is_declaration = result.is_declaration or admitted,
+            };
+        }
+    };
+    const with_constructor = "exports.n = {}; exports.n.K = function () { this.x = 10; };";
+    const without_constructor = "exports.n = {};";
+    const declared_receiver = "/** @type {{a: number}} */ exports.n = { a: 1 }; exports.n.K = 1;";
+    const consumer = "import mod = require('./owner.js'); const x: number = new mod.n.K().x; void x;";
+
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", with_constructor);
+        try vfs.addFile("/consumer.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/owner.js", with_constructor);
+        _ = try program.add("/consumer.ts", consumer);
+        var admitted = Admitted{ .resolver = &resolver, .program = &program };
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = check_js,
+            .strict = true,
+            .no_emit = true,
+            .external_resolver = .{ .ptr = &admitted, .vtable = &Admitted.vtable },
+        };
+        try program.compileAll(options);
+
+        var svc = Service.init(T.allocator, &program);
+        defer svc.deinit();
+        svc.compile_options = options;
+        const initial = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingInitialDiagnostics;
+        defer freeLspDiagnostics(T.allocator, initial);
+        try T.expectEqual(@as(usize, 0), initial.len);
+        try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+
+        const removed = try svc.didChangeFile(T.allocator, "/owner.js", without_constructor);
+        defer T.allocator.free(removed);
+        const changed = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingChangedDiagnostics;
+        defer freeLspDiagnostics(T.allocator, changed);
+        try T.expectEqual(@as(usize, 1), changed.len);
+        try T.expectEqual(@as(u32, 2339), changed[0].code);
+        try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+
+        const declared = try svc.didChangeFile(T.allocator, "/owner.js", declared_receiver);
+        defer T.allocator.free(declared);
+        const declared_diags = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingDeclaredDiagnostics;
+        defer freeLspDiagnostics(T.allocator, declared_diags);
+        try T.expectEqual(@as(usize, 1), declared_diags.len);
+        try T.expectEqual(@as(u32, 2339), declared_diags[0].code);
+        try T.expectEqualStrings("Property 'K' does not exist on type '{ a: number; }'.", declared_diags[0].message);
+        try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+
+        const restored = try svc.didChangeFile(T.allocator, "/owner.js", with_constructor);
+        defer T.allocator.free(restored);
+        const reverted = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingRevertedDiagnostics;
+        defer freeLspDiagnostics(T.allocator, reverted);
+        try T.expectEqual(@as(usize, 0), reverted.len);
+        try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+    }
+}
+
 test "Service: repeated CommonJS whole exports refresh constructor diagnostics" {
     const Admitted = struct {
         resolver: *ts_resolver.Resolver,

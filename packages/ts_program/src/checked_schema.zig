@@ -7,6 +7,7 @@
 const std = @import("std");
 const hir = @import("hir");
 const driver = @import("ts_driver");
+const jsdoc_types = @import("jsdoc_types.zig");
 
 const schema = driver.ProgramClassSchema;
 const TypeId = driver.TypeId;
@@ -156,6 +157,8 @@ pub fn namedExportTypes(
     var result: std.ArrayListUnmanaged(TypeId) = .empty;
     errdefer result.deinit(gpa);
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return result.toOwnedSlice(gpa);
+    var current_object: ?usize = null;
+    var current_initial_type: TypeId = Primitive.none;
     for (hir.blockStmts(&compilation.hir, compilation.root)) |statement| {
         if (compilation.hir.kindOf(statement) != .assignment) continue;
         var assignment = hir.assignmentOf(&compilation.hir, statement);
@@ -171,8 +174,45 @@ pub fn namedExportTypes(
                     const typ = namedExportFlowType(compilation, assignment.target) orelse
                         (try directAssignmentLiteralType(compilation, assignment.value)) orelse
                         compilation.hir.typeOf(assignment.value);
-                    if (typ != Primitive.none and std.mem.indexOfScalar(TypeId, result.items, typ) == null)
+                    current_object = null;
+                    current_initial_type = Primitive.none;
+                    if (typ != Primitive.none) {
                         try result.append(gpa, typ);
+                        if (compilation.hir.kindOf(assignment.value) == .object_literal) {
+                            const declared = try jsdoc_types.declarationType(gpa, compilation, statement);
+                            defer if (declared) |type_expression| type_expression.deinit(gpa);
+                            const inline_declared = try jsdoc_types.declarationType(gpa, compilation, assignment.value);
+                            defer if (inline_declared) |type_expression| type_expression.deinit(gpa);
+                            if (declared == null and inline_declared == null) {
+                                current_object = result.items.len - 1;
+                                current_initial_type = typ;
+                            }
+                        }
+                    }
+                }
+            } else if (current_object) |index| {
+                // The schema is a source-order snapshot of the named export.
+                // A later `exports.n.K = value` extends an inferred object
+                // literal, while a JSDoc-declared receiver stays closed.
+                const receiver = propertyAccessObject(compilation, assignment.target);
+                if (receiver) |object| {
+                    if (namedExportTarget(compilation, object)) |target_name| {
+                        if (std.mem.eql(u8, target_name, name)) {
+                            if (propertyAccessName(compilation, assignment.target)) |member_name| {
+                                const member_type = compilation.hir.typeOf(assignment.value);
+                                if (member_type != Primitive.none) {
+                                    result.items[index] = try namedExportTypeWithMember(
+                                        gpa,
+                                        compilation,
+                                        result.items[index],
+                                        current_initial_type,
+                                        member_name,
+                                        member_type,
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if (assignment.value == hir.none_node_id or compilation.hir.kindOf(assignment.value) != .assignment) break;
@@ -180,7 +220,65 @@ pub fn namedExportTypes(
             if (assignment.op != null) break;
         }
     }
+    // Distinct source snapshots can converge on the same checked type.
+    var write: usize = 0;
+    for (result.items) |typ| {
+        if (std.mem.indexOfScalar(TypeId, result.items[0..write], typ) != null) continue;
+        result.items[write] = typ;
+        write += 1;
+    }
+    result.items.len = write;
     return result.toOwnedSlice(gpa);
+}
+
+fn namedExportTypeWithMember(
+    gpa: std.mem.Allocator,
+    compilation: *driver.Compilation,
+    base: TypeId,
+    initial: TypeId,
+    name: hir.StringId,
+    typ: TypeId,
+) !TypeId {
+    if (base >= compilation.type_interner.pool.typeCount() or
+        !compilation.type_interner.pool.flagsOf(base).is_object_type) return base;
+    const original = compilation.type_interner.objectMembers(base);
+    var members: std.ArrayListUnmanaged(@TypeOf(original[0])) = .empty;
+    defer members.deinit(gpa);
+    try members.appendSlice(gpa, original);
+    for (members.items) |*member| {
+        if (member.name != name) continue;
+        // Object-literal fields are declared by the initializer, so later
+        // incompatible writes are errors rather than new export types.
+        if (initial < compilation.type_interner.pool.typeCount() and
+            compilation.type_interner.pool.flagsOf(initial).is_object_type)
+        {
+            for (compilation.type_interner.objectMembers(initial)) |declared_member| {
+                if (declared_member.name == name) return base;
+            }
+        }
+        // A member introduced by a later expando write collects all of its
+        // source-order value types, as in `K = 1; K = "s"` -> number|string.
+        member.type = try compilation.type_interner.internUnion(&.{ member.type, typ });
+        return compilation.type_interner.internObjectTypeWithIndexAndSymbol(
+            members.items,
+            compilation.type_interner.objectStringIndex(base),
+            compilation.type_interner.objectNumberIndex(base),
+            compilation.type_interner.objectSymbolIndex(base),
+        );
+    }
+    try members.append(gpa, .{
+        .name = name,
+        .type = typ,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    });
+    return compilation.type_interner.internObjectTypeWithIndexAndSymbol(
+        members.items,
+        compilation.type_interner.objectStringIndex(base),
+        compilation.type_interner.objectNumberIndex(base),
+        compilation.type_interner.objectSymbolIndex(base),
+    );
 }
 
 /// Unchecked JavaScript still exports the fresh type of a direct literal
