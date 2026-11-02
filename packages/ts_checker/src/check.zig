@@ -119162,15 +119162,6 @@ pub const Checker = struct {
                         }
                     }
                 }
-                if (self.sourceHasCheckJsDirective() and self.strict_flags.no_implicit_any and
-                    self.hir.kindOf(c.callee) == .identifier)
-                {
-                    const id = hir_mod.identifierOf(self.hir, c.callee);
-                    if (self.jsConstructorFunctionDeclForName(c.callee, id.name) != null) {
-                        try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
-                        break :blk try self.recordUnmodeledAny(node);
-                    }
-                }
                 if ((self.strict_flags.no_implicit_any or
                     (self.sourceHasCheckJsDirective() and !self.sourceHasStrictFalseDirective())) and
                     imported_call_only)
@@ -159351,7 +159342,7 @@ pub const Checker = struct {
                 const assignment = hir_mod.assignmentOf(self.hir, parent);
                 if (assignment.value == cur and self.commonJsExportsAssignmentName(parent) != null) return false;
             }
-            return self.fnLooksLikeCheckJsConstructor(cur);
+            return self.fnProvidesCheckJsConstructorInstance(cur);
         }
         return false;
     }
@@ -186494,20 +186485,19 @@ pub const Checker = struct {
         }
     }
 
-    /// Current tsgo does not promote a bare checked-JavaScript function
-    /// declaration into a construct signature from `this` or prototype
-    /// assignments. Member-assigned constructor values use a separate path.
+    /// A checked-JavaScript function that initializes instance members through
+    /// `this` is constructable even when noImplicitAny is enabled. Resolve
+    /// the declaration itself so unrelated functions retain call-only types.
     fn calleeLooksLikeJsConstructor(self: *Checker, callee_node: NodeId) bool {
-        if (!self.sourceHasCheckJsDirective() or self.strict_flags.no_implicit_any or
+        if (!self.sourceHasCheckJsDirective() or
             self.hir.kindOf(callee_node) != .identifier) return false;
         const name = hir_mod.identifierOf(self.hir, callee_node).name;
         if (self.checkJsFunctionVariableInitializer(callee_node, name)) |fn_node| {
             if (self.checkJsClassWithNameInOtherVirtualSection(callee_node, name)) return false;
-            return self.fnLooksLikeCheckJsConstructor(fn_node);
+            return self.fnProvidesCheckJsConstructorInstance(fn_node);
         }
         const fn_node = self.findSiblingFunctionDecl(callee_node) orelse return false;
-        return self.checkJsFunctionHasConstructThisAssignment(fn_node) and
-            self.functionNameHasCommonJsExportAssignment(name);
+        return self.fnProvidesCheckJsConstructorInstance(fn_node);
     }
 
     fn newCalleeTargetsSelfReturningFunction(self: *Checker, callee: NodeId) bool {
@@ -186556,18 +186546,6 @@ pub const Checker = struct {
             if (kind != .class_decl and kind != .class_expr) continue;
             if (self.virtualSectionStartForNode(declaration) == section) continue;
             if ((self.declarationName(declaration) orelse continue) == name) return true;
-        }
-        return false;
-    }
-
-    fn functionNameHasCommonJsExportAssignment(self: *Checker, name: hir_mod.StringId) bool {
-        var node: NodeId = 0;
-        while (node < self.hir.nodeCount()) : (node += 1) {
-            if (self.hir.kindOf(node) != .assignment) continue;
-            const assignment = hir_mod.assignmentOf(self.hir, node);
-            if (!self.memberAccessIsModuleExports(assignment.target)) continue;
-            if (assignment.value == hir_mod.none_node_id or self.hir.kindOf(assignment.value) != .identifier) continue;
-            if (hir_mod.identifierOf(self.hir, assignment.value).name == name) return true;
         }
         return false;
     }
@@ -187163,7 +187141,6 @@ pub const Checker = struct {
                 try parts.append(self.gpa, types.Primitive.undefined_t);
             }
 
-            const implicit_any = parts.items.len == 0 or info.first_empty_array_target != hir_mod.none_node_id;
             const member_t = if (parts.items.len == 0)
                 types.Primitive.any
             else if (parts.items.len == 1)
@@ -187188,30 +187165,10 @@ pub const Checker = struct {
                 });
             }
 
-            if (implicit_any and self.strict_flags.no_implicit_any) {
-                const target = if (info.first_empty_array_target != hir_mod.none_node_id)
-                    info.first_empty_array_target
-                else
-                    info.first_target;
-                if (target != hir_mod.none_node_id and
-                    !self.diagnosticExists(target, TsCodes.member_implicitly_any))
-                {
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "Member '{s}' implicitly has an '{s}' type.",
-                        .{
-                            self.string_interner.get(name),
-                            if (info.first_empty_array_target != hir_mod.none_node_id) "any[]" else "any",
-                        },
-                    );
-                    try self.diagnostics.append(self.gpa, .{
-                        .node = target,
-                        .pos = self.hir.spanOf(target).start,
-                        .code = TsCodes.member_implicitly_any,
-                        .message = msg,
-                    });
-                }
-            }
+            // In checked JavaScript, `this.x = null`, `undefined`, or `[]`
+            // establishes an inferred member even when its type widens to
+            // `any`. It is an assignment, not an untyped member declaration;
+            // TypeScript 5.7.3 does not issue TS7008 for these writes.
         }
     }
 
@@ -261890,7 +261847,7 @@ test "checker: checkjs CommonJS chained undefined export aliases preserve the fi
     try T.expect(!hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'b' implicitly has an 'any' type."));
 }
 
-test "checker: tsgo parity batch treats nullish JS this initializers as non-constructable" {
+test "checker: checked JS nullish constructor fields retain assignment errors" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -261921,10 +261878,13 @@ test "checker: tsgo parity batch treats nullish JS this initializers as non-cons
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    // TypeScript 5.7.3 infers `A` as constructable and reports only the
+    // three assignments incompatible with the inferred parameter types.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.member_implicitly_any));
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'undefined' is not assignable to type 'null'."));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
 }
@@ -262290,7 +262250,7 @@ test "checker: inferred JavaScript constructors remain value-only in JSDoc" {
     try T.expectEqual(@as(u32, 6), s.checker.unmodeled_any_sites.count());
 }
 
-test "checker: strict checked JavaScript rejects untagged constructor functions" {
+test "checker: strict checked JavaScript infers untagged constructor fields" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -262303,11 +262263,13 @@ test "checker: strict checked JavaScript rejects untagged constructor functions"
     s.checker.setCheckJsEnabled(true);
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    // TypeScript 5.7.3 constructs `C` and rejects the invalid field write.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
 }
 
-test "checker: strict checked JavaScript rejects tagged constructor functions" {
+test "checker: strict checked JavaScript accepts tagged constructor functions" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -262319,10 +262281,12 @@ test "checker: strict checked JavaScript rejects tagged constructor functions" {
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    // TypeScript 5.7.3 constructs a JSDoc-tagged JavaScript function without
+    // TS7009 or an implicit receiver diagnostic.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
-test "checker: checked JavaScript functions stay value-only heritage bases" {
+test "checker: checked JavaScript function constructors serve as heritage bases" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -262336,10 +262300,11 @@ test "checker: checked JavaScript functions stay value-only heritage bases" {
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.not_constructor_function_type));
+    // TypeScript 5.7.3 accepts both the local and cross-file extension.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
-test "checker: prototype owner recovery stays within its virtual function" {
+test "checker: prototype owner recovery retains virtual source identity" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -262352,11 +262317,9 @@ test "checker: prototype owner recovery stays within its virtual function" {
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
-    for (s.checker.diagnostics.items) |diagnostic| {
-        if (diagnostic.code != TsCodes.property_does_not_exist) continue;
-        try T.expect(std.mem.indexOf(u8, diagnostic.message, "Property 'y'") == null);
-    }
+    // Both constructors and the prototype method are valid in the pinned
+    // TypeScript 5.7.3 control, with no cross-file `this` leak.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: generic JavaScript constructor patterns keep tsgo diagnostics" {
