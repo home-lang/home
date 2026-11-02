@@ -118010,6 +118010,11 @@ pub const Checker = struct {
                         self.hir.setType(a.target, declared_t);
                         target_has_explicit_jsdoc_property_type = true;
                     }
+                    if (!target_has_explicit_jsdoc_property_type) {
+                        if (try self.jsConstructorPrototypeTypedMemberTypeForThisAssignment(a.target)) |declared_t| {
+                            target_t = declared_t;
+                        }
+                    }
                 }
                 // `.js` files with `// @ts-check` may annotate
                 // `Ctor.prototype = expr` with a leading
@@ -187001,6 +187006,72 @@ pub const Checker = struct {
         }
         try self.collectJsConstructorTypedThisMemberDeclarations(fn_node, members);
         try self.refineJsConstructorThisMemberTypes(fn_node, constructor_name, fn_params, sig_params, members);
+        if (constructor_name) |name| {
+            try self.collectJsConstructorPrototypeTypedMemberDeclarations(fn_node, name, members);
+        }
+    }
+
+    fn collectJsConstructorPrototypeTypedMemberDeclarations(
+        self: *Checker,
+        fn_node: NodeId,
+        constructor_name: hir_mod.StringId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        const root = self.rootBlockFor(fn_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+        const section = self.virtualSectionStartForNode(fn_node);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.virtualSectionStartForNode(stmt) != section) continue;
+            const declared = (try self.jsConstructorPrototypeTypedMemberDeclaration(stmt, constructor_name)) orelse continue;
+            for (members.items) |*member| {
+                if (member.name == declared.name) {
+                    member.type = declared.type;
+                    break;
+                }
+            } else {
+                try members.append(self.gpa, declared);
+            }
+        }
+    }
+
+    fn jsConstructorPrototypeTypedMemberDeclaration(
+        self: *Checker,
+        stmt: NodeId,
+        constructor_name: hir_mod.StringId,
+    ) CheckError!?types.ObjectMember {
+        // Bare `/** @type {T} */ C.prototype.x;` declares an instance
+        // property even though no assignment expression supplies a value.
+        const property = self.prototypeAssignmentPropertyName(stmt, constructor_name) orelse return null;
+        const declared_t = (try self.jsDocTypeForLeadingNode(stmt)) orelse return null;
+        return .{
+            .name = property,
+            .type = declared_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        };
+    }
+
+    fn jsConstructorPrototypeTypedMemberTypeForThisAssignment(self: *Checker, target: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective() or !self.source_may_have_prototype_assignment) return null;
+        const property = self.directThisPropertyName(target) orelse return null;
+        var fn_node = self.hir.parentOf(target);
+        while (fn_node != hir_mod.none_node_id) : (fn_node = self.hir.parentOf(fn_node)) {
+            const kind = self.hir.kindOf(fn_node);
+            if (kind == .fn_decl or kind == .fn_expr) break;
+        }
+        if (fn_node == hir_mod.none_node_id or !self.fnProvidesCheckJsConstructorInstance(fn_node)) return null;
+        const constructor_name = self.jsConstructorNameForFunction(fn_node) orelse return null;
+        const root = self.rootBlockFor(fn_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const section = self.virtualSectionStartForNode(fn_node);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.virtualSectionStartForNode(stmt) != section) continue;
+            const declared = (try self.jsConstructorPrototypeTypedMemberDeclaration(stmt, constructor_name)) orelse continue;
+            if (declared.name == property) return declared.type;
+        }
+        return null;
     }
 
     fn collectJsConstructorThisMembersFromNode(
@@ -271615,7 +271686,7 @@ test "checker: JSDoc @type on Ctor.prototype assignment accepts matching value" 
     }
 }
 
-test "checker: checkjs prototype property @type access does not declare constructor" {
+test "checker: checkjs prototype property @type checks constructor field" {
     const s = try newSetup(
         \\// @target: es2015
         \\// @allowJs: true
@@ -271629,18 +271700,9 @@ test "checker: checkjs prototype property @type access does not declare construc
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    var saw_this = false;
-    var saw_new = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.this_implicitly_any) saw_this = true;
-        if (d.code == TsCodes.new_expression_implicitly_any) saw_new = true;
-        if (d.code == TsCodes.type_not_assignable) {
-            try T.expect(std.mem.indexOf(u8, d.message, "boolean") == null);
-            try T.expect(std.mem.indexOf(u8, d.message, "number") == null);
-        }
-    }
-    try T.expect(saw_this);
-    try T.expect(saw_new);
+    // TypeScript 5.7.3 reports only the constructor's incompatible write.
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'number'."));
 }
 
 // Negative case ÃÂ¢ÃÂÃÂ without the leading JSDoc `@type` tag, the
