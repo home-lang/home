@@ -8310,6 +8310,100 @@ test "Service: repeated CommonJS whole exports refresh constructor diagnostics" 
     }
 }
 
+test "Service: chained CommonJS prototype edits republish constructor importer diagnostics" {
+    const Admitted = struct {
+        resolver: *ts_resolver.Resolver,
+        program: *ts_program.Program,
+        const vtable: ts_driver.ExternalResolver.VTable = .{ .resolve = resolve };
+
+        fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const result = self.resolver.resolve(specifier, containing_file) catch return null;
+            const admitted = self.program.lookupPath(result.path) != null;
+            return .{
+                .path = result.path,
+                .source_is_admitted = admitted,
+                .is_declaration = result.is_declaration or admitted,
+            };
+        }
+    };
+    const number_owner =
+        \\var A = function A() { this.a = 1; };
+        \\var B = function B() { this.b = 2; };
+        \\exports.A = A;
+        \\exports.B = B;
+        \\A.prototype = B.prototype = {
+        \\  /** @param {number} n */
+        \\  m: function (n) { return n; }
+        \\};
+    ;
+    const string_owner =
+        \\var A = function A() { this.a = 1; };
+        \\var B = function B() { this.b = 2; };
+        \\exports.A = A;
+        \\exports.B = B;
+        \\A.prototype = B.prototype = {
+        \\  /** @param {string} n */
+        \\  m: function (n) { return n; }
+        \\};
+    ;
+    const empty_owner =
+        \\var A = function A() { this.a = 1; };
+        \\var B = function B() { this.b = 2; };
+        \\exports.A = A;
+        \\exports.B = B;
+        \\A.prototype = B.prototype = {};
+    ;
+    const consumer_source =
+        \\import mod = require('./owner.js');
+        \\new mod.A().m('ok');
+        \\new mod.B().m('ok');
+    ;
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", number_owner);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/owner.js", number_owner);
+        _ = try program.add("/consumer.ts", consumer_source);
+        var admitted = Admitted{ .resolver = &resolver, .program = &program };
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = check_js,
+            .strict = true,
+            .no_emit = true,
+            .external_resolver = .{ .ptr = &admitted, .vtable = &Admitted.vtable },
+        };
+        try program.compileAll(options);
+
+        var svc = Service.init(T.allocator, &program);
+        defer svc.deinit();
+        svc.compile_options = options;
+        const initial = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingInitialDiagnostics;
+        defer freeLspDiagnostics(T.allocator, initial);
+        try T.expectEqual(@as(usize, 2), initial.len);
+        for (initial) |diagnostic| try T.expectEqual(@as(u32, 2345), diagnostic.code);
+
+        for ([_]struct { source: []const u8, count: usize, code: u32 }{
+            .{ .source = string_owner, .count = 0, .code = 0 },
+            .{ .source = empty_owner, .count = 2, .code = 2339 },
+            .{ .source = number_owner, .count = 2, .code = 2345 },
+        }) |revision| {
+            const owner_changed = try svc.didChangeFile(T.allocator, "/owner.js", revision.source);
+            defer T.allocator.free(owner_changed);
+            const refreshed = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingRefreshedDiagnostics;
+            defer freeLspDiagnostics(T.allocator, refreshed);
+            try T.expectEqual(revision.count, refreshed.len);
+            for (refreshed) |diagnostic| try T.expectEqual(revision.code, diagnostic.code);
+            try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+        }
+    }
+}
+
 test "Service: didChangeFile on unknown file returns empty diagnostics" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
