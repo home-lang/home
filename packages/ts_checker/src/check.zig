@@ -118435,16 +118435,26 @@ pub const Checker = struct {
                             const has_future_value = (try self.futureCommonJsExportAssignmentValue(node, key)) != null;
                             commonjs_declaration_placeholder = has_future_value and
                                 self.sourceDirectiveIsTrue("@declaration");
+                            if (assignment_value_is_void and !has_future_value and
+                                self.lookupCommonJsExportNarrow(key) == null and
+                                !self.diagnosticExists(a.target, TsCodes.property_does_not_exist))
+                            {
+                                try self.reportCommonJsExportMissingMember(a.target, key.prop_name);
+                            }
                             const direct_value_kind = self.hir.kindOf(a.value);
                             const direct_value_is_alias = self.exprIsEntityNameExpression(a.value) or
                                 direct_value_kind == .literal_undefined or
                                 direct_value_kind == .class_expr;
-                            if (!has_future_value and !direct_value_is_alias and self.strict_flags.no_implicit_any) {
+                            if (!has_future_value and !direct_value_is_alias and
+                                !assignment_value_is_void and self.strict_flags.no_implicit_any)
+                            {
                                 try self.reportCheckJsVoidExpandoImplicitAny(a.target, key.prop_name);
                             }
                         }
                     }
-                    if (assignment_value_is_void or commonjs_declaration_placeholder) {
+                    const void_declares_expando = assignment_value_is_void and
+                        try self.checkJsVoidExpandoCreatesProperty(a.target);
+                    if (void_declares_expando or commonjs_declaration_placeholder) {
                         if (commonjs_export_key) |key| {
                             const placeholder_t = if (assignment_result_t == types.Primitive.none or
                                 assignment_result_t == types.Primitive.unknown)
@@ -118454,7 +118464,7 @@ pub const Checker = struct {
                             try self.recordCommonJsExportNarrow(key, placeholder_t);
                         }
                         if (checkjs_object_expando_key) |key| {
-                            if (self.strict_flags.no_implicit_any) {
+                            if (self.strict_flags.no_implicit_any and !assignment_value_is_void) {
                                 try self.reportCheckJsVoidExpandoImplicitAny(a.target, key.prop_name);
                             }
                             try self.recordCheckJsObjectExpandoNarrow(key, types.Primitive.any);
@@ -121889,9 +121899,7 @@ pub const Checker = struct {
                             // is a write. `obj.slot` is still read to obtain the
                             // receiver, so a missing `slot` must report TS2339.
                             const is_intermediate_read = !self.isAssignmentTarget(node);
-                            const void_expando_declaration = self.assignmentTargetValueIsVoidExpression(node) and
-                                ((try self.commonJsExportMemberKey(node)) != null or
-                                    (try self.checkJsObjectLiteralExpandoMemberKey(node)) != null);
+                            const void_expando_declaration = try self.checkJsVoidExpandoCreatesProperty(node);
                             if (is_intermediate_read or
                                 self.memberNameIsEcmaPrivate(m.name) or
                                 (self.checkJsAssignmentTargetShouldReportMissingMember(node, access_obj_t) and
@@ -131885,6 +131893,41 @@ pub const Checker = struct {
         return false;
     }
 
+    /// A `void` write names an expando only when a later concrete write
+    /// supplies its type. Non-strict checked JS also allows an object-literal
+    /// expando to remain `any`; a bare CommonJS export is still missing.
+    fn checkJsVoidExpandoCreatesProperty(self: *Checker, target: NodeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or !self.assignmentTargetValueIsVoidExpression(target)) return false;
+        if (try self.commonJsExportMemberKey(target)) |key| {
+            return (try self.futureCommonJsExportAssignmentValue(target, key)) != null;
+        }
+        if (try self.checkJsObjectLiteralExpandoMemberKey(target)) |key| {
+            if (!self.strict_flags.no_implicit_any) return true;
+            return self.checkJsObjectExpandoHasNonVoidAssignment(key, target);
+        }
+        return false;
+    }
+
+    fn checkJsObjectExpandoHasNonVoidAssignment(self: *Checker, key: MemberKey, anchor: NodeId) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForNode(anchor);
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(raw) != section) continue;
+            const stmt = self.unwrapExportDecl(raw);
+            if (stmt == hir_mod.none_node_id or self.hir.kindOf(stmt) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, stmt);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id or
+                self.expressionIsVoidValue(assignment.value)) continue;
+            if (assignment.target == hir_mod.none_node_id or self.hir.kindOf(assignment.target) != .member_access) continue;
+            const member = hir_mod.memberOf(self.hir, assignment.target);
+            if (member.name != key.prop_name or member.object == hir_mod.none_node_id or
+                self.hir.kindOf(member.object) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, member.object).name == key.obj_name) return true;
+        }
+        return false;
+    }
+
     fn futureCommonJsExportAssignmentValue(self: *Checker, node: NodeId, key: MemberKey) CheckError!?NodeId {
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
@@ -132254,6 +132297,7 @@ pub const Checker = struct {
             const a = hir_mod.assignmentOf(self.hir, node);
             if (a.op != null or a.target == hir_mod.none_node_id) continue;
             if (self.hir.kindOf(a.target) != .member_access) continue;
+            if (self.strict_flags.no_implicit_any and self.expressionIsVoidValue(a.value)) continue;
             const target = hir_mod.memberOf(self.hir, a.target);
             if (target.name != member_name) continue;
             if (target.object == hir_mod.none_node_id or self.hir.kindOf(target.object) != .identifier) continue;
@@ -163016,13 +163060,7 @@ pub const Checker = struct {
                 }
             }
         }
-        if (self.sourceHasCheckJsDirective() and self.assignmentTargetValueIsVoidExpression(node)) {
-            if ((try self.commonJsExportMemberKey(node)) != null or
-                (try self.checkJsObjectLiteralExpandoMemberKey(node)) != null)
-            {
-                return;
-            }
-        }
+        if (try self.checkJsVoidExpandoCreatesProperty(node)) return;
         const name_str = self.string_interner.get(name);
         if (self.memberAccessRootNameIs(node, "Symbol")) {
             const msg = try std.fmt.allocPrint(
@@ -261783,7 +261821,7 @@ test "checker: checkjs CommonJS chained void export declarations use later liter
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'undefined' is not assignable to type '2'."));
 }
 
-test "checker: current tsgo checked JS void-zero assignments declare implicit-any expandos" {
+test "checker: checked JS void-zero writes do not declare implicit-any expandos" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -261805,17 +261843,63 @@ test "checker: current tsgo checked JS void-zero assignments declare implicit-an
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.member_implicitly_any));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+    // TypeScript 5.7.3 reports the missing `k`, both `y` accesses, and both
+    // `q` accesses. A `void 0` write alone does not define those members.
+    try T.expectEqual(@as(usize, 5), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'k' does not exist on type 'typeof import(\"assignmentToVoidZero2\")'."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'y' does not exist on type 'typeof o'."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'q' does not exist on type 'C'."));
 }
 
-test "checker: current tsgo program-routed CommonJS void export is implicit-any" {
+test "checker: non-strict checked JS void export stays missing but object expando remains open" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
+        \\// @filename: voidNonStrict.js
+        \\exports.j = 1;
+        \\exports.k = void 0;
+        \\exports.k;
+        \\var o = {};
+        \\o.y = void 0;
+        \\o.y;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // TypeScript 5.7.3 reports the two `k` accesses and accepts both `o.y`
+    // accesses without noImplicitAny.
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'k' does not exist on type 'typeof import(\"voidNonStrict\")'."));
+}
+
+test "checker: checked JS void placeholders accept later concrete expando writes" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @noImplicitAny: true
+        \\// @filename: voidLater.js
+        \\exports.j = 1;
+        \\exports.k = void 0;
+        \\exports.k = 2;
+        \\var o = {};
+        \\o.y = void 0;
+        \\o.y = 1;
+        \\o.y;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    // TypeScript 5.7.3 accepts both placeholders once a later write gives
+    // the export and object property concrete types.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: program-routed CommonJS void export remains missing" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\exports.j = 1;
         \\exports.k = void 0;
     );
     defer destroySetup(s);
@@ -261824,9 +261908,10 @@ test "checker: current tsgo program-routed CommonJS void export is implicit-any"
     try s.checker.checkSourceFile(s.root);
     try T.expect(hasDiagnosticCodeMessage(
         s,
-        TsCodes.member_implicitly_any,
-        "Member 'k' implicitly has an 'any' type.",
+        TsCodes.property_does_not_exist,
+        "Property 'k' does not exist on type 'typeof import(\"assignmentToVoidZero2\")'.",
     ));
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
 }
 
 test "checker: checkjs CommonJS chained undefined export aliases preserve the final symbol" {
