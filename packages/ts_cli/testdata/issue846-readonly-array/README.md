@@ -121,5 +121,9 @@ Both engines report only the deliberate TS2322 for assigning the optional
 surface. Its mapped flags include `push`, and the intentional assignment of
 that optional boolean flag to `number` reports TS2322.
 
+`tsconfig-unscopables-writes.json` checks concrete symbol-key writes on both
+arrays. The outer `[Symbol.unscopables]` property is readonly in each; the
+inner `length` flag is readonly only on `ReadonlyArray`.
+
 [Issue #960](https://github.com/home-lang/home/issues/960) tracks the remaining work to model the complete TypeScript
 `ReadonlyArray<T>` surface; these passing cases do not claim full parity.

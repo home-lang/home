@@ -51495,16 +51495,16 @@ pub const Checker = struct {
         });
     }
 
-    /// Same TS2540 surface as `checkReadonlyAssignment`, but for
-    /// string-literal element access (`obj["x"] = ...`). Upstream
-    /// treats this as an assignment to property `x`, not as an index
-    /// signature write, and anchors the diagnostic at the literal key.
+    /// Same TS2540 surface as `checkReadonlyAssignment`, for concrete
+    /// element keys such as `obj["x"]` and `obj[Symbol.unscopables]`.
+    /// These name a property, not an index signature.
     fn checkReadonlyElementAssignment(self: *Checker, target: NodeId) CheckError!bool {
         if (self.hir.kindOf(target) != .element_access) return false;
         const e = hir_mod.elementOf(self.hir, target);
         if (e.index == hir_mod.none_node_id) return false;
         const index_kind = self.hir.kindOf(e.index);
-        if (index_kind != .literal_string and index_kind != .literal_number) return false;
+        const is_symbol = self.isWellKnownSymbolComputedKey(e.index);
+        if (index_kind != .literal_string and index_kind != .literal_number and !is_symbol) return false;
         const name = (try self.classMemberNameFromPropertyKey(e.index, true)) orelse return false;
         var obj_t = self.hir.typeOf(e.object);
         if (obj_t == types.Primitive.none) return false;
@@ -51515,7 +51515,12 @@ pub const Checker = struct {
         if (obj_flags.is_union or obj_flags.is_intersection) {
             if (!self.typeUnionHasReadonlyMember(obj_t, name)) return false;
         } else if (obj_flags.is_object_type) {
-            const info = self.interner.objectMemberInfo(obj_t, name) orelse return false;
+            const info = self.interner.objectMemberInfo(obj_t, name) orelse blk: {
+                const elem = try self.arrayElementType(obj_t);
+                if (elem == types.Primitive.none) return false;
+                const proto = try self.arrayPrototypeForReceiver(obj_t, elem);
+                break :blk self.interner.objectMemberInfo(proto, name) orelse return false;
+            };
             if (!info.is_readonly) return false;
         } else {
             return false;
@@ -51524,10 +51529,14 @@ pub const Checker = struct {
             return false;
         }
         const prop_str = self.string_interner.get(name);
+        const display_name = if (is_symbol)
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{prop_str})
+        else
+            prop_str;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Cannot assign to '{s}' because it is a read-only property.",
-            .{prop_str},
+            .{display_name},
         );
         try self.diagnostics.append(self.gpa, .{
             .node = target,
@@ -289959,6 +289968,24 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     try T.expect(!s.checker.isBuiltinMappedKeyTypeParameter(aggregate));
     try T.expectEqual(try s.sint.intern("T0"), s.checker.typeParameterName(first).?);
     try T.expectEqual(types.Primitive.number_t, s.checker.typeParameterConstraint(first).?);
+}
+
+test "checker: well-known symbol array writes report readonly property errors" {
+    const s = try newSetup(
+        \\const readonlyValues: readonly number[] = [];
+        \\const readonlyFlags = readonlyValues[Symbol.unscopables];
+        \\readonlyFlags.length = true;
+        \\readonlyValues[Symbol.unscopables] = {};
+        \\const mutableValues: number[] = [];
+        \\const mutableFlags = mutableValues[Symbol.unscopables];
+        \\mutableFlags.length = true;
+        \\mutableValues[Symbol.unscopables] = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.readonly_property));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.readonly_index_signature));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: generic constraint checks preserve branch and keyof provenance" {
