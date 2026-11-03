@@ -57645,7 +57645,7 @@ pub const Checker = struct {
         if (visited.contains(t)) return t;
         try visited.put(self.gpa, t, {});
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) return t;
+        if (self.interner.isDirectTypeParameter(t)) return t;
         if (flags.is_union) {
             const members = self.interner.unionMembers(t);
             const members_snapshot = try self.gpa.dupe(TypeId, members);
@@ -109630,7 +109630,7 @@ pub const Checker = struct {
         if (obj_t < types.Primitive.first_dynamic or obj_t >= self.interner.pool.typeCount()) return false;
         if (self.ownInterfaceMemberOwner(obj_t, name)) |own| return self.objectMemberAccessIsOptional(own, name);
         const flags = self.interner.pool.flagsOf(obj_t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(obj_t)) {
             const constraint = self.typeParameterConstraint(obj_t) orelse return false;
             if (constraint == obj_t) return false;
             return self.objectMemberAccessIsOptional(constraint, name);
@@ -109674,7 +109674,7 @@ pub const Checker = struct {
         if (obj_t < types.Primitive.first_dynamic or obj_t >= self.interner.pool.typeCount()) return false;
         if (self.ownInterfaceMemberOwner(obj_t, name)) |own| return self.objectMemberAccessHasRequired(own, name);
         const flags = self.interner.pool.flagsOf(obj_t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(obj_t)) {
             const constraint = self.typeParameterConstraint(obj_t) orelse return false;
             if (constraint == obj_t) return false;
             return self.objectMemberAccessHasRequired(constraint, name);
@@ -138312,9 +138312,7 @@ pub const Checker = struct {
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         for (type_params) |param_t| {
-            if (param_t >= self.interner.pool.typeCount()) continue;
-            const flags = self.interner.pool.flagsOf(param_t);
-            if (!flags.is_type_parameter) continue;
+            if (!self.interner.isDirectTypeParameter(param_t)) continue;
             const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
             const raw_fallback = if (payload.default != types.Primitive.none)
                 payload.default
@@ -138345,8 +138343,7 @@ pub const Checker = struct {
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         for (type_params) |param_t| {
-            if (param_t >= self.interner.pool.typeCount()) continue;
-            if (!self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
+            if (!self.interner.isDirectTypeParameter(param_t)) continue;
             const payload_idx = self.interner.pool.payloadOf(param_t);
             const fallback = if (payload_idx < self.interner.pool.type_parameter_payloads.items.len) blk: {
                 const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
@@ -138365,7 +138362,7 @@ pub const Checker = struct {
     ) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(t)) {
             for (params) |param_t| {
                 if (t == param_t) return true;
             }
@@ -169157,7 +169154,7 @@ pub const Checker = struct {
     ) ?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) return if (subs.contains(t)) t else null;
+        if (self.interner.isDirectTypeParameter(t)) return if (subs.contains(t)) t else null;
         if (flags.is_union) {
             for (self.interner.unionMembers(t)) |m| {
                 if (self.firstSubstitutedFreeTypeParameter(m, subs)) |tp| return tp;
@@ -183412,7 +183409,7 @@ pub const Checker = struct {
         }
         const flags = self.interner.pool.flagsOf(object_t);
         if (flags.is_any) return types.Primitive.any;
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(object_t)) {
             const constraint = self.typeParameterConstraint(object_t) orelse return null;
             if (constraint == object_t) return null;
             return try self.effectiveStringIndexType(constraint);
@@ -183491,7 +183488,7 @@ pub const Checker = struct {
         if (t == types.Primitive.never) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(t)) {
             const constraint = self.typeParameterConstraint(t) orelse return false;
             if (constraint == t) return false;
             return self.collectKnownStringKeysFromIndexType(constraint, out);
@@ -189127,9 +189124,7 @@ pub const Checker = struct {
         var it = subs.iterator();
         while (it.next()) |entry| {
             const param_t = entry.key_ptr.*;
-            if (param_t >= self.interner.pool.typeCount()) continue;
-            const flags = self.interner.pool.flagsOf(param_t);
-            if (!flags.is_type_parameter) continue;
+            if (!self.interner.isDirectTypeParameter(param_t)) continue;
             const payload_idx = self.interner.pool.payloadOf(param_t);
             if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) continue;
             const payload = self.interner.pool.type_parameter_payloads.items[payload_idx];
@@ -290335,6 +290330,44 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     // Reuse the union payload offset as a parameter payload with a default.
     // A flag-only reader would wrongly accept that unrelated default.
     s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(aggregate)].default = types.Primitive.string_t;
+    try T.expect(s.checker.typeContainsConstructSignatureReferencingParams(aggregate, &.{first}));
+    try T.expect(!s.checker.typeContainsConstructSignatureReferencingParams(aggregate, &.{key_param}));
+    const diagnostic_sig = try s.ti.internSignature(&.{}, aggregate, false);
+    const diagnostic_params = try s.checker.gpa.alloc(TypeId, 1);
+    diagnostic_params[0] = aggregate;
+    try s.checker.generic_signature_params.put(s.checker.gpa, diagnostic_sig, diagnostic_params);
+    try T.expectEqual(aggregate, try s.checker.genericCallUnboundDiagnosticType(diagnostic_sig, aggregate));
+    var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer substitutions.deinit(s.checker.gpa);
+    try substitutions.put(s.checker.gpa, first, types.Primitive.number_t);
+    try T.expectEqual(first, s.checker.firstSubstitutedFreeTypeParameter(aggregate, &substitutions).?);
+    const substituted = try s.checker.substituteTypeNoCycles(aggregate, &substitutions);
+    try T.expectEqual(try s.ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.null_t }), substituted);
+    const field = try s.sint.intern("field");
+    const required_object = try s.ti.internObjectType(&.{.{
+        .name = field, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false,
+    }});
+    const optional_object = try s.ti.internObjectType(&.{.{
+        .name = field, .type = types.Primitive.number_t, .is_optional = true, .is_readonly = false, .is_method = false,
+    }});
+    const object_param = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("ObjectParam"), required_object, types.Primitive.none, .bivariant);
+    const optional_union = try s.ti.internUnion(&.{ object_param, optional_object });
+    const required_union = try s.ti.internUnion(&.{ object_param, required_object });
+    try T.expect(s.checker.objectMemberAccessIsOptional(optional_union, field));
+    try T.expect(s.checker.objectMemberAccessHasRequired(required_union, field));
+    const dictionary = try s.ti.internObjectTypeWithIndex(&.{}, types.Primitive.number_t, types.Primitive.none);
+    const indexed_param = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("IndexedParam"), dictionary, types.Primitive.none, .bivariant);
+    const dictionary_union = try s.ti.internUnion(&.{ indexed_param, dictionary });
+    try T.expectEqual(types.Primitive.number_t, (try s.checker.effectiveStringIndexType(dictionary_union)).?);
+    const key_x = try s.sint.intern("x");
+    const key_y = try s.sint.intern("y");
+    const key_param_for_union = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("KeyParam"), try s.ti.internStringLiteral(key_x), types.Primitive.none, .bivariant);
+    const key_union = try s.ti.internUnion(&.{ key_param_for_union, try s.ti.internStringLiteral(key_y) });
+    var known_keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+    defer known_keys.deinit(s.checker.gpa);
+    try T.expect(s.checker.collectKnownStringKeysFromIndexType(key_union, &known_keys));
+    try T.expect(std.mem.indexOfScalar(hir_mod.StringId, known_keys.items, key_x) != null);
+    try T.expect(std.mem.indexOfScalar(hir_mod.StringId, known_keys.items, key_y) != null);
     var fake_params = [_]TypeId{aggregate};
     const alias_info = GenericAliasInfo{ .params = &fake_params, .body = aggregate };
     try T.expect(s.checker.genericAliasHasMissingRequiredArgs(alias_info, 0));
