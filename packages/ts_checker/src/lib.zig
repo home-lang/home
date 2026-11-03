@@ -476,6 +476,46 @@ pub fn symbolProto(
     return cache.symbol_proto;
 }
 
+/// lib.es2015.symbol.wellknown.d.ts maps each Array/ReadonlyArray key to an
+/// optional boolean. The resulting type is an object, not a homomorphic array:
+/// `length` and the methods are boolean flags, with a numeric flag index.
+fn arrayUnscopablesFlags(
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    gpa: std.mem.Allocator,
+    array_members: []const types.ObjectMember,
+) !TypeId {
+    var flag_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+    defer flag_members.deinit(gpa);
+    for (array_members) |member| {
+        try flag_members.append(gpa, .{
+            .name = member.name,
+            .type = types.Primitive.boolean_t,
+            .is_optional = true,
+            .is_readonly = member.is_readonly,
+            .is_method = false,
+        });
+    }
+    for ([_][]const u8{ "toString", "toLocaleString" }) |name| {
+        try flag_members.append(gpa, .{
+            .name = try sint.intern(name),
+            .type = types.Primitive.boolean_t,
+            .is_optional = true,
+            .is_readonly = false,
+            .is_method = false,
+        });
+    }
+    try flag_members.append(gpa, .{
+        .name = try sint.intern("Symbol.unscopables"),
+        .type = types.Primitive.boolean_t,
+        .is_optional = true,
+        .is_readonly = true,
+        .is_method = false,
+    });
+    const flag_type = try ti.internUnion(&.{ types.Primitive.boolean_t, types.Primitive.undefined_t });
+    return ti.internObjectTypeWithIndexAndSymbol(flag_members.items, types.Primitive.none, flag_type, types.Primitive.none);
+}
+
 /// Build (or fetch from cache) the `Array<T>.prototype` member shape
 /// for a given element type. The shape mirrors what `internArrayType`
 /// already produces (`length: number`, `[i: number]: T`) plus the
@@ -756,7 +796,6 @@ pub fn arrayProto(
         .{ .name = try sint.intern("keys"), .type = sig_keys, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("entries"), .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("Symbol.iterator"), .type = sig_iterator, .is_optional = false, .is_readonly = false, .is_method = true },
-        .{ .name = try sint.intern("toArray"), .type = sig_to_array, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("reduce"), .type = sig_reduce, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("reduce"), .type = sig_reduce_no_init, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("reduceRight"), .type = sig_reduce, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -774,7 +813,17 @@ pub fn arrayProto(
         .{ .name = try sint.intern("unshift"), .type = sig_unshift, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("splice"), .type = sig_splice, .is_optional = false, .is_readonly = false, .is_method = true },
     };
-    const proto = try ti.internObjectType(&m);
+    var proto_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+    defer proto_members.deinit(gpa);
+    try proto_members.appendSlice(gpa, &m);
+    try proto_members.append(gpa, .{
+        .name = try sint.intern("Symbol.unscopables"),
+        .type = try arrayUnscopablesFlags(ti, sint, gpa, &m),
+        .is_optional = false,
+        .is_readonly = true,
+        .is_method = false,
+    });
+    const proto = try ti.internObjectType(proto_members.items);
     try cache.array_proto_by_elem.put(gpa, elem, proto);
     return proto;
 }
@@ -853,42 +902,9 @@ pub fn readonlyArrayProto(
         }
         try members.append(gpa, inherited);
     }
-    // lib.es2015.symbol.wellknown.d.ts declares this as
-    // `{ [K in keyof readonly any[]]?: boolean }`. Materialize that finite
-    // property surface and its numeric index: treating this mapped object as
-    // a homomorphic array would leave `length` and `map` with array types.
-    const flag_type = try ti.internUnion(&.{ types.Primitive.boolean_t, types.Primitive.undefined_t });
-    var flag_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
-    defer flag_members.deinit(gpa);
-    for (members.items) |member| {
-        try flag_members.append(gpa, .{
-            .name = member.name,
-            .type = types.Primitive.boolean_t,
-            .is_optional = true,
-            .is_readonly = member.is_readonly,
-            .is_method = false,
-        });
-    }
-    for ([_][]const u8{ "toString", "toLocaleString" }) |name| {
-        try flag_members.append(gpa, .{
-            .name = try sint.intern(name),
-            .type = types.Primitive.boolean_t,
-            .is_optional = true,
-            .is_readonly = false,
-            .is_method = false,
-        });
-    }
-    try flag_members.append(gpa, .{
-        .name = try sint.intern("Symbol.unscopables"),
-        .type = types.Primitive.boolean_t,
-        .is_optional = true,
-        .is_readonly = true,
-        .is_method = false,
-    });
-    const unscopables = try ti.internObjectTypeWithIndexAndSymbol(flag_members.items, types.Primitive.none, flag_type, types.Primitive.none);
     try members.append(gpa, .{
         .name = try sint.intern("Symbol.unscopables"),
-        .type = unscopables,
+        .type = try arrayUnscopablesFlags(ti, sint, gpa, members.items),
         .is_optional = false,
         .is_readonly = true,
         .is_method = false,
@@ -1586,6 +1602,26 @@ test "lib: readonly array unscopables map keys to optional boolean flags" {
     try T.expect(std.mem.indexOfScalar(TypeId, ti.unionMembers(index), types.Primitive.undefined_t) != null);
 }
 
+test "lib: mutable array unscopables include mutator flags" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, &rest_set);
+    const symbol = try sint.intern("Symbol.unscopables");
+    const flags = ti.objectMember(proto, symbol) orelse return error.TestUnexpectedResult;
+    try T.expect(ti.objectMemberInfo(proto, symbol).?.is_readonly);
+    const length = ti.objectMemberInfo(flags, try sint.intern("length")) orelse return error.TestUnexpectedResult;
+    try T.expect(length.is_optional and !length.is_readonly);
+    const push = ti.objectMemberInfo(flags, try sint.intern("push")) orelse return error.TestUnexpectedResult;
+    try T.expect(push.is_optional and !push.is_method);
+    try T.expectEqual(types.Primitive.boolean_t, push.type);
+}
+
 test "lib: array entries iterator preserves index and element tuple types" {
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
@@ -1693,7 +1729,7 @@ test "lib: arrayProto map/flatMap/reduce signatures are generic over U" {
     try T.expect(saw_no_init);
 }
 
-test "lib: arrayProto exposes iterator helper toArray" {
+test "lib: arrayProto leaves iterator helper toArray on iterator receivers" {
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
     var ti = try interner_mod.Interner.init(T.allocator);
@@ -1705,7 +1741,7 @@ test "lib: arrayProto exposes iterator helper toArray" {
 
     const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, &rest_set);
     const to_array_id = try sint.intern("toArray");
-    try T.expect(ti.objectMember(proto, to_array_id) != null);
+    try T.expect(ti.objectMember(proto, to_array_id) == null);
 }
 
 test "lib: arrayProto exposes reduce/flat/findLast/at and rest methods" {

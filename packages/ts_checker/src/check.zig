@@ -34704,7 +34704,9 @@ pub const Checker = struct {
         const member = hir_mod.memberOf(self.hir, callee);
         if (!isArrayCallbackMethodName(self.string_interner.get(member.name))) return false;
         const receiver_t = self.hir.typeOf(member.object);
-        return receiver_t != types.Primitive.none and !self.arrayCallbackReceiverIsArrayLike(receiver_t);
+        return receiver_t != types.Primitive.none and
+            !self.arrayCallbackReceiverIsArrayLike(receiver_t) and
+            !(self.isIteratorObjectType(receiver_t) catch false);
     }
 
     fn arrayCallbackParameterType(
@@ -34745,6 +34747,13 @@ pub const Checker = struct {
         }
         if (recv_t == types.Primitive.any and self.hir.kindOf(m.object) == .member_access) {
             recv_t = self.program_contextual_member_projections.get(m.object) orelse recv_t;
+        }
+        if (try self.isIteratorObjectType(recv_t)) {
+            if (is_sort or param_index > 1) return null;
+            return if (param_index == 0)
+                self.interner.objectNumberIndex(recv_t)
+            else
+                types.Primitive.number_t;
         }
         if (!self.arrayCallbackReceiverIsArrayLike(recv_t)) return null;
         if (try self.arrayCopyMethodExcluded(recv_t, m.name)) return null;
@@ -112960,6 +112969,50 @@ pub const Checker = struct {
         return lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, &self.rest_signatures) catch return error.OutOfMemory;
     }
 
+    fn isIteratorObjectType(self: *Checker, t: TypeId) CheckError!bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return false;
+        if (self.interner.objectNumberIndex(t) == types.Primitive.none) return false;
+        const next = self.string_interner.intern("next") catch return error.OutOfMemory;
+        const iterator = self.string_interner.intern("Symbol.iterator") catch return error.OutOfMemory;
+        const length = self.string_interner.intern("length") catch return error.OutOfMemory;
+        return self.interner.objectMember(t, next) != null and
+            self.interner.objectMember(t, iterator) != null and
+            self.interner.objectMember(t, length) == null;
+    }
+
+    /// IteratorObject<T> has a numeric slot for its yielded T in our type
+    /// model. That slot does not make it an Array<T>: iterator helpers return
+    /// iterators, and only toArray returns an array.
+    fn iteratorHelperMember(self: *Checker, receiver: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (!try self.isIteratorObjectType(receiver)) return null;
+        const elem = self.interner.objectNumberIndex(receiver);
+        const method = self.string_interner.get(name);
+        if (std.mem.eql(u8, method, "toArray")) {
+            const array = self.interner.internArrayType(self.string_interner, elem) catch return error.OutOfMemory;
+            return self.interner.internSignature(&.{}, array, false) catch return error.OutOfMemory;
+        }
+        if (std.mem.eql(u8, method, "take") or std.mem.eql(u8, method, "drop")) {
+            return self.interner.internSignature(&.{types.Primitive.number_t}, receiver, false) catch return error.OutOfMemory;
+        }
+        if (std.mem.eql(u8, method, "filter")) {
+            const callback = self.interner.internSignature(&.{ elem, types.Primitive.number_t }, types.Primitive.unknown, false) catch return error.OutOfMemory;
+            return self.interner.internSignature(&.{callback}, receiver, false) catch return error.OutOfMemory;
+        }
+        if (std.mem.eql(u8, method, "map")) {
+            const result = self.interner.internTypeParameter(self.string_interner.intern("U") catch return error.OutOfMemory, types.Primitive.none, types.Primitive.none) catch return error.OutOfMemory;
+            const callback = self.interner.internSignature(&.{ elem, types.Primitive.number_t }, result, false) catch return error.OutOfMemory;
+            const iterator = lib.iteratorObjectType(self.interner, self.string_interner, result, false) catch return error.OutOfMemory;
+            const signature = self.interner.internSignature(&.{callback}, iterator, false) catch return error.OutOfMemory;
+            const owned = try self.gpa.alloc(TypeId, 1);
+            owned[0] = result;
+            try self.generic_signature_params.put(self.gpa, signature, owned);
+            return signature;
+        }
+        return null;
+    }
+
     fn lookupArrayLikePrototypeMember(self: *Checker, t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
@@ -112976,6 +113029,7 @@ pub const Checker = struct {
             return self.interner.internUnion(resolved.items) catch return error.OutOfMemory;
         }
         if (!flags.is_object_type or flags.is_intersection) return null;
+        if (try self.isIteratorObjectType(t)) return try self.iteratorHelperMember(t, name);
         const elem_t = try self.arrayElementType(t);
         if (elem_t == types.Primitive.none) return null;
         const proto = try self.arrayPrototypeForReceiver(t, elem_t);
@@ -121958,7 +122012,7 @@ pub const Checker = struct {
                 // element type as `T`.
                 if (self.interner.pool.flagsOf(access_obj_t).is_object_type) {
                     const num_idx = try self.arrayElementType(access_obj_t);
-                    if (num_idx != types.Primitive.none) {
+                    if (num_idx != types.Primitive.none and !try self.isIteratorObjectType(access_obj_t)) {
                         const proto = try self.arrayPrototypeForReceiver(access_obj_t, num_idx);
                         if (self.interner.objectMember(proto, m.name)) |t| {
                             break :blk try self.optionalChainResult(t, member_is_optional_chain);
@@ -136126,6 +136180,10 @@ pub const Checker = struct {
             if (member.name == name) {
                 try self.collectCallSignatures(member.type, out);
             }
+        }
+        if (try self.isIteratorObjectType(t)) {
+            if (try self.iteratorHelperMember(t, name)) |member_t| try self.collectCallSignatures(member_t, out);
+            return;
         }
         const num_idx = try self.arrayElementType(t);
         if (num_idx != types.Primitive.none) {
@@ -183040,6 +183098,7 @@ pub const Checker = struct {
     fn arrayLikePrototypeMember(self: *Checker, object_t: TypeId, key: hir_mod.StringId) CheckError!?TypeId {
         if (object_t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(object_t).is_object_type) return null;
+        if (try self.isIteratorObjectType(object_t)) return try self.iteratorHelperMember(object_t, key);
         if (!self.isTupleShapedTarget(object_t) and !self.typeIsArrayLikeObject(object_t)) return null;
         var elem_t = try self.arrayElementType(object_t);
         if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
@@ -216156,6 +216215,20 @@ test "checker: ES2025 Float16Array global and iterator helper toArray are recogn
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: iterator helpers preserve yielded types without adding toArray to arrays" {
+    const s = try newSetup(
+        \\const values: number[] = [1, 2, 3];
+        \\const iter = values.values().filter((x) => x > 1).map((x) => x.toString());
+        \\const strings: string[] = iter.toArray();
+        \\const wrong: number[] = iter.toArray();
+        \\values.toArray();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: React.Component heritage supplies props member" {
