@@ -85869,8 +85869,15 @@ pub const Checker = struct {
             if (matched and infer_subs.count() > 0) {
                 return self.substituteType(tt, &infer_subs);
             }
+            if (!matched and self.containsInferTypeParameter(ext) and
+                !self.containsFreeTypeParameter(check) and
+                !self.containsOrdinaryTypeParameter(ext))
+            {
+                return ff;
+            }
         }
-        // Defer if the check or extends type carries a free type parameter.
+        // Preserve symbolic conditionals whose check or extends side still
+        // carries a free type parameter after the infer attempt.
         if (self.containsFreeTypeParameter(check) or self.containsFreeTypeParameter(ext)) {
             return self.interner.internConditionalWithDistribution(check, ext, tt, ff, is_distributive) catch return error.OutOfMemory;
         }
@@ -85889,7 +85896,7 @@ pub const Checker = struct {
             else => return false,
         };
         // Definition case: the check still lowers to a free type parameter.
-        if (check_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(check_t).is_type_parameter) return true;
+        if (self.interner.isDirectTypeParameter(check_t)) return true;
         // Instantiation case: the bare reference names a type parameter that the
         // current generic instantiation bound to a concrete type (e.g.
         // `IndexFor<"0" | "1">` binds `S` to the union). Distributivity is a
@@ -85984,6 +85991,12 @@ pub const Checker = struct {
             const matched = self.matchInfer(infer_check, ext, &infer_subs) catch false;
             if (matched and infer_subs.count() > 0) {
                 return self.substituteType(tt, &infer_subs);
+            }
+            if (!matched and self.containsInferTypeParameter(ext) and
+                !self.containsFreeTypeParameter(check) and
+                !self.containsOrdinaryTypeParameter(ext))
+            {
+                return ff;
             }
         }
         if (self.containsFreeTypeParameter(check) or self.containsFreeTypeParameter(ext)) {
@@ -86777,7 +86790,7 @@ pub const Checker = struct {
         ext: TypeId,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!bool {
-        if (self.interner.pool.flagsOf(ext).is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(ext)) {
             const payload_idx = self.interner.pool.payloadOf(ext);
             if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) {
                 try subs.put(self.gpa, ext, check);
@@ -86796,6 +86809,45 @@ pub const Checker = struct {
         }
         const ef = self.interner.pool.flagsOf(ext);
         const cf = self.interner.pool.flagsOf(check);
+        if (ef.is_union) {
+            // A union inherits its members' flags, but its payload belongs to
+            // the union pool. Match an infer-bearing alternative structurally
+            // and keep only the bindings from a successful alternative.
+            const members = self.gpa.dupe(TypeId, self.interner.unionMembers(ext)) catch return error.OutOfMemory;
+            defer self.gpa.free(members);
+            for (members) |member| {
+                if (!self.containsInferTypeParameter(member)) continue;
+                var trial: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                defer trial.deinit(self.gpa);
+                try self.copyInferSubs(subs, &trial);
+                if (!try self.matchInfer(check, member, &trial)) continue;
+                subs.clearRetainingCapacity();
+                try self.copyInferSubs(&trial, subs);
+                return true;
+            }
+            return check == ext;
+        }
+        if (ef.is_intersection and self.containsInferTypeParameter(ext)) {
+            // Every constituent of an intersection must match the source.
+            // Infer placeholders capture the source while concrete members
+            // remain constraints on it. Keep bindings private until all
+            // members have matched.
+            const members = self.gpa.dupe(TypeId, self.interner.intersectionMembers(ext)) catch return error.OutOfMemory;
+            defer self.gpa.free(members);
+            var trial: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer trial.deinit(self.gpa);
+            try self.copyInferSubs(subs, &trial);
+            for (members) |member| {
+                const matched = if (self.containsInferTypeParameter(member))
+                    try self.matchInfer(check, member, &trial)
+                else
+                    try self.conditionalExtendsRelation(check, member);
+                if (!matched) return false;
+            }
+            subs.clearRetainingCapacity();
+            try self.copyInferSubs(&trial, subs);
+            return true;
+        }
         if (ef.is_signature and cf.is_object_type) {
             const call_member_id = self.string_interner.intern("__call") catch return error.OutOfMemory;
             var signature_count: usize = 0;
@@ -87021,7 +87073,7 @@ pub const Checker = struct {
         slice: []const u8,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!bool {
-        if (part_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(part_t).is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(part_t)) {
             const sid = self.string_interner.intern(slice) catch return error.OutOfMemory;
             const lit_t = self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
             if (try self.matchInfer(lit_t, part_t, subs)) return true;
@@ -87077,12 +87129,21 @@ pub const Checker = struct {
     }
 
     fn containsFreeTypeParameter(self: *Checker, t: TypeId) bool {
+        return self.containsTypeParameter(t, false);
+    }
+
+    fn containsOrdinaryTypeParameter(self: *Checker, t: TypeId) bool {
+        return self.containsTypeParameter(t, true);
+    }
+
+    fn containsTypeParameter(self: *Checker, t: TypeId, exclude_infer: bool) bool {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
         // Type graphs can contain cycles. Visit each identity once instead of
         // recurring into a namespace/object indefinitely. This walk does not
         // call back into checking, so its scratch storage is reusable between
         // queries. Allocation failure conservatively means unknown.
-        if (self.interner.pool.flagsOf(t).is_type_parameter) return true;
+        if (self.interner.isDirectTypeParameter(t) and
+            (!exclude_infer or !self.infer_type_parameters.contains(t))) return true;
         const allocator = self.gpa;
         const pending = &self.free_type_parameter_pending;
         const visited = &self.free_type_parameter_visited;
@@ -87094,7 +87155,13 @@ pub const Checker = struct {
             const entry = visited.getOrPut(allocator, current) catch return true;
             if (entry.found_existing) continue;
             const flags = self.interner.pool.flagsOf(current);
-            if (flags.is_type_parameter) return true;
+            if (self.interner.isDirectTypeParameter(current)) {
+                if (!exclude_infer or !self.infer_type_parameters.contains(current)) return true;
+                if (self.interner.typeParameterConstraint(current)) |constraint| {
+                    if (constraint != current) pending.append(allocator, constraint) catch return true;
+                }
+                continue;
+            }
             if (flags.is_union) {
                 pending.appendSlice(allocator, self.interner.unionMembers(current)) catch return true;
             } else if (flags.is_intersection) {
@@ -87162,7 +87229,7 @@ pub const Checker = struct {
             }
             return false;
         }
-        if (flags.is_type_parameter) return self.infer_type_parameters.contains(t);
+        if (self.interner.isDirectTypeParameter(t)) return self.infer_type_parameters.contains(t);
         if (flags.is_object_type) {
             for (self.interner.objectMembers(t)) |member| {
                 if (self.containsInferTypeParameterInner(member.type, depth + 1)) return true;
@@ -87271,7 +87338,7 @@ pub const Checker = struct {
         if (depth == active.len) return true;
         active[depth] = .{ .type_id = t, .bound_len = bound_len };
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(t)) {
             // `this` is supplied by its declaration/receiver, rather than
             // inferred as a free generic parameter of this callback.
             if (self.isThisTypeParameter(t)) return false;
@@ -290092,6 +290159,73 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     defer label.deinit(T.allocator);
     try s.checker.appendTypeParameterListLabel(&label, &fake_params);
     try T.expectEqualStrings("<T>", label.items);
+}
+
+test "checker: infer through a union binds its parameter member" {
+    const synthetic = try newSetup("type Local = 1;");
+    defer destroySetup(synthetic);
+    const parameter = try synthetic.ti.internTypeParameter(
+        try synthetic.sint.intern("U"),
+        types.Primitive.none,
+        types.Primitive.none,
+    );
+    try synthetic.checker.infer_type_parameters.put(synthetic.checker.gpa, parameter, {});
+    const aggregate = try synthetic.ti.internUnion(&.{ parameter, types.Primitive.null_t });
+    try T.expect(synthetic.ti.pool.flagsOf(aggregate).is_type_parameter);
+    var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer subs.deinit(synthetic.checker.gpa);
+    try T.expect(try synthetic.checker.matchInfer(types.Primitive.number_t, aggregate, &subs));
+    try T.expectEqual(types.Primitive.number_t, subs.get(parameter).?);
+    try T.expect(!subs.contains(aggregate));
+    subs.clearRetainingCapacity();
+    const intersection = try synthetic.ti.internIntersection(&.{ parameter, types.Primitive.number_t });
+    try T.expect(synthetic.ti.pool.flagsOf(intersection).is_intersection);
+    try T.expect(try synthetic.checker.matchInfer(types.Primitive.number_t, intersection, &subs));
+    try T.expectEqual(types.Primitive.number_t, subs.get(parameter).?);
+    try T.expect(!subs.contains(intersection));
+    subs.clearRetainingCapacity();
+    try T.expect(!try synthetic.checker.matchInfer(types.Primitive.string_t, intersection, &subs));
+    try T.expectEqual(@as(usize, 0), subs.count());
+
+    const s = try newSetup(
+        \\type UnwrapNullable<T> = T extends infer U | null ? U : never;
+        \\type NumberResult = UnwrapNullable<number>;
+        \\const good: NumberResult = 42;
+        \\const wrong: NumberResult = 'x';
+        \\type NullResult = UnwrapNullable<null>;
+        \\const nullGood: NullResult = null;
+        \\type OrdinaryUnion = null extends string | null ? true : false;
+        \\const ordinaryGood: OrdinaryUnion = true;
+    );
+    defer destroySetup(s);
+    s.checker.strict_flags.strict_null_checks = true;
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'string' is not assignable to type 'number'.",
+    ));
+}
+
+test "checker: infer through an intersection respects concrete members" {
+    const s = try newSetup(
+        \\type Peel<T> = T extends infer U & { x: number } ? U : never;
+        \\type A = Peel<{ x: number; y: string }>;
+        \\const good: A = { x: 1, y: 'a' };
+        \\const bad: A = { x: 1, y: 2 };
+        \\type B = Peel<{ x: string }>;
+        \\const neverValue: B = { x: 'a' };
+    );
+    defer destroySetup(s);
+    s.checker.strict_flags.strict_null_checks = true;
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '{ x: string; }' is not assignable to type 'never'.",
+    ));
 }
 
 test "checker: well-known symbol array writes report readonly property errors" {
