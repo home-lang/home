@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Compare admitted-JavaScript projects (#846 and its constructor follow-ups)
+// Compare admitted-JavaScript projects and related checker regressions
 // with TypeScript 5.7.3 using the same config,
 // working directory, CLI flags, and exact stdout/stderr/exit status. The
 // explicit noEmit override keeps this audit read-only even when a new fixture
@@ -52,6 +52,7 @@ const configs = files.stdout.trim().split('\n').filter(path =>
   path.includes('/issue846-') || path.includes('/issue965-') ||
   path.includes('/issue966-commonjs-constructor/') ||
   path.includes('/issue968-js-constructor-import/') ||
+  path.includes('/issue963-aggregate-type-parameter/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()

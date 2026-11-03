@@ -87375,11 +87375,7 @@ pub const Checker = struct {
     }
 
     fn typeParameterName(self: *Checker, t: TypeId) ?hir_mod.StringId {
-        if (t >= self.interner.pool.typeCount()) return null;
-        if (!self.interner.pool.flagsOf(t).is_type_parameter) return null;
-        const payload_idx = self.interner.pool.payloadOf(t);
-        if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return null;
-        return self.interner.pool.type_parameter_payloads.items[payload_idx].name;
+        return self.interner.typeParameterName(t);
     }
 
     fn extendSubstitutionsByMatchingTypeParamNames(
@@ -87405,6 +87401,17 @@ pub const Checker = struct {
         if (seen.contains(t)) return;
         try seen.put(self.gpa, t, {});
         const flags = self.interner.pool.flagsOf(t);
+        // Aggregate flags include those of their members, but their payloads
+        // belong to the union/intersection pool. Traverse the members before
+        // considering a direct type-parameter payload.
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| try self.extendSubstitutionsByMatchingTypeParamNamesInner(m, type_params, subs, seen);
+            return;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |m| try self.extendSubstitutionsByMatchingTypeParamNamesInner(m, type_params, subs, seen);
+            return;
+        }
         if (flags.is_type_parameter) {
             if (subs.contains(t)) return;
             const name = self.typeParameterName(t) orelse return;
@@ -87416,14 +87423,6 @@ pub const Checker = struct {
                     return;
                 }
             }
-            return;
-        }
-        if (flags.is_union) {
-            for (self.interner.unionMembers(t)) |m| try self.extendSubstitutionsByMatchingTypeParamNamesInner(m, type_params, subs, seen);
-            return;
-        }
-        if (flags.is_intersection) {
-            for (self.interner.intersectionMembers(t)) |m| try self.extendSubstitutionsByMatchingTypeParamNamesInner(m, type_params, subs, seen);
             return;
         }
         if (flags.is_object_type) {
@@ -98872,11 +98871,9 @@ pub const Checker = struct {
 
     fn sourceAssignableToDeferredConditionalBranch(self: *Checker, source_t: TypeId, branch_t: TypeId) CheckError!bool {
         if (source_t == branch_t) return true;
-        if (branch_t < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(branch_t).is_type_parameter)
+        if (self.interner.isDirectTypeParameter(branch_t))
         {
-            return source_t < self.interner.pool.typeCount() and
-                self.interner.pool.flagsOf(source_t).is_type_parameter and
+            return self.interner.isDirectTypeParameter(source_t) and
                 self.sameTypeParameterName(source_t, branch_t);
         }
         return try self.checkerAssignableTo(source_t, branch_t);
@@ -186616,8 +186613,7 @@ pub const Checker = struct {
     }
 
     fn sameTypeParameterName(self: *Checker, a: TypeId, b: TypeId) bool {
-        if (a >= self.interner.pool.typeCount() or b >= self.interner.pool.typeCount()) return false;
-        if (!self.interner.pool.flagsOf(a).is_type_parameter or !self.interner.pool.flagsOf(b).is_type_parameter) return false;
+        if (!self.interner.isDirectTypeParameter(a) or !self.interner.isDirectTypeParameter(b)) return false;
         const a_name = self.typeParameterName(a) orelse return false;
         const b_name = self.typeParameterName(b) orelse return false;
         return a_name == b_name;
@@ -289861,6 +289857,24 @@ test "checker: contextual generic conditional returns reuse alpha substitutions"
     s.checker.strict_flags.strict_null_checks = true;
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: aggregate type flags never select a type-parameter payload" {
+    const s = try newSetup("type Local = 1;");
+    defer destroySetup(s);
+    var first: TypeId = types.Primitive.none;
+    for (0..64) |i| {
+        var name_buf: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "T{d}", .{i});
+        const parameter = try s.ti.internTypeParameter(try s.sint.intern(name), types.Primitive.none, types.Primitive.none);
+        if (i == 0) first = parameter;
+    }
+    const aggregate = try s.ti.internUnion(&.{ first, types.Primitive.null_t });
+    try T.expect(s.ti.pool.flagsOf(aggregate).is_union);
+    try T.expect(s.ti.pool.flagsOf(aggregate).is_type_parameter);
+    try T.expect(s.ti.pool.payloadOf(aggregate) < s.ti.pool.type_parameter_payloads.items.len);
+    try T.expect(s.checker.typeParameterName(aggregate) == null);
+    try T.expectEqual(try s.sint.intern("T0"), s.checker.typeParameterName(first).?);
 }
 
 test "checker: generic constraint checks preserve branch and keyof provenance" {
