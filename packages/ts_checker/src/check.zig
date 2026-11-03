@@ -140975,8 +140975,8 @@ pub const Checker = struct {
     fn declaredElementWriteTypeAfterNarrow(self: *Checker, access: NodeId) CheckError!?TypeId {
         if (self.hir.kindOf(access) != .element_access) return null;
         const element = hir_mod.elementOf(self.hir, access);
-        if (self.hir.kindOf(element.object) != .identifier) return null;
-        const object_t = self.visibleAnnotatedIdentifierType(element.object) orelse return null;
+        const object_t = self.visibleAnnotatedIdentifierType(element.object) orelse
+            (try self.declaredCheckJsObjectTypeForWrite(element.object)) orelse return null;
         var index_t = self.hir.typeOf(element.index);
         if (index_t == types.Primitive.none) return null;
         index_t = (try self.expressionNarrowLiteralType(element.index)) orelse index_t;
@@ -140994,6 +140994,19 @@ pub const Checker = struct {
         self.checking_element_write_target = true;
         defer self.checking_element_write_target = previous;
         return try self.resolveObjectIndexedAccessType(object_t, index_t);
+    }
+
+    fn declaredCheckJsObjectTypeForWrite(self: *Checker, node: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        return switch (self.hir.kindOf(node)) {
+            .identifier => try self.jsDocTypeForPreviousIdentifierDecl(node),
+            .member_access => blk: {
+                const access = hir_mod.memberOf(self.hir, node);
+                const receiver_t = (try self.declaredCheckJsObjectTypeForWrite(access.object)) orelse break :blk null;
+                break :blk try self.lookupObjectMember(receiver_t, access.name);
+            },
+            else => null,
+        };
     }
 
     fn indexAnnotationConstraintIsKeyofObject(
