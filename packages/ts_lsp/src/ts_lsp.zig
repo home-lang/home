@@ -8178,6 +8178,90 @@ test "Service: checked JavaScript generic return edits republish importer diagno
     try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
 }
 
+test "Service: checked JavaScript generic constructor member edits republish importer diagnostics" {
+    const Admitted = struct {
+        resolver: *ts_resolver.Resolver,
+        program: *ts_program.Program,
+        const vtable: ts_driver.ExternalResolver.VTable = .{ .resolve = resolve };
+
+        fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const result = self.resolver.resolve(specifier, containing_file) catch return null;
+            const admitted = self.program.lookupPath(result.path) != null;
+            return .{
+                .path = result.path,
+                .source_is_admitted = admitted,
+                .is_declaration = result.is_declaration or admitted,
+            };
+        }
+    };
+    const generic_owner =
+        \\/** @template T @param {T} value */
+        \\export function Box(value) { this.value = value; }
+    ;
+    const string_owner =
+        \\/** @template T @param {T} value */
+        \\export function Box(value) { this.value = String(value); }
+    ;
+    const consumer_source =
+        \\import { Box } from './owner.js';
+        \\const numberValue: number = new Box(1).value;
+        \\const stringValue: string = new Box(1).value;
+        \\const prototypeNumber: number = Box.prototype.value;
+        \\const prototypeString: string = Box.prototype.value;
+        \\void numberValue;
+        \\void stringValue;
+        \\void prototypeNumber;
+        \\void prototypeString;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", generic_owner);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.js", generic_owner);
+    _ = try program.add("/consumer.ts", consumer_source);
+    var admitted = Admitted{ .resolver = &resolver, .program = &program };
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &admitted, .vtable = &Admitted.vtable },
+    };
+    try program.compileAll(options);
+
+    var svc = Service.init(T.allocator, &program);
+    defer svc.deinit();
+    svc.compile_options = options;
+    const initial = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingInitialDiagnostics;
+    defer freeLspDiagnostics(T.allocator, initial);
+    try T.expectEqual(@as(usize, 1), initial.len);
+    try T.expectEqual(@as(u32, 2322), initial[0].code);
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", initial[0].message);
+
+    const owner_changed = try svc.didChangeFile(T.allocator, "/owner.js", string_owner);
+    defer T.allocator.free(owner_changed);
+    const changed = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingChangedDiagnostics;
+    defer freeLspDiagnostics(T.allocator, changed);
+    try T.expectEqual(@as(usize, 1), changed.len);
+    try T.expectEqual(@as(u32, 2322), changed[0].code);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", changed[0].message);
+    try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+
+    const owner_reverted = try svc.didChangeFile(T.allocator, "/owner.js", generic_owner);
+    defer T.allocator.free(owner_reverted);
+    const reverted = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingRevertedDiagnostics;
+    defer freeLspDiagnostics(T.allocator, reverted);
+    try T.expectEqual(@as(usize, 1), reverted.len);
+    try T.expectEqual(@as(u32, 2322), reverted[0].code);
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", reverted[0].message);
+    try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+}
+
 test "Service: CommonJS expando edits republish importer diagnostics" {
     const Admitted = struct {
         resolver: *ts_resolver.Resolver,
