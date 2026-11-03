@@ -88839,7 +88839,7 @@ pub const Checker = struct {
                 {
                     return operand;
                 }
-                if (operand_flags.is_type_parameter and self.mappedTypeHasIdentityTemplate(m)) {
+                if (self.interner.isDirectTypeParameter(operand) and self.mappedTypeHasIdentityTemplate(m)) {
                     const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(operand)];
                     if (payload.constraint != types.Primitive.none and
                         payload.constraint != types.Primitive.unknown and
@@ -89353,7 +89353,7 @@ pub const Checker = struct {
             if (surface != t) try self.collectKeyofBroadIndexKeys(surface, out);
             return;
         }
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(t)) {
             const constraint = self.typeParameterConstraint(t) orelse return;
             if (constraint == t) return;
             return try self.collectKeyofBroadIndexKeys(constraint, out);
@@ -129422,8 +129422,7 @@ pub const Checker = struct {
         const defaults_t = try self.lookupObjectMember(static_t, defaults_name);
         if (prop_types_t == null and defaults_t == null) return raw_props_t;
 
-        const effective_raw_props_t = if (raw_props_t < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(raw_props_t).is_type_parameter)
+        const effective_raw_props_t = if (self.interner.isDirectTypeParameter(raw_props_t))
         blk: {
             const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(raw_props_t)];
             break :blk if (payload.default != types.Primitive.none) payload.default else raw_props_t;
@@ -134918,8 +134917,7 @@ pub const Checker = struct {
         var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer substitutions.deinit(self.gpa);
         for (parameters) |parameter| {
-            if (parameter >= self.interner.pool.typeCount() or
-                !self.interner.pool.flagsOf(parameter).is_type_parameter) continue;
+            if (!self.interner.isDirectTypeParameter(parameter)) continue;
             const constraint = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter)].constraint;
             const fallback = if (constraint != types.Primitive.none)
                 try self.substituteType(constraint, &substitutions)
@@ -289974,6 +289972,15 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     try s.checker.collectFreeTypeParamFallbacks(aggregate, &fallbacks, &visited_fallbacks);
     try T.expect(!fallbacks.contains(aggregate));
     try T.expectEqual(types.Primitive.number_t, fallbacks.get(first).?);
+    const indexed = try s.ti.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, types.Primitive.string_t, types.Primitive.none);
+    const key_param = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("K"), indexed, types.Primitive.none, .bivariant);
+    const indexed_union = try s.ti.internUnion(&.{ key_param, types.Primitive.null_t });
+    var broad_keys: std.ArrayListUnmanaged(TypeId) = .empty;
+    defer broad_keys.deinit(T.allocator);
+    try s.checker.collectKeyofBroadIndexKeys(indexed_union, &broad_keys);
+    try T.expectEqualSlices(TypeId, &.{types.Primitive.number_t}, broad_keys.items);
+    const indexed_access = try s.ti.internIndexedAccess(indexed, indexed_union);
+    try T.expectEqual(types.Primitive.none, s.checker.mappedTemplateKeyTypeParameter(indexed_access));
     try T.expect(s.checker.typeParameterName(aggregate) == null);
     try T.expect(s.checker.typeParameterConstraint(aggregate) == null);
     try T.expect(s.checker.scalarTypeParameterConstraint(aggregate) == null);
