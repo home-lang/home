@@ -110,5 +110,12 @@ their exact text, positions, order, and exit status. The second TS2345
 also checks the general rule that a member-call overload set with only one
 arity-compatible signature reports the argument mismatch directly.
 
+`tsconfig-unscopables.json` and its no-`checkJs` control read the
+`[Symbol.unscopables]` member declared by `lib.es2015.symbol.wellknown.d.ts`
+on an imported readonly array. Its mapped flags have optional boolean
+properties, including `length` and `map`, rather than array method types.
+Both engines report only the deliberate TS2322 for assigning the optional
+`length` flag to `number`.
+
 [Issue #960](https://github.com/home-lang/home/issues/960) tracks the remaining work to model the complete TypeScript
 `ReadonlyArray<T>` surface; these passing cases do not claim full parity.

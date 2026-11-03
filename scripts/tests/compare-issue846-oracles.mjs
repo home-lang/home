@@ -60,6 +60,15 @@ if (configs.length === 0) {
   console.error('No admitted-JavaScript fixture configs found')
   process.exit(2)
 }
+for (const config of [
+  'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables.json',
+  'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables-no-checkjs.json',
+]) {
+  if (!configs.includes(config)) {
+    console.error(`Missing readonly array unscopables oracle config: ${config}`)
+    process.exit(2)
+  }
+}
 
 const uncheckedCommonJsConfigs = [
   'function',
