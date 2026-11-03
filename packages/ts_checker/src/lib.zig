@@ -570,6 +570,7 @@ pub fn arrayProto(
     const any_t = types.Primitive.any;
     const unknown_t = types.Primitive.unknown;
     const optional_number_t = try ti.internUnion(&[_]TypeId{ number_t, undef_t });
+    const sig_to_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
 
     // `T[]` itself — used as both receiver and return type for
     // `slice`, `filter`, `concat`, `reverse`, `sort`.
@@ -791,6 +792,8 @@ pub fn arrayProto(
 
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("length"), .type = number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toLocaleString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("push"), .type = sig_push, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("pop"), .type = sig_pop, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("map"), .type = sig_map, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -897,7 +900,8 @@ pub fn readonlyArrayProto(
     if (cache.readonly_array_proto_by_elem.get(elem)) |cached| return cached;
     const mutable = try arrayProto(cache, ti, sint, gpa, elem, rest_set);
     const readonly_names = std.StaticStringMap(void).initComptime(.{
-        .{"length"},    .{"map"},           .{"flatMap"},
+        .{"length"},    .{"toString"},      .{"toLocaleString"},
+        .{"map"},       .{"flatMap"},
         .{"filter"},    .{"forEach"},       .{"every"},
         .{"some"},      .{"includes"},      .{"indexOf"},
         .{"slice"},     .{"join"},          .{"find"},
@@ -1595,10 +1599,14 @@ test "lib: arrayProto exposes length/push/map/flatMap" {
     const push_id = try sint.intern("push");
     const map_id = try sint.intern("map");
     const flat_map_id = try sint.intern("flatMap");
+    const to_string_id = try sint.intern("toString");
+    const to_locale_string_id = try sint.intern("toLocaleString");
     try T.expect(ti.objectMember(proto, length_id) != null);
     try T.expect(ti.objectMember(proto, push_id) != null);
     try T.expect(ti.objectMember(proto, map_id) != null);
     try T.expect(ti.objectMember(proto, flat_map_id) != null);
+    try T.expectEqual(types.Primitive.string_t, ti.signatureReturn(ti.objectMember(proto, to_string_id).?).?);
+    try T.expectEqual(types.Primitive.string_t, ti.signatureReturn(ti.objectMember(proto, to_locale_string_id).?).?);
 }
 
 test "lib: readonly array unscopables map keys to optional boolean flags" {
@@ -1612,6 +1620,11 @@ test "lib: readonly array unscopables map keys to optional boolean flags" {
     defer rest_set.deinit(T.allocator);
     const array = try ti.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, types.Primitive.number_t, types.Primitive.none);
     const proto = try readonlyArrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, array, &rest_set);
+    try T.expect(ti.objectMember(proto, try sint.intern("push")) == null);
+    for ([_][]const u8{ "toString", "toLocaleString" }) |name| {
+        const method = ti.objectMember(proto, try sint.intern(name)) orelse return error.TestUnexpectedResult;
+        try T.expectEqual(types.Primitive.string_t, ti.signatureReturn(method).?);
+    }
     const symbol = try sint.intern("Symbol.unscopables");
     const flags = ti.objectMember(proto, symbol) orelse return error.TestUnexpectedResult;
     try T.expectEqual(@as(usize, 32), ti.objectMembers(flags).len);
