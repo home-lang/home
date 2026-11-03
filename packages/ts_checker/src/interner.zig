@@ -868,8 +868,7 @@ pub const Interner = struct {
     /// Look up the declaration-site variance of a type-parameter type.
     /// Returns `.bivariant` for non-type-parameter ids (caller filters).
     pub fn typeParameterVariance(self: *const Interner, id: TypeId) types.Variance {
-        if (id >= self.pool.typeCount()) return .bivariant;
-        if (!self.pool.flagsOf(id).is_type_parameter) return .bivariant;
+        if (!self.isDirectTypeParameter(id)) return .bivariant;
         const payload_idx = self.pool.payloadOf(id);
         if (payload_idx >= self.pool.type_parameter_payloads.items.len) return .bivariant;
         const payload = self.pool.type_parameter_payloads.items[payload_idx];
@@ -878,7 +877,7 @@ pub const Interner = struct {
 
     /// Look up whether a type parameter was declared with `const`.
     pub fn typeParameterIsConst(self: *const Interner, id: TypeId) bool {
-        if (!self.pool.flagsOf(id).is_type_parameter) return false;
+        if (!self.isDirectTypeParameter(id)) return false;
         const payload_idx = self.pool.payloadOf(id);
         if (payload_idx >= self.pool.type_parameter_payloads.items.len) return false;
         const payload = self.pool.type_parameter_payloads.items[payload_idx];
@@ -1969,7 +1968,7 @@ test "Interner: union flags do not make its payload a type parameter" {
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
     const this_name = try sint.intern("this");
-    const parameter = try i.internFreshTypeParameterWithVariance(this_name, types.Primitive.number_t, types.Primitive.none, .bivariant);
+    const parameter = try i.internFreshTypeParameterWithFlags(this_name, types.Primitive.number_t, types.Primitive.none, .covariant, true);
     const union_t = try i.internUnion(&.{ parameter, types.Primitive.boolean_t });
 
     // Both pools start at offset zero. The old flag-only check interpreted
@@ -1980,6 +1979,10 @@ test "Interner: union flags do not make its payload a type parameter" {
     try T.expect(!i.isDirectTypeParameter(union_t));
     try T.expectEqual(@as(?StringId, null), i.typeParameterName(union_t));
     try T.expectEqual(@as(?TypeId, null), i.typeParameterConstraint(union_t));
+    try T.expectEqual(types.Variance.covariant, i.typeParameterVariance(parameter));
+    try T.expect(i.typeParameterIsConst(parameter));
+    try T.expectEqual(types.Variance.bivariant, i.typeParameterVariance(union_t));
+    try T.expect(!i.typeParameterIsConst(union_t));
 }
 
 test "Interner: mapped payload lookup rejects aggregate union flags" {

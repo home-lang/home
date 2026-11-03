@@ -137651,7 +137651,7 @@ pub const Checker = struct {
             // Source-owned signatures have no declaration node in this HIR.
             // Their parameter payload already holds the owner's lowered
             // default, including references to earlier parameter identities.
-            if (param < self.interner.pool.typeCount() and self.interner.pool.flagsOf(param).is_type_parameter) {
+            if (self.interner.isDirectTypeParameter(param)) {
                 const default = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param)].default;
                 if (default != types.Primitive.none) {
                     try subs.put(self.gpa, param, try self.instantiateGenericSignatureDefault(default, subs));
@@ -137729,7 +137729,7 @@ pub const Checker = struct {
     fn genericSignatureHasDependentIndexedDefault(self: *Checker, sig: TypeId) bool {
         const params = self.generic_signature_params.get(sig) orelse return false;
         for (params) |param| {
-            if (param < self.interner.pool.typeCount() and self.interner.pool.flagsOf(param).is_type_parameter) {
+            if (self.interner.isDirectTypeParameter(param)) {
                 const payload_index = self.interner.pool.payloadOf(param);
                 if (payload_index < self.interner.pool.type_parameter_payloads.items.len) {
                     const default_t = self.interner.pool.type_parameter_payloads.items[payload_index].default;
@@ -155582,7 +155582,7 @@ pub const Checker = struct {
             if (entry.found_existing) continue;
             const flags = self.interner.pool.flagsOf(current);
 
-            if (flags.is_type_parameter) {
+            if (self.interner.isDirectTypeParameter(current)) {
                 const declaration = self.type_parameter_decl_nodes.get(raw_current) orelse
                     self.type_parameter_decl_nodes.get(current);
                 if (declaration) |decl| {
@@ -161403,8 +161403,7 @@ pub const Checker = struct {
         );
         for (generic_params[target_arg_nodes.len..]) |parameter| {
             if (parameter >= self.interner.pool.typeCount()) continue;
-            const flags = self.interner.pool.flagsOf(parameter);
-            if (!flags.is_type_parameter) continue;
+            if (!self.interner.isDirectTypeParameter(parameter)) continue;
             const payload_index = self.interner.pool.payloadOf(parameter);
             if (payload_index >= self.interner.pool.type_parameter_payloads.items.len) continue;
             const default_t = self.interner.pool.type_parameter_payloads.items[payload_index].default;
@@ -171712,7 +171711,7 @@ pub const Checker = struct {
         try visited.put(self.gpa, t, {});
         const flags = self.interner.pool.flagsOf(t);
         const payload_idx = self.interner.pool.payloadOf(t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(t)) {
             if (!subs.contains(t)) {
                 if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return;
                 const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
@@ -171746,7 +171745,7 @@ pub const Checker = struct {
         try visited.put(self.gpa, t, {});
         const flags = self.interner.pool.flagsOf(t);
         const payload_idx = self.interner.pool.payloadOf(t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(t)) {
             if (self.isThisTypeParameter(t)) return;
             if (!subs.contains(t)) {
                 const fallback = self.typeParameterBaseConstraint(t) orelse types.Primitive.unknown;
@@ -171801,7 +171800,7 @@ pub const Checker = struct {
         if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return types.Primitive.none;
         const ia = self.interner.pool.indexed_access_payloads.items[payload_idx];
         if (ia.index >= self.interner.pool.typeCount()) return types.Primitive.none;
-        if (!self.interner.pool.flagsOf(ia.index).is_type_parameter) return types.Primitive.none;
+        if (!self.interner.isDirectTypeParameter(ia.index)) return types.Primitive.none;
         return ia.index;
     }
 
@@ -173552,9 +173551,7 @@ pub const Checker = struct {
     }
 
     fn typeParameterHasDefault(self: *Checker, parameter: TypeId) bool {
-        if (parameter < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(parameter).is_type_parameter)
-        {
+        if (self.interner.isDirectTypeParameter(parameter)) {
             const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter)];
             if (payload.default != types.Primitive.none) return true;
         }
@@ -289955,13 +289952,28 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     for (0..64) |i| {
         var name_buf: [16]u8 = undefined;
         const name = try std.fmt.bufPrint(&name_buf, "T{d}", .{i});
-        const parameter = try s.ti.internTypeParameter(try s.sint.intern(name), types.Primitive.number_t, types.Primitive.none);
+        const parameter = try s.ti.internTypeParameter(try s.sint.intern(name), types.Primitive.number_t, if (i == 0) types.Primitive.string_t else types.Primitive.none);
         if (i == 0) first = parameter;
     }
     const aggregate = try s.ti.internUnion(&.{ first, types.Primitive.null_t });
     try T.expect(s.ti.pool.flagsOf(aggregate).is_union);
     try T.expect(s.ti.pool.flagsOf(aggregate).is_type_parameter);
     try T.expect(s.ti.pool.payloadOf(aggregate) < s.ti.pool.type_parameter_payloads.items.len);
+    try T.expect(!s.checker.typeParameterHasDefault(aggregate));
+    var defaults: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer defaults.deinit(T.allocator);
+    var visited_defaults: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer visited_defaults.deinit(T.allocator);
+    try s.checker.collectFreeTypeParamDefaults(aggregate, &defaults, &visited_defaults);
+    try T.expect(!defaults.contains(aggregate));
+    try T.expectEqual(types.Primitive.string_t, defaults.get(first).?);
+    var fallbacks: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer fallbacks.deinit(T.allocator);
+    var visited_fallbacks: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer visited_fallbacks.deinit(T.allocator);
+    try s.checker.collectFreeTypeParamFallbacks(aggregate, &fallbacks, &visited_fallbacks);
+    try T.expect(!fallbacks.contains(aggregate));
+    try T.expectEqual(types.Primitive.number_t, fallbacks.get(first).?);
     try T.expect(s.checker.typeParameterName(aggregate) == null);
     try T.expect(s.checker.typeParameterConstraint(aggregate) == null);
     try T.expect(s.checker.scalarTypeParameterConstraint(aggregate) == null);
