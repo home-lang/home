@@ -95,8 +95,8 @@ pub const Diagnostic = struct {
     chain: []const ChainEntry = &.{},
     /// Optional related-information anchors (tsc `relatedInformation`).
     /// Empty by default so flat diagnostics render byte-identically.
-    /// When non-empty, rendered as indented `file(line,col): message`
-    /// lines beneath the header (and any chain).
+    /// Plain `tsc --pretty false` omits these; pretty output includes them
+    /// after the source excerpt, as does TypeScript 5.7.3.
     related: []const Related = &.{},
 
     pub const CodePrefix = enum { TS, HM };
@@ -120,7 +120,6 @@ pub fn formatDefault(gpa: std.mem.Allocator, d: Diagnostic) ![]u8 {
     try buf.appendSlice(gpa, ": ");
     try buf.appendSlice(gpa, d.message);
     try writeMessageChain(&buf, gpa, d.chain, 1);
-    try writeRelatedInfo(&buf, gpa, d.related);
     return try buf.toOwnedSlice(gpa);
 }
 
@@ -479,7 +478,7 @@ test "formatPretty: message chain renders indented lines before the source excer
     try T.expect(std.mem.indexOf(u8, out, "\n  Types of property 'item' are incompatible.\n") != null);
 }
 
-test "formatDefault: related-info renders indented location + message" {
+test "formatDefault: related-info is omitted from plain tsc output" {
     const d: Diagnostic = .{
         .file = "b.ts",
         .line = 3,
@@ -495,11 +494,10 @@ test "formatDefault: related-info renders indented location + message" {
     };
     const out = try formatDefault(T.allocator, d);
     defer T.allocator.free(out);
-    // Primary header, then an indented related line carrying the
-    // anchor location + message (no TS code on the related line, as in
-    // tsc's terminal output).
-    try T.expect(std.mem.startsWith(u8, out, "b.ts(3,5): error TS1380:"));
-    try T.expect(std.mem.indexOf(u8, out, "\n  b.ts(1,8): 'X' was imported here.") != null);
+    try T.expectEqualStrings(
+        "b.ts(3,5): error TS1380: An import alias cannot reference a declaration that was imported using 'import type'.",
+        out,
+    );
 }
 
 test "formatDefault: empty related list is byte-identical to flat output" {
