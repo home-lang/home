@@ -53,6 +53,7 @@ const configs = files.stdout.trim().split('\n').filter(path =>
   path.includes('/issue966-commonjs-constructor/') ||
   path.includes('/issue968-js-constructor-import/') ||
   path.includes('/issue963-aggregate-type-parameter/') ||
+  path.includes('/issue970-unique-symbol-keyof/') ||
   path.includes('/issue971-object-display/') ||
   path.includes('/issue969-iterator-helpers/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
@@ -70,6 +71,9 @@ for (const config of [
   'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables-missing.json',
   'packages/ts_cli/testdata/issue963-aggregate-type-parameter/tsconfig-infer-union.json',
   'packages/ts_cli/testdata/issue963-aggregate-type-parameter/tsconfig-infer-intersection.json',
+  'packages/ts_cli/testdata/issue970-unique-symbol-keyof/tsconfig-arrays.json',
+  'packages/ts_cli/testdata/issue970-unique-symbol-keyof/tsconfig-computed.json',
+  'packages/ts_cli/testdata/issue970-unique-symbol-keyof/tsconfig-program.json',
   'packages/ts_cli/testdata/issue971-object-display/tsconfig.json',
   'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig.json',
 ]) {
