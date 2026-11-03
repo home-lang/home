@@ -154420,9 +154420,7 @@ pub const Checker = struct {
 
     fn typeParameterConstraint(self: *Checker, t: TypeId) ?TypeId {
         const resolved_t = self.resolvedTypeParameterPlaceholder(t);
-        if (resolved_t >= self.interner.pool.typeCount()) return null;
-        const flags = self.interner.pool.flagsOf(resolved_t);
-        if (!flags.is_type_parameter) return null;
+        if (!self.interner.isDirectTypeParameter(resolved_t)) return null;
         const payload_idx = self.interner.pool.payloadOf(resolved_t);
         if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return null;
         const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
@@ -172027,7 +172025,7 @@ pub const Checker = struct {
     }
 
     fn isBuiltinMappedKeyTypeParameter(self: *Checker, t: TypeId) bool {
-        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_type_parameter) return false;
+        if (!self.interner.isDirectTypeParameter(t)) return false;
         const payload_idx = self.interner.pool.payloadOf(t);
         if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return false;
         const type_param = self.interner.pool.type_parameter_payloads.items[payload_idx];
@@ -179687,9 +179685,7 @@ pub const Checker = struct {
     }
 
     fn scalarTypeParameterConstraint(self: *Checker, t: TypeId) ?TypeId {
-        if (t >= self.interner.pool.typeCount()) return null;
-        const flags = self.interner.pool.flagsOf(t);
-        if (!flags.is_type_parameter) return null;
+        if (!self.interner.isDirectTypeParameter(t)) return null;
         const payload_idx = self.interner.pool.payloadOf(t);
         if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return null;
         const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
@@ -289874,7 +289870,7 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     for (0..64) |i| {
         var name_buf: [16]u8 = undefined;
         const name = try std.fmt.bufPrint(&name_buf, "T{d}", .{i});
-        const parameter = try s.ti.internTypeParameter(try s.sint.intern(name), types.Primitive.none, types.Primitive.none);
+        const parameter = try s.ti.internTypeParameter(try s.sint.intern(name), types.Primitive.number_t, types.Primitive.none);
         if (i == 0) first = parameter;
     }
     const aggregate = try s.ti.internUnion(&.{ first, types.Primitive.null_t });
@@ -289882,7 +289878,11 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     try T.expect(s.ti.pool.flagsOf(aggregate).is_type_parameter);
     try T.expect(s.ti.pool.payloadOf(aggregate) < s.ti.pool.type_parameter_payloads.items.len);
     try T.expect(s.checker.typeParameterName(aggregate) == null);
+    try T.expect(s.checker.typeParameterConstraint(aggregate) == null);
+    try T.expect(s.checker.scalarTypeParameterConstraint(aggregate) == null);
+    try T.expect(!s.checker.isBuiltinMappedKeyTypeParameter(aggregate));
     try T.expectEqual(try s.sint.intern("T0"), s.checker.typeParameterName(first).?);
+    try T.expectEqual(types.Primitive.number_t, s.checker.typeParameterConstraint(first).?);
 }
 
 test "checker: generic constraint checks preserve branch and keyof provenance" {
