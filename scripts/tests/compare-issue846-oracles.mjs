@@ -66,6 +66,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables-no-checkjs.json',
   'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables-mutable.json',
   'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables-writes.json',
+  'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables-missing.json',
   'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {

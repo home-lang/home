@@ -125,5 +125,10 @@ that optional boolean flag to `number` reports TS2322.
 arrays. The outer `[Symbol.unscopables]` property is readonly in each; the
 inner `length` flag is readonly only on `ReadonlyArray`.
 
+`tsconfig-unscopables-missing.json` checks TS2339's mapped-object display for
+missing flag properties on both imported array kinds. The oracle pins the
+numeric index signature, declaration-order optional flags, middle elision,
+and final symbol-key property in the error text.
+
 [Issue #960](https://github.com/home-lang/home/issues/960) tracks the remaining work to model the complete TypeScript
 `ReadonlyArray<T>` surface; these passing cases do not claim full parity.
