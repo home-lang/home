@@ -53,6 +53,7 @@ const configs = files.stdout.trim().split('\n').filter(path =>
   path.includes('/issue966-commonjs-constructor/') ||
   path.includes('/issue968-js-constructor-import/') ||
   path.includes('/issue963-aggregate-type-parameter/') ||
+  path.includes('/issue969-iterator-helpers/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
@@ -63,6 +64,7 @@ if (configs.length === 0) {
 for (const config of [
   'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables.json',
   'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables-no-checkjs.json',
+  'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables-mutable.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing readonly array unscopables oracle config: ${config}`)

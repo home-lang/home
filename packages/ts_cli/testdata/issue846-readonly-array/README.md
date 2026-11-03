@@ -117,5 +117,9 @@ properties, including `length` and `map`, rather than array method types.
 Both engines report only the deliberate TS2322 for assigning the optional
 `length` flag to `number`.
 
+`tsconfig-unscopables-mutable.json` checks the corresponding mutable array
+surface. Its mapped flags include `push`, and the intentional assignment of
+that optional boolean flag to `number` reports TS2322.
+
 [Issue #960](https://github.com/home-lang/home/issues/960) tracks the remaining work to model the complete TypeScript
 `ReadonlyArray<T>` surface; these passing cases do not claim full parity.
