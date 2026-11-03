@@ -58185,7 +58185,7 @@ pub const Checker = struct {
             if (!self.program_constructor_owners.contains(signature)) continue;
             const parameters = self.generic_signature_params.get(signature) orelse continue;
             for (parameters) |parameter| {
-                if (!self.interner.pool.flagsOf(parameter).is_type_parameter) return static_type;
+                if (!self.interner.isDirectTypeParameter(parameter)) return static_type;
                 const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter)];
                 if (payload.default == types.Primitive.none) return static_type;
                 try substitutions.put(self.gpa, parameter, try self.substituteTypeNoCycles(payload.default, &substitutions));
@@ -69338,10 +69338,8 @@ pub const Checker = struct {
                                     if (subs.count() > 0) unified_t = self.substituteType(iface_t, &subs) catch iface_t;
                                     {
                                         for (param_ids.items, first.params) |cur_p, first_p| {
-                                            if (cur_p >= self.interner.pool.typeCount() or
-                                                first_p >= self.interner.pool.typeCount() or
-                                                !self.interner.pool.flagsOf(cur_p).is_type_parameter or
-                                                !self.interner.pool.flagsOf(first_p).is_type_parameter)
+                                            if (!self.interner.isDirectTypeParameter(cur_p) or
+                                                !self.interner.isDirectTypeParameter(first_p))
                                             {
                                                 continue;
                                             }
@@ -72963,8 +72961,7 @@ pub const Checker = struct {
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         for (params) |param_t| {
-            if (param_t >= self.interner.pool.typeCount()) continue;
-            if (!self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
+            if (!self.interner.isDirectTypeParameter(param_t)) continue;
             const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
             const arg_t = subs.get(param_t) orelse continue;
             try self.recordNarrow(payload.name, arg_t);
@@ -75661,8 +75658,7 @@ pub const Checker = struct {
             if (alias_name) |an| try self.alias_lower_in_progress.put(self.gpa, an, {});
             const recursive_placeholder = if (alias_name) |an| blk: {
                 const placeholder = self.type_names.get(an) orelse break :blk types.Primitive.none;
-                if (placeholder >= self.interner.pool.typeCount() or
-                    !self.interner.pool.flagsOf(placeholder).is_type_parameter)
+                if (!self.interner.isDirectTypeParameter(placeholder))
                 {
                     break :blk types.Primitive.none;
                 }
@@ -76740,8 +76736,7 @@ pub const Checker = struct {
         const index_name = self.bareTypeNodeName(index_node) orelse return false;
         for (params, 0..) |param_t, i| {
             if (i >= args.len) break;
-            if (param_t >= self.interner.pool.typeCount()) continue;
-            if (!self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
+            if (!self.interner.isDirectTypeParameter(param_t)) continue;
             const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
             if (tp.name != index_name) continue;
             var keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
@@ -77567,7 +77562,7 @@ pub const Checker = struct {
     fn genericAliasHasMissingRequiredArgs(self: *Checker, info: GenericAliasInfo, supplied: usize) bool {
         if (supplied >= info.params.len) return false;
         for (info.params[supplied..]) |p| {
-            if (!self.interner.pool.flagsOf(p).is_type_parameter) return true;
+            if (!self.interner.isDirectTypeParameter(p)) return true;
             const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
             if (tp.default == types.Primitive.none) return true;
         }
@@ -77576,8 +77571,7 @@ pub const Checker = struct {
 
     fn genericAliasMinTypeArgCount(self: *Checker, info: GenericAliasInfo) usize {
         for (info.params, 0..) |p, idx| {
-            if (p >= self.interner.pool.headers.items.len) continue;
-            if (!self.interner.pool.flagsOf(p).is_type_parameter) continue;
+            if (!self.interner.isDirectTypeParameter(p)) continue;
             const payload_idx = self.interner.pool.payloadOf(p);
             if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) continue;
             const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
@@ -77602,8 +77596,7 @@ pub const Checker = struct {
         var index = start;
         while (index < params.len) : (index += 1) {
             const param = params[index];
-            if (param >= self.interner.pool.typeCount() or
-                !self.interner.pool.flagsOf(param).is_type_parameter)
+            if (!self.interner.isDirectTypeParameter(param))
             {
                 continue;
             }
@@ -77721,8 +77714,7 @@ pub const Checker = struct {
         for (params, 0..) |p, i| {
             if (i != 0) try buf.appendSlice(self.gpa, ", ");
             var wrote = false;
-            if (p < self.interner.pool.headers.items.len and
-                self.interner.pool.flagsOf(p).is_type_parameter)
+            if (self.interner.isDirectTypeParameter(p))
             {
                 const payload_idx = self.interner.pool.payloadOf(p);
                 if (payload_idx < tp_table_len) {
@@ -290085,6 +290077,21 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     try T.expect(!s.checker.isBuiltinMappedKeyTypeParameter(aggregate));
     try T.expectEqual(try s.sint.intern("T0"), s.checker.typeParameterName(first).?);
     try T.expectEqual(types.Primitive.number_t, s.checker.typeParameterConstraint(first).?);
+    // Reuse the union payload offset as a parameter payload with a default.
+    // A flag-only reader would wrongly accept that unrelated default.
+    s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(aggregate)].default = types.Primitive.string_t;
+    var fake_params = [_]TypeId{aggregate};
+    const alias_info = GenericAliasInfo{ .params = &fake_params, .body = aggregate };
+    try T.expect(s.checker.genericAliasHasMissingRequiredArgs(alias_info, 0));
+    try T.expectEqual(@as(usize, 1), s.checker.genericAliasMinTypeArgCount(alias_info));
+    var dependent_defaults: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer dependent_defaults.deinit(T.allocator);
+    try s.checker.putDependentGenericDefaults(&fake_params, 0, &dependent_defaults);
+    try T.expect(!dependent_defaults.contains(aggregate));
+    var label: std.ArrayListUnmanaged(u8) = .empty;
+    defer label.deinit(T.allocator);
+    try s.checker.appendTypeParameterListLabel(&label, &fake_params);
+    try T.expectEqualStrings("<T>", label.items);
 }
 
 test "checker: well-known symbol array writes report readonly property errors" {
