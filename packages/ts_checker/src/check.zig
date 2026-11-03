@@ -113005,9 +113005,12 @@ pub const Checker = struct {
             const callback = self.interner.internSignature(&.{ elem, types.Primitive.number_t }, result, false) catch return error.OutOfMemory;
             const iterator = lib.iteratorObjectType(self.interner, self.string_interner, result, false) catch return error.OutOfMemory;
             const signature = self.interner.internSignature(&.{callback}, iterator, false) catch return error.OutOfMemory;
-            const owned = try self.gpa.alloc(TypeId, 1);
-            owned[0] = result;
-            try self.generic_signature_params.put(self.gpa, signature, owned);
+            if (!self.generic_signature_params.contains(signature)) {
+                const owned = try self.gpa.alloc(TypeId, 1);
+                errdefer self.gpa.free(owned);
+                owned[0] = result;
+                try self.generic_signature_params.put(self.gpa, signature, owned);
+            }
             return signature;
         }
         return null;
