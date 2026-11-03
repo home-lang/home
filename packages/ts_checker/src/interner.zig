@@ -107,6 +107,7 @@ pub const TypeKey = union(Kind) {
     number_lit: u64,
     bigint_lit: StringId,
     boolean_lit: bool,
+    symbol_lit: types.UniqueSymbolIdentity,
     /// Enum-member literal (`Choice.Yes`). Keyed on the owning
     /// enum + member names *and* the underlying value so that two
     /// distinct members collapse only when they truly name the same
@@ -144,6 +145,7 @@ pub const TypeKey = union(Kind) {
         number_lit,
         bigint_lit,
         boolean_lit,
+        symbol_lit,
         enum_lit,
         union_t,
         intersection,
@@ -166,6 +168,10 @@ pub const TypeKey = union(Kind) {
             .number_lit => |bits| hasher.update(std.mem.asBytes(&bits)),
             .bigint_lit => |id| hasher.update(std.mem.asBytes(&id)),
             .boolean_lit => |b| hasher.update(std.mem.asBytes(&b)),
+            .symbol_lit => |identity| {
+                hasher.update(std.mem.asBytes(&identity.name));
+                hasher.update(std.mem.asBytes(&identity.declaration));
+            },
             .enum_lit => |e| {
                 hasher.update(std.mem.asBytes(&e.enum_name));
                 hasher.update(std.mem.asBytes(&e.member_name));
@@ -175,6 +181,10 @@ pub const TypeKey = union(Kind) {
                     .number_lit => |bits| hasher.update(std.mem.asBytes(&bits)),
                     .bigint_lit => |sid| hasher.update(std.mem.asBytes(&sid)),
                     .boolean_lit => |b| hasher.update(std.mem.asBytes(&b)),
+                    .symbol_lit => |identity| {
+                        hasher.update(std.mem.asBytes(&identity.name));
+                        hasher.update(std.mem.asBytes(&identity.declaration));
+                    },
                 }
             },
             .union_t, .intersection => |members| {
@@ -236,6 +246,7 @@ pub const TypeKey = union(Kind) {
             .number_lit => |a| a == other.number_lit,
             .bigint_lit => |a| a == other.bigint_lit,
             .boolean_lit => |a| a == other.boolean_lit,
+            .symbol_lit => |a| a.name == other.symbol_lit.name and a.declaration == other.symbol_lit.declaration,
             .enum_lit => |a| blk: {
                 const b = other.enum_lit;
                 if (a.enum_name != b.enum_name or a.member_name != b.member_name) break :blk false;
@@ -245,6 +256,7 @@ pub const TypeKey = union(Kind) {
                     .number_lit => |bits| bits == b.value.number_lit,
                     .bigint_lit => |sid| sid == b.value.bigint_lit,
                     .boolean_lit => |bv| bv == b.value.boolean_lit,
+                    .symbol_lit => |identity| identity.name == b.value.symbol_lit.name and identity.declaration == b.value.symbol_lit.declaration,
                 };
             },
             .union_t => |a| std.mem.eql(TypeId, a, other.union_t),
@@ -450,6 +462,15 @@ pub const Interner = struct {
     pub fn internBooleanLiteral(_: *Interner, value: bool) TypeId {
         // Reuse the pre-interned primitives.
         return if (value) Primitive.true_lit else Primitive.false_lit;
+    }
+
+    /// Intern a nominal symbol by its well-known name or source declaration.
+    pub fn internUniqueSymbol(self: *Interner, identity: types.UniqueSymbolIdentity) !TypeId {
+        return self.internKey(.{ .symbol_lit = identity }, .{
+            .is_symbol = true,
+            .is_literal = true,
+            .is_unique_symbol = true,
+        });
     }
 
     /// Intern an enum-member literal type (`Choice.Yes`). The result is
@@ -1339,6 +1360,11 @@ pub const Interner = struct {
                 try self.pool.literal_payloads.append(self.gpa, .{ .boolean_lit = b });
                 break :blk idx;
             },
+            .symbol_lit => |identity| blk: {
+                const idx: u32 = @intCast(self.pool.literal_payloads.items.len);
+                try self.pool.literal_payloads.append(self.gpa, .{ .symbol_lit = identity });
+                break :blk idx;
+            },
             .enum_lit => |e| blk: {
                 // The literal *value* shares the regular literal payload
                 // column, so `literalOf` resolves it transparently. The
@@ -1568,6 +1594,20 @@ pub const Interner = struct {
 // =============================================================================
 
 const T = std.testing;
+
+test "interner: unique symbols retain nominal declaration identity" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const first = try i.internUniqueSymbol(.{ .name = 71, .declaration = 9 });
+    const alias = try i.internUniqueSymbol(.{ .name = 71, .declaration = 9 });
+    const other = try i.internUniqueSymbol(.{ .name = 71, .declaration = 10 });
+    const well_known = try i.internUniqueSymbol(.{ .name = 72 });
+    try T.expectEqual(first, alias);
+    try T.expect(first != other);
+    try T.expect(first != well_known);
+    try T.expect(i.pool.flagsOf(first).is_unique_symbol);
+    try T.expectEqual(types.UniqueSymbolIdentity{ .name = 71, .declaration = 9 }, i.literalOf(first).symbol_lit);
+}
 
 test "interner: generic definitions own parameter identities and recursive reference graphs" {
     var i = try Interner.init(T.allocator);

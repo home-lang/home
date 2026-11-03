@@ -57703,6 +57703,7 @@ pub const Checker = struct {
             for (members_snapshot) |member| {
                 try new_members.append(self.gpa, .{
                     .name = member.name,
+                    .key_type = member.key_type,
                     .type = try self.substituteTypeNoCyclesInner(member.type, subs, visited),
                     .write_type = if (member.write_type) |write_type| try self.substituteTypeNoCyclesInner(write_type, subs, visited) else null,
                     .is_optional = member.is_optional,
@@ -69171,8 +69172,19 @@ pub const Checker = struct {
             // missing_override / override_not_in_base semantic checks
             // on interface members (matches override9.ts baseline,
             // which only emits the TS1070 pair).
+            const key_expr = hir_mod.interfaceMemberKeyExpr(self.hir, m);
+            const key_type: TypeId = if (key_expr != hir_mod.none_node_id) blk: {
+                const candidate = try self.checkExpression(key_expr);
+                if (candidate < self.interner.pool.typeCount()) {
+                    const candidate_flags = self.interner.pool.flagsOf(candidate);
+                    if (candidate_flags.is_unique_symbol and !candidate_flags.is_union and !candidate_flags.is_intersection)
+                        break :blk candidate;
+                }
+                break :blk types.Primitive.none;
+            } else types.Primitive.none;
             try iface_members.append(self.gpa, .{
                 .name = im.name,
+                .key_type = key_type,
                 .type = member_t,
                 .is_optional = im.is_optional,
                 .is_readonly = im.is_readonly,
@@ -77449,6 +77461,7 @@ pub const Checker = struct {
 
     fn lowerValueTypeAnnotation(self: *Checker, name: hir_mod.StringId, type_annotation: NodeId) CheckError!TypeId {
         if (type_annotation == hir_mod.none_node_id) return types.Primitive.none;
+        if (try self.uniqueSymbolVariableAnnotationType(type_annotation)) |unique_t| return unique_t;
         if (self.resolving_value_types.contains(name)) return types.Primitive.any;
         try self.resolving_value_types.put(self.gpa, name, {});
         defer _ = self.resolving_value_types.remove(name);
@@ -77458,7 +77471,53 @@ pub const Checker = struct {
     fn lowerActiveValueTypeAnnotation(self: *Checker, name: hir_mod.StringId, type_annotation: NodeId) CheckError!?TypeId {
         if (type_annotation == hir_mod.none_node_id) return null;
         if (self.varDeclTypeAnnotationContainsTypeofSelf(type_annotation, name)) return null;
+        if (try self.uniqueSymbolVariableAnnotationType(type_annotation)) |unique_t| return unique_t;
         return try self.lowererLowerWithTypeParams(type_annotation);
+    }
+
+    fn uniqueSymbolVariableAnnotationType(self: *Checker, annotation: NodeId) CheckError!?TypeId {
+        if (!self.typeAnnotationIsUniqueSymbol(annotation)) return null;
+        const decl = self.hir.parentOf(annotation);
+        if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .const_decl) return null;
+        const variable = hir_mod.varDeclOf(self.hir, decl);
+        if (variable.type_annotation != annotation or variable.name == hir_mod.none_node_id or
+            self.hir.kindOf(variable.name) != .identifier) return null;
+        const path = self.virtualSectionFilenameForNode(decl) orelse self.importer_path;
+        const name = self.string_interner.get(hir_mod.identifierOf(self.hir, variable.name).name);
+        const origin = try std.fmt.allocPrint(self.gpa, "decl:{d}:{s}:{d}:{d}:{s}", .{
+            path.len, path, self.hir.spanOf(decl).start, name.len, name,
+        });
+        defer self.gpa.free(origin);
+        const identity = self.string_interner.intern(origin) catch return error.OutOfMemory;
+        return self.interner.internUniqueSymbol(.{ .name = identity }) catch return error.OutOfMemory;
+    }
+
+    /// An annotated `const s: unique symbol` receives a fresh nominal type
+    /// from its declaration. A direct call to the global Symbol factory
+    /// supplies its value; another expression of type `symbol` does not.
+    fn uniqueSymbolFactoryInitializer(self: *Checker, init_node: NodeId) bool {
+        if (self.hir.kindOf(init_node) != .call_expr) return false;
+        const callee = hir_mod.callOf(self.hir, init_node).callee;
+        if (self.globalSymbolFactoryReference(callee)) return true;
+        if (self.hir.kindOf(callee) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, callee);
+        return std.mem.eql(u8, self.string_interner.get(member.name), "for") and
+            self.globalSymbolFactoryReference(member.object);
+    }
+
+    fn globalSymbolFactoryReference(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) == .identifier) {
+            const name = hir_mod.identifierOf(self.hir, node).name;
+            return std.mem.eql(u8, self.string_interner.get(name), "Symbol") and
+                !self.programGlobalThisNameIsShadowed(node, name);
+        }
+        if (self.hir.kindOf(node) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, node);
+        if (!std.mem.eql(u8, self.string_interner.get(member.name), "Symbol") or
+            self.hir.kindOf(member.object) != .identifier) return false;
+        const root = hir_mod.identifierOf(self.hir, member.object).name;
+        return std.mem.eql(u8, self.string_interner.get(root), "globalThis") and
+            !self.programGlobalThisNameIsShadowed(member.object, root);
     }
 
     fn lowerValueTypeAnnotationForIdentifierLookup(self: *Checker, name: hir_mod.StringId, type_annotation: NodeId) CheckError!TypeId {
@@ -82164,16 +82223,10 @@ pub const Checker = struct {
                 {
                     return self.interner.internKeyof(operand) catch return error.OutOfMemory;
                 }
-                var key_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
-                defer key_names.deinit(self.gpa);
                 var key_types: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer key_types.deinit(self.gpa);
                 try self.collectKeyofBroadIndexKeys(operand, &key_types);
-                if (try self.collectKeyofObjectKeys(operand, &key_names)) {
-                    for (key_names.items) |name| {
-                        const lit = self.interner.internStringLiteral(name) catch continue;
-                        try self.appendUniqueTypeId(&key_types, lit);
-                    }
+                if (try self.collectKeyofObjectKeyTypes(operand, &key_types)) {
                     if (key_types.items.len == 0) return types.Primitive.never;
                     if (key_types.items.len == 1) return key_types.items[0];
                     return self.interner.internUnion(key_types.items) catch return error.OutOfMemory;
@@ -89364,6 +89417,77 @@ pub const Checker = struct {
         return true;
     }
 
+    /// Collect actual property-key types. Computed symbol members retain
+    /// their nominal key, while ordinary members produce string literals.
+    /// Keep the name-only collector for mapped-member materialization.
+    fn collectKeyofObjectKeyTypes(
+        self: *Checker,
+        t: TypeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!bool {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_instantiation and !flags.is_union and !flags.is_intersection) {
+            const surface = try self.resolveGenericType(t);
+            if (surface != t) return self.collectKeyofObjectKeyTypes(surface, out);
+            return false;
+        }
+        if (flags.is_union) {
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(t));
+            defer self.gpa.free(members);
+            if (members.len == 0) return true;
+            var common: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer common.deinit(self.gpa);
+            if (!try self.collectKeyofObjectKeyTypes(members[0], &common)) return false;
+            for (members[1..]) |member| {
+                var candidate: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer candidate.deinit(self.gpa);
+                if (!try self.collectKeyofObjectKeyTypes(member, &candidate)) return false;
+                var write: usize = 0;
+                for (common.items) |key| {
+                    if (!std.mem.containsAtLeast(TypeId, candidate.items, 1, &.{key})) continue;
+                    common.items[write] = key;
+                    write += 1;
+                }
+                common.items.len = write;
+                if (common.items.len == 0) break;
+            }
+            for (common.items) |key| try self.appendUniqueTypeId(out, key);
+            return true;
+        }
+        if (flags.is_intersection) {
+            const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(t));
+            defer self.gpa.free(members);
+            for (members) |member| _ = try self.collectKeyofObjectKeyTypes(member, out);
+            return true;
+        }
+        if (!flags.is_object_type) return false;
+        for (self.interner.objectMembers(t)) |member| {
+            if (member.visibility != .public) continue;
+            if (self.string_interner.getOptional(member.name)) |name| {
+                if (std.mem.startsWith(u8, name, "#")) continue;
+            }
+            const key = if (member.key_type != types.Primitive.none)
+                member.key_type
+            else
+                self.interner.internStringLiteral(member.name) catch return error.OutOfMemory;
+            try self.appendUniqueTypeId(out, key);
+        }
+        if (self.isActualTupleType(t) or self.typeIsArrayLikeObject(t)) {
+            var elem_t = self.interner.objectNumberIndex(t);
+            if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
+            const proto = try self.arrayPrototypeForReceiver(t, elem_t);
+            for (self.interner.objectMembers(proto)) |member| {
+                const key = if (member.key_type != types.Primitive.none)
+                    member.key_type
+                else
+                    self.interner.internStringLiteral(member.name) catch return error.OutOfMemory;
+                try self.appendUniqueTypeId(out, key);
+            }
+        }
+        return true;
+    }
+
     fn keyofTypeFromOperand(self: *Checker, operand: TypeId) CheckError!TypeId {
         if (operand == types.Primitive.any or operand == types.Primitive.never) {
             return try self.propertyKeyUnionType();
@@ -89383,16 +89507,10 @@ pub const Checker = struct {
             return self.interner.internKeyof(operand) catch return error.OutOfMemory;
         }
 
-        var key_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
-        defer key_names.deinit(self.gpa);
         var key_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer key_types.deinit(self.gpa);
         try self.collectKeyofBroadIndexKeys(operand, &key_types);
-        if (try self.collectKeyofObjectKeys(operand, &key_names)) {
-            for (key_names.items) |name| {
-                const lit = self.interner.internStringLiteral(name) catch continue;
-                try self.appendUniqueTypeId(&key_types, lit);
-            }
+        if (try self.collectKeyofObjectKeyTypes(operand, &key_types)) {
             if (key_types.items.len == 0) return types.Primitive.never;
             if (key_types.items.len == 1) return key_types.items[0];
             return self.interner.internUnion(key_types.items) catch return error.OutOfMemory;
@@ -92461,6 +92579,9 @@ pub const Checker = struct {
             }
             return self.interner.internUnion(flat.items) catch return error.OutOfMemory;
         }
+        if (self.objectMemberForUniqueSymbolKey(source_t, key_t)) |member| {
+            return try self.indexedMemberReadType(member.type, member.is_optional);
+        }
         if (try self.propertyNameFromLiteralType(key_t)) |name| {
             return self.objectPropertyTypeByName(source_t, name);
         }
@@ -92475,6 +92596,20 @@ pub const Checker = struct {
                 const string_idx = self.interner.objectStringIndex(source_t);
                 if (string_idx != types.Primitive.none) return string_idx;
             }
+        }
+        return null;
+    }
+
+    fn objectMemberForUniqueSymbolKey(self: *Checker, object_t: TypeId, key_t: TypeId) ?types.ObjectMember {
+        if (key_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(key_t).is_unique_symbol or
+            object_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(object_t).is_object_type)
+        {
+            return null;
+        }
+        for (self.interner.objectMembers(object_t)) |member| {
+            if (member.key_type == key_t) return member;
         }
         return null;
     }
@@ -94512,6 +94647,10 @@ pub const Checker = struct {
             // fall back to the target's number-key indexer for any
             // extras (variadic tuple rest).
             const ok = if (required_discriminant_mismatch) false else blk: {
+                if (declared_type < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(declared_type).is_unique_symbol and
+                    init_type == types.Primitive.symbol_t and
+                    self.uniqueSymbolFactoryInitializer(v.init)) break :blk true;
                 if (try self.conditionalArrayBranchesAssignableToTupleUnion(v.init, declared_type)) break :blk true;
                 if (try self.templateLiteralAssertionToTypeParameterNeedsInstantiationCheck(v.init, declared_type) or
                     self.templateLiteralToTypeParameterNeedsInstantiationCheck(init_type, declared_type)) break :blk false;
@@ -101349,18 +101488,12 @@ pub const Checker = struct {
         if (operand_text.len == 0) return types.Primitive.any;
         const operand = (try self.jsDocTypeTextToType(src, operand_text)) orelse return null;
         if (operand == types.Primitive.any) return try self.propertyKeyUnionType();
-        var key_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
-        defer key_names.deinit(self.gpa);
-        if (try self.collectKeyofObjectKeys(operand, &key_names)) {
-            if (key_names.items.len == 0) return types.Primitive.never;
-            var lits: std.ArrayListUnmanaged(TypeId) = .empty;
-            defer lits.deinit(self.gpa);
-            for (key_names.items) |name| {
-                const lit = self.interner.internStringLiteral(name) catch continue;
-                try lits.append(self.gpa, lit);
-            }
-            if (lits.items.len == 1) return lits.items[0];
-            return self.interner.internUnion(lits.items) catch return error.OutOfMemory;
+        var keys: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer keys.deinit(self.gpa);
+        if (try self.collectKeyofObjectKeyTypes(operand, &keys)) {
+            if (keys.items.len == 0) return types.Primitive.never;
+            if (keys.items.len == 1) return keys.items[0];
+            return self.interner.internUnion(keys.items) catch return error.OutOfMemory;
         }
         return self.interner.internKeyof(operand) catch return error.OutOfMemory;
     }
@@ -102265,6 +102398,7 @@ pub const Checker = struct {
             for (self.interner.objectMembers(inner_t)) |member| {
                 try members.append(self.gpa, .{
                     .name = member.name,
+                    .key_type = member.key_type,
                     .type = member.type,
                     .is_optional = true,
                     .is_readonly = member.is_readonly,
@@ -103004,6 +103138,7 @@ pub const Checker = struct {
             };
             try members.append(self.gpa, .{
                 .name = m.name,
+                .key_type = m.key_type,
                 .type = try self.mappedPropertyValueWithOptionality(m.type, is_optional, m.is_optional),
                 .is_optional = is_optional,
                 .is_readonly = switch (kind) {
@@ -109632,6 +109767,7 @@ pub const Checker = struct {
         for (prop_members) |member| {
             try members.append(self.gpa, .{
                 .name = member.name,
+                .key_type = member.key_type,
                 .type = try self.typeboxStaticFromSchema(member.type, depth + 1),
                 .is_optional = member.is_optional,
                 .is_readonly = member.is_readonly,
@@ -114746,6 +114882,7 @@ pub const Checker = struct {
             .string => |value| self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory) catch return error.OutOfMemory,
             .number => |value| self.interner.internNumberLiteral(value) catch return error.OutOfMemory,
             .boolean => |value| self.interner.internBooleanLiteral(value),
+            .unique_symbol => |identity| self.interner.internUniqueSymbol(.{ .name = self.string_interner.intern(identity) catch return error.OutOfMemory }) catch return error.OutOfMemory,
             .array => |element| self.interner.internArrayType(self.string_interner, try self.programDeferredLowerExpression(element, context, active, depth + 1)) catch return error.OutOfMemory,
             .readonly_array => |element| self.internReadonlyArrayType(try self.programDeferredLowerExpression(element, context, active, depth + 1)),
             .union_type, .intersection => |members| blk: {
@@ -114767,6 +114904,7 @@ pub const Checker = struct {
                         member_t = try self.interner.internUnion(&.{ member_t, types.Primitive.undefined_t });
                     value.* = .{
                         .name = self.string_interner.intern(member.name) catch return error.OutOfMemory,
+                        .key_type = if (member.key) |key| try self.programDeferredLowerExpression(key, context, active, depth + 1) else types.Primitive.none,
                         .type = member_t,
                         .write_type = write_t,
                         .is_optional = member.optional,
@@ -116437,6 +116575,7 @@ pub const Checker = struct {
         errdefer self.gpa.free(result);
         for (members, result) |member, *out| out.* = .{
             .name = self.string_interner.intern(member.name) catch return error.OutOfMemory,
+            .key_type = if (member.key) |key| try self.lowerProgramExpression(key, declaration, args) else types.Primitive.none,
             .type = if (declaration.contextual_projection and
                 member.type.* != .function and
                 programExpressionHasDeclarationLeaf(member.type))
@@ -116498,6 +116637,7 @@ pub const Checker = struct {
             .string => |value| @as(?TypeId, self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory) catch return error.OutOfMemory),
             .number => |value| @as(?TypeId, self.interner.internNumberLiteral(value) catch return error.OutOfMemory),
             .boolean => |value| @as(?TypeId, self.interner.internBooleanLiteral(value)),
+            .unique_symbol => |identity| @as(?TypeId, self.interner.internUniqueSymbol(.{ .name = self.string_interner.intern(identity) catch return error.OutOfMemory }) catch return error.OutOfMemory),
             .parameter => |parameter| switch (bindings.get(parameter) orelse return null) {
                 .type_id => |type_id| type_id,
                 .expression => |bound| try self.programContextualProjectionForTarget(bound, target_t, bindings, active),
@@ -116678,6 +116818,7 @@ pub const Checker = struct {
             };
             try members.append(self.gpa, .{
                 .name = member.name,
+                .key_type = member.key_type,
                 .type = try self.mappedPropertyValueWithOptionality(member.type, optional, member.is_optional),
                 .is_optional = optional,
                 .is_readonly = if (kind == .readonly) true else member.is_readonly,
@@ -116780,6 +116921,7 @@ pub const Checker = struct {
             .string => |value| return self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory),
             .number => |value| return self.interner.internNumberLiteral(value),
             .boolean => |value| return self.interner.internBooleanLiteral(value),
+            .unique_symbol => |identity| return self.interner.internUniqueSymbol(.{ .name = self.string_interner.intern(identity) catch return error.OutOfMemory }),
             .array => |element| {
                 const element_type = try self.lowerProgramExpression(element, declaration, args);
                 return self.interner.internArrayType(self.string_interner, element_type) catch error.OutOfMemory;
@@ -123021,6 +123163,10 @@ pub const Checker = struct {
                         // objectTypePropertyAccess.ts.
                         if (try self.broadObjectPrototypeMember(lit.value)) |t| break :blk try self.optionalChainResult(t, element_is_optional_chain);
                     }
+                    if (self.objectMemberForUniqueSymbolKey(obj_t, idx_t)) |member| {
+                        const read_t = try self.indexedMemberReadType(member.type, member.is_optional);
+                        break :blk try self.optionalChainResult(read_t, element_is_optional_chain);
+                    }
                     const computed_key = try self.classMemberNameFromPropertyKey(e.index, true);
                     if (computed_key) |key| {
                         var found_count: usize = 0;
@@ -123259,7 +123405,7 @@ pub const Checker = struct {
                                 try self.reportElementImplicitAnyDidYouMeanCall(node, obj_name, suggestion);
                                 break :blk types.Primitive.any;
                             }
-                            if (try self.elementAccessMissingPropertyChainName(obj_t, idx_t, literal_string_key)) |missing_name| {
+                            if (try self.elementAccessMissingPropertyChainName(obj_t, e.index, idx_t, literal_string_key)) |missing_name| {
                                 try self.reportElementImplicitAnyMissingProperty(node, idx_name, obj_name, missing_name);
                                 break :blk types.Primitive.any;
                             }
@@ -146723,7 +146869,11 @@ pub const Checker = struct {
         };
         for (well_known) |name| {
             const id = self.string_interner.intern(name) catch return error.OutOfMemory;
-            try members.append(self.gpa, .{ .name = id, .type = types.Primitive.symbol_t, .is_optional = false, .is_readonly = true, .is_method = false });
+            const identity_name = try std.fmt.allocPrint(self.gpa, "Symbol.{s}", .{name});
+            defer self.gpa.free(identity_name);
+            const identity = self.string_interner.intern(identity_name) catch return error.OutOfMemory;
+            const unique_t = self.interner.internUniqueSymbol(.{ .name = identity }) catch return error.OutOfMemory;
+            try members.append(self.gpa, .{ .name = id, .type = unique_t, .is_optional = false, .is_readonly = true, .is_method = false });
         }
 
         if (include_declared_augmentations) {
@@ -162808,6 +162958,7 @@ pub const Checker = struct {
             },
             .boolean_lit => |b| try out.appendSlice(self.gpa, if (b) "true" else "false"),
             .bigint_lit => |sid| try out.appendSlice(self.gpa, self.string_interner.get(sid)),
+            .symbol_lit => return false,
         }
         return true;
     }
@@ -162882,6 +163033,7 @@ pub const Checker = struct {
                     },
                     .boolean_lit => |b| try out.appendSlice(self.gpa, if (b) "true" else "false"),
                     .bigint_lit => return false,
+                    .symbol_lit => return false,
                 }
                 return true;
             },
@@ -164603,12 +164755,26 @@ pub const Checker = struct {
     fn elementAccessMissingPropertyChainName(
         self: *Checker,
         object_t: TypeId,
+        index_node: NodeId,
         index_t: TypeId,
         literal_string_key: ?hir_mod.StringId,
     ) CheckError!?[]const u8 {
         if (literal_string_key) |key| return self.string_interner.get(key);
         if (index_t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(index_t);
+        if (flags.is_unique_symbol) {
+            // TypeScript names a missing unique-symbol property, including
+            // its brackets, in the nested TS7053 diagnostic. Well-known
+            // symbols use the SymbolConstructor declaration name.
+            const identity = self.interner.literalOf(index_t).symbol_lit;
+            const name = self.string_interner.get(identity.name);
+            if (std.mem.startsWith(u8, name, "Symbol.")) {
+                return try std.fmt.allocPrint(self.diag_arena.allocator(), "[SymbolConstructor.{s}]", .{name["Symbol.".len..]});
+            }
+            const source_name = self.nodeSourceTextOrEmpty(index_node);
+            if (source_name.len == 0) return null;
+            return try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{source_name});
+        }
         if (flags.is_union) {
             for (self.interner.unionMembers(index_t)) |member| {
                 const name = (try self.propertyNameFromLiteralType(member)) orelse continue;
@@ -169196,6 +169362,10 @@ pub const Checker = struct {
                 .boolean_lit => |target_bool| source_bool == target_bool,
                 else => false,
             },
+            .symbol_lit => |source_identity| switch (target_lit) {
+                .symbol_lit => |target_identity| source_identity.name == target_identity.name and source_identity.declaration == target_identity.declaration,
+                else => false,
+            },
         };
     }
 
@@ -173244,16 +173414,10 @@ pub const Checker = struct {
                     return self.interner.internKeyof(new_operand) catch return t;
                 }
             }
-            var key_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
-            defer key_names.deinit(self.gpa);
             var key_types: std.ArrayListUnmanaged(TypeId) = .empty;
             defer key_types.deinit(self.gpa);
             try self.collectKeyofBroadIndexKeys(new_operand, &key_types);
-            if (try self.collectKeyofObjectKeys(new_operand, &key_names)) {
-                for (key_names.items) |name| {
-                    const lit = self.interner.internStringLiteral(name) catch continue;
-                    try self.appendUniqueTypeId(&key_types, lit);
-                }
+            if (try self.collectKeyofObjectKeyTypes(new_operand, &key_types)) {
                 if (key_types.items.len == 0) return types.Primitive.never;
                 if (key_types.items.len == 1) return key_types.items[0];
                 return self.interner.internUnion(key_types.items) catch return t;
@@ -179866,6 +180030,7 @@ pub const Checker = struct {
                     .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
                     .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
                     .boolean_lit => |b| if (b) "true" else "false",
+                    .symbol_lit => "unique symbol",
                 };
             },
         };
@@ -183130,6 +183295,10 @@ pub const Checker = struct {
             }
         }
         if (!obj_flags.is_object_type and !obj_flags.is_intersection) return null;
+        if (self.objectMemberForUniqueSymbolKey(obj, index_t)) |member| {
+            const substituted = try self.substitutePolymorphicThisForReceiver(member.type, obj);
+            return try self.indexedMemberReadType(substituted, member.is_optional);
+        }
         // `NoIndexSignatures` excludes string/symbol indexers for generic
         // writes, but TypeScript still permits an applicable number indexer.
         // Array<T>[number] must therefore remain resolvable through the
@@ -192914,6 +193083,7 @@ pub const Checker = struct {
             },
             .bigint_lit => false,
             .boolean_lit => |b| self.hir.kindOf(value_node) == .literal_bool and hir_mod.literalBoolOf(self.hir, value_node) == b,
+            .symbol_lit => false,
         };
     }
 
@@ -193837,10 +194007,11 @@ pub const Checker = struct {
         }
         if (try self.tryReportConditionalFunctionVarDeclMismatch(node, init_node, target_node, target)) return;
         if (self.visibleAnnotatedIdentifierTypeNode(target_node)) |type_node| {
-            if (self.hir.kindOf(type_node) == .keyof_type and
-                self.typeNodeHasArraySyntax(hir_mod.keyofTypeOf(self.hir, type_node).operand))
-            {
-                return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
+            if (self.hir.kindOf(type_node) == .keyof_type) {
+                const operand = hir_mod.keyofTypeOf(self.hir, type_node).operand;
+                if (self.typeNodeHasArraySyntax(operand) or self.hir.kindOf(operand) == .type_ref) {
+                    return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
+                }
             }
         }
         try self.reportTypeNotAssignable(node, source, target, fallback);
@@ -198989,6 +199160,7 @@ pub const Checker = struct {
             .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
             .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
             .boolean_lit => |b| if (b) "true" else "false",
+            .symbol_lit => "unique symbol",
         };
     }
 
@@ -200879,6 +201051,7 @@ pub const Checker = struct {
                     .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
                     .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
                     .boolean_lit => |b| if (b) "true" else "false",
+                    .symbol_lit => "unique symbol",
                 };
             },
         };

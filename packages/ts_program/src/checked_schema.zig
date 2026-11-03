@@ -497,6 +497,7 @@ const Builder = struct {
                 .string_lit => |name| self.expression(.{ .string = self.compilation.interner.get(name) }),
                 .number_lit => |bits| self.expression(.{ .number = @bitCast(bits) }),
                 .boolean_lit => |value| self.expression(.{ .boolean = value }),
+                .symbol_lit => |identity| self.expression(.{ .unique_symbol = try self.arena.dupe(u8, self.compilation.interner.get(identity.name)) }),
                 .bigint_lit => self.unsupported(),
             };
         }
@@ -578,6 +579,7 @@ const Builder = struct {
                 try self.lower(member.type);
             out.* = .{
                 .name = name,
+                .key = if (member.key_type != Primitive.none) try self.lower(member.key_type) else null,
                 .type = member_type,
                 .optional = member.is_optional,
                 .readonly = member.is_readonly,

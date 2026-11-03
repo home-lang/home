@@ -7012,6 +7012,7 @@ fn renderTypeInto(
                 try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{v}));
             },
             .boolean_lit => |b| try buf.appendSlice(gpa, if (b) "true" else "false"),
+            .symbol_lit => try buf.appendSlice(gpa, "unique symbol"),
             .bigint_lit => |sid| {
                 try buf.appendSlice(gpa, sint.get(sid));
                 try buf.append(gpa, 'n');

@@ -294,7 +294,7 @@ pub const Builder = struct {
 
     fn transferable(self: *Builder, value: *const schema.Expression) !*const schema.Expression {
         switch (value.*) {
-            .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean => return value,
+            .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol => return value,
             .unsupported => return self.expression(.opaque_leaf),
             else => {},
         }
@@ -586,7 +586,7 @@ pub const Builder = struct {
             const entry = try visited.getOrPut(self.gpa, expr);
             if (entry.found_existing) continue;
             switch (expr.*) {
-                .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean, .object, .class_value, .indexed_object => {},
+                .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol, .object, .class_value, .indexed_object => {},
                 .builtin_reference => |builtin| try pending.appendSlice(self.gpa, builtin.arguments),
                 .array, .readonly_array => |element| try pending.append(self.gpa, element),
                 .tuple => |elements| for (elements) |element| try pending.append(self.gpa, element.type),
@@ -621,18 +621,21 @@ pub const Builder = struct {
             const entry = try visited.getOrPut(self.gpa, expr);
             if (entry.found_existing) continue;
             switch (expr.*) {
-                .primitive, .builtin_object, .parameter, .string, .number, .boolean, .polymorphic_this => {},
+                .primitive, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol, .polymorphic_this => {},
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(self.gpa, element),
                 .object => |members| for (members) |member| {
+                    if (member.key) |key| try pending.append(self.gpa, key);
                     try pending.append(self.gpa, member.type);
                     if (member.write_type) |write_type| try pending.append(self.gpa, write_type);
                 },
                 .class_value => |value| for (value.members) |member| {
+                    if (member.key) |key| try pending.append(self.gpa, key);
                     try pending.append(self.gpa, member.type);
                     if (member.write_type) |write_type| try pending.append(self.gpa, write_type);
                 },
                 .indexed_object => |indexed_object| {
                     for (indexed_object.members) |member| {
+                        if (member.key) |key| try pending.append(self.gpa, key);
                         try pending.append(self.gpa, member.type);
                         if (member.write_type) |write_type| try pending.append(self.gpa, write_type);
                     }
@@ -920,6 +923,8 @@ pub const Builder = struct {
             break :blk try self.functionType(context, &.{}, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false);
         } else if (kind == .var_decl or kind == .let_decl or kind == .const_decl) blk: {
             const variable = hir.varDeclOf(&c.hir, key.node);
+            if (try self.sourceUniqueSymbolDeclaration(key.source, key.node)) |unique_t| break :blk unique_t;
+            if (try self.checkedUniqueSymbolExpression(c, c.hir.typeOf(key.node))) |unique_t| break :blk unique_t;
             if (variable.type_annotation == 0 and jsdoc_types.isJavaScriptPath(source.path)) {
                 if (try jsdoc_types.declarationType(self.gpa, c, key.node)) |type_expression| {
                     defer type_expression.deinit(self.gpa);
@@ -1614,7 +1619,19 @@ pub const Builder = struct {
                 .interface_member => {
                     const member = hir.interfaceMemberOf(&c.hir, node);
                     if (member.name == 0) return self.expression(.unsupported);
-                    try members.append(self.arena, .{ .name = c.interner.get(member.name), .type = try self.lower(context, member.type_node), .optional = member.is_optional, .readonly = member.is_readonly, .method = member.is_method });
+                    const key_expr = hir.interfaceMemberKeyExpr(&c.hir, node);
+                    const unique_key = if (key_expr != hir.none_node_id) key: {
+                        if (c.hir.kindOf(key_expr) == .identifier) {
+                            const name = hir.identifierOf(&c.hir, key_expr).name;
+                            if (self.scopedValueSymbol(context.source, key_expr, name)) |bound| {
+                                if (bound.decls.items.len == 1) {
+                                    if (try self.sourceUniqueSymbolDeclaration(context.source, bound.decls.items[0])) |symbol| break :key symbol;
+                                }
+                            }
+                        }
+                        break :key try self.checkedUniqueSymbolExpression(c, c.hir.typeOf(key_expr));
+                    } else null;
+                    try members.append(self.arena, .{ .name = c.interner.get(member.name), .key = unique_key, .type = try self.lower(context, member.type_node), .optional = member.is_optional, .readonly = member.is_readonly, .method = member.is_method });
                 },
                 .index_signature => {
                     const index = hir.indexSignatureOf(&c.hir, node);
@@ -1634,6 +1651,31 @@ pub const Builder = struct {
             .members = owned_members,
             .indices = try indices.toOwnedSlice(self.arena),
         } });
+    }
+
+    fn checkedUniqueSymbolExpression(self: *Builder, c: *const driver.Compilation, typ: driver.TypeId) !?*const schema.Expression {
+        if (typ >= c.type_interner.pool.typeCount()) return null;
+        const flags = c.type_interner.pool.flagsOf(typ);
+        if (!flags.is_unique_symbol or flags.is_union or flags.is_intersection) return null;
+        const identity = c.type_interner.literalOf(typ).symbol_lit;
+        return self.expression(.{ .unique_symbol = try self.arena.dupe(u8, c.interner.get(identity.name)) });
+    }
+
+    fn sourceUniqueSymbolDeclaration(self: *Builder, source_index: usize, node: hir.NodeId) !?*const schema.Expression {
+        const source = self.sources[source_index];
+        const c = source.compilation;
+        if (c.hir.kindOf(node) != .const_decl) return null;
+        const variable = hir.varDeclOf(&c.hir, node);
+        if (variable.type_annotation == hir.none_node_id or variable.name == hir.none_node_id or
+            c.hir.kindOf(variable.name) != .identifier) return null;
+        const annotation = c.hir.spanOf(variable.type_annotation);
+        if (annotation.end > c.source.len or annotation.start >= annotation.end or
+            !std.mem.startsWith(u8, c.source[annotation.start..annotation.end], "unique symbol")) return null;
+        const name = c.interner.get(hir.identifierOf(&c.hir, variable.name).name);
+        const origin = try std.fmt.allocPrint(self.arena, "decl:{d}:{s}:{d}:{d}:{s}", .{
+            source.path.len, source.path, c.hir.spanOf(node).start, name.len, name,
+        });
+        return self.expression(.{ .unique_symbol = origin });
     }
 
     /// A const binding cannot change between its initializer and a shorthand

@@ -1220,6 +1220,7 @@ pub const Engine = struct {
             if (sf.is_number and target == Primitive.number_t) return true;
             if (sf.is_bigint and target == Primitive.bigint_t) return true;
             if (sf.is_boolean and target == Primitive.boolean_t) return true;
+            if (sf.is_unique_symbol and target == Primitive.symbol_t) return true;
         }
         if ((sf.is_template_literal or sf.is_string_mapping) and target == Primitive.string_t) return true;
         if (tf.is_template_literal or tf.is_string_mapping) return false;
@@ -1478,6 +1479,7 @@ pub const Engine = struct {
             .number_lit => |bits| bits == lb.number_lit,
             .bigint_lit => |sid| sid == lb.bigint_lit,
             .boolean_lit => |v| v == lb.boolean_lit,
+            .symbol_lit => |identity| identity.name == lb.symbol_lit.name and identity.declaration == lb.symbol_lit.declaration,
         };
     }
 
@@ -3325,6 +3327,25 @@ pub const Engine = struct {
 // =============================================================================
 
 const T = std.testing;
+
+test "Engine: unique symbols are nominal values of broad symbol" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const well_known = try ti.internUniqueSymbol(.{ .name = 11 });
+    const same = try ti.internUniqueSymbol(.{ .name = 11 });
+    const other = try ti.internUniqueSymbol(.{ .name = 12 });
+    const declared = try ti.internUniqueSymbol(.{ .name = 11, .declaration = 88 });
+    try T.expectEqual(well_known, same);
+    try T.expect(try e.isAssignableTo(well_known, Primitive.symbol_t));
+    try T.expect(!try e.isAssignableTo(Primitive.symbol_t, well_known));
+    try T.expect(!try e.isAssignableTo(other, well_known));
+    try T.expect(!try e.isAssignableTo(declared, well_known));
+    const keys = try ti.internUnion(&.{ Primitive.number_t, well_known });
+    try T.expect(try e.isAssignableTo(well_known, keys));
+    try T.expect(!try e.isAssignableTo(other, keys));
+}
 
 test "Engine: identity short-circuits via interned ids" {
     var ti = try Interner.init(T.allocator);

@@ -16,6 +16,8 @@ pub const Parameter = struct {
 
 pub const Member = struct {
     name: []const u8,
+    /// Computed unique-symbol key; `name` remains the readable spelling.
+    key: ?*const Expression = null,
     type: *const Expression,
     /// The setter parameter type for a paired accessor. Reads use `type`.
     write_type: ?*const Expression = null,
@@ -144,6 +146,9 @@ pub const Expression = union(enum) {
     string: []const u8,
     number: f64,
     boolean: bool,
+    /// Canonical source-qualified identity of a unique symbol. This is
+    /// interned by contents in the receiving checker, never displayed.
+    unique_symbol: []const u8,
     array: *const Expression,
     readonly_array: *const Expression,
     object: []const Member,
@@ -283,7 +288,7 @@ pub const Schema = struct {
                 primitive == types.Primitive.number_t or
                 primitive == types.Primitive.symbol_t or
                 primitive == types.Primitive.never,
-            .string, .number => true,
+            .string, .number, .unique_symbol => true,
             .union_type => |members| blk: {
                 for (members) |member| if (!try recordKeySupported(member, gpa, visited, active_parameters, bindings)) break :blk false;
                 break :blk true;
@@ -331,19 +336,22 @@ pub const Schema = struct {
             switch (expr.*) {
                 .unsupported => if (!allow_opaque) return false,
                 .opaque_leaf => if (!allow_opaque) return false,
-                .primitive, .builtin_object, .parameter, .string, .number, .boolean, .polymorphic_this => {},
+                .primitive, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol, .polymorphic_this => {},
                 .builtin_reference => |reference| try pending.appendSlice(gpa, reference.arguments),
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
+                    if (member.key) |key| try pending.append(gpa, key);
                     try pending.append(gpa, member.type);
                     if (member.write_type) |write_type| try pending.append(gpa, write_type);
                 },
                 .class_value => |value| for (value.members) |member| {
+                    if (member.key) |key| try pending.append(gpa, key);
                     try pending.append(gpa, member.type);
                     if (member.write_type) |write_type| try pending.append(gpa, write_type);
                 },
                 .indexed_object => |object| {
                     for (object.members) |member| {
+                        if (member.key) |key| try pending.append(gpa, key);
                         try pending.append(gpa, member.type);
                         if (member.write_type) |write_type| try pending.append(gpa, write_type);
                     }

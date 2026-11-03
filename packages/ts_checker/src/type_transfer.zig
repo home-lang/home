@@ -178,6 +178,7 @@ const SourceGraph = struct {
                 const value = try self.payload(.object_type_payloads, id);
                 for (try self.slice(.object_member_pool, value.members_start, value.members_len)) |member| {
                     try output.append(allocator, member.type);
+                    if (member.key_type != types.Primitive.none) try output.append(allocator, member.key_type);
                     if (member.write_type) |write_type| try output.append(allocator, write_type);
                 }
                 try output.appendSlice(allocator, &.{ value.string_index_type, value.number_index_type, value.symbol_index_type });
@@ -348,6 +349,10 @@ const Builder = struct {
                     .number_lit => |bits| try target.internNumberLiteral(@bitCast(bits)),
                     .bigint_lit => |text| try target.internBigIntLiteral(try self.string(text)),
                     .boolean_lit => |value_bool| target.internBooleanLiteral(value_bool),
+                    .symbol_lit => |identity| try target.internUniqueSymbol(.{
+                        .name = try self.string(identity.name),
+                        .declaration = if (identity.declaration == hir.none_node_id) hir.none_node_id else try self.node(identity.declaration),
+                    }),
                 };
             },
             .union_payloads => blk: {
@@ -480,6 +485,7 @@ const Builder = struct {
                     var mapped = member;
                     mapped.name = try self.string(member.name);
                     mapped.type = try self.typeId(member.type);
+                    if (member.key_type != types.Primitive.none) mapped.key_type = try self.typeId(member.key_type);
                     if (member.write_type) |write_type| mapped.write_type = try self.typeId(write_type);
                     mapped.decl_node = try self.node(member.decl_node);
                     if (member.declaration_origin != 0) mapped.declaration_origin = try self.string(member.declaration_origin);
@@ -691,6 +697,23 @@ fn prepareRoots(target: *interner.Interner, source: *const interner.Interner, na
 }
 
 const T = std.testing;
+
+test "type transfer relocates unique symbol declaration identity" {
+    var source = try interner.Interner.init(T.allocator);
+    defer source.deinit();
+    var target = try interner.Interner.init(T.allocator);
+    defer target.deinit();
+    const declared = try source.internUniqueSymbol(.{ .name = 31, .declaration = 7 });
+    const well_known = try source.internUniqueSymbol(.{ .name = 32 });
+    var names = TestNames{};
+    var pending = try prepare(&target, &source, names.names());
+    defer pending.deinit();
+    const relocated = pending.ids();
+    const mapped_declared = try relocated.typeId(declared);
+    const mapped_well_known = try relocated.typeId(well_known);
+    try T.expectEqual(types.UniqueSymbolIdentity{ .name = 131, .declaration = 1007 }, target.literalOf(mapped_declared).symbol_lit);
+    try T.expectEqual(types.UniqueSymbolIdentity{ .name = 132 }, target.literalOf(mapped_well_known).symbol_lit);
+}
 
 const TestNames = struct {
     string_base: u32 = 100,

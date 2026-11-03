@@ -123,7 +123,9 @@ pub const TypeFlags = packed struct(u32) {
     /// parity-compatible while reporting can distinguish the source.
     is_unmodeled: bool = false,
 
-    _padding: u1 = 0,
+    /// Nominal symbol value, distinct from broad `symbol` and from every
+    /// other unique symbol. Its identity lives in the literal payload.
+    is_unique_symbol: bool = false,
 };
 
 /// A union literal-type tag. Lives in the `LiteralData` payload of
@@ -133,6 +135,16 @@ pub const LiteralTag = enum(u8) {
     number_lit,
     bigint_lit,
     boolean_lit,
+    symbol_lit,
+};
+
+/// A well-known symbol has a canonical name and no declaration. A declared
+/// unique symbol may use a source-qualified canonical name or a declaration
+/// node; type transfer remaps the latter through the owning source. Equal
+/// spellings at different declaration sites remain distinct.
+pub const UniqueSymbolIdentity = struct {
+    name: StringId,
+    declaration: hir.NodeId = hir.none_node_id,
 };
 
 pub const LiteralData = union(LiteralTag) {
@@ -140,6 +152,7 @@ pub const LiteralData = union(LiteralTag) {
     number_lit: u64, // bit pattern of f64
     bigint_lit: StringId,
     boolean_lit: bool,
+    symbol_lit: UniqueSymbolIdentity,
 };
 
 /// Identity of an enum-member literal type (`Choice.Yes`). Stored in
@@ -335,6 +348,9 @@ pub const MemberVisibility = enum(u2) {
 
 pub const ObjectMember = struct {
     name: StringId,
+    /// Nominal key for a computed unique-symbol member. Ordinary string
+    /// properties leave this as `none` and derive their key from `name`.
+    key_type: TypeId = Primitive.none,
     type: TypeId,
     /// Paired accessor setter input; absent for ordinary properties.
     write_type: ?TypeId = null,

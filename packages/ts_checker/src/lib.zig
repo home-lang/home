@@ -530,6 +530,7 @@ fn arrayUnscopablesFlags(
     }
     try flag_members.append(gpa, .{
         .name = try sint.intern("Symbol.unscopables"),
+        .key_type = try ti.internUniqueSymbol(.{ .name = try sint.intern("Symbol.unscopables") }),
         .type = types.Primitive.boolean_t,
         .is_optional = true,
         .is_readonly = true,
@@ -841,6 +842,7 @@ pub fn arrayProto(
     try proto_members.appendSlice(gpa, &m);
     try proto_members.append(gpa, .{
         .name = try sint.intern("Symbol.unscopables"),
+        .key_type = try ti.internUniqueSymbol(.{ .name = try sint.intern("Symbol.unscopables") }),
         .type = try arrayUnscopablesFlags(ti, sint, gpa, &m),
         .is_optional = false,
         .is_readonly = true,
@@ -927,6 +929,7 @@ pub fn readonlyArrayProto(
     }
     try members.append(gpa, .{
         .name = try sint.intern("Symbol.unscopables"),
+        .key_type = try ti.internUniqueSymbol(.{ .name = try sint.intern("Symbol.unscopables") }),
         .type = try arrayUnscopablesFlags(ti, sint, gpa, members.items),
         .is_optional = false,
         .is_readonly = true,
