@@ -853,6 +853,46 @@ pub fn readonlyArrayProto(
         }
         try members.append(gpa, inherited);
     }
+    // lib.es2015.symbol.wellknown.d.ts declares this as
+    // `{ [K in keyof readonly any[]]?: boolean }`. Materialize that finite
+    // property surface and its numeric index: treating this mapped object as
+    // a homomorphic array would leave `length` and `map` with array types.
+    const flag_type = try ti.internUnion(&.{ types.Primitive.boolean_t, types.Primitive.undefined_t });
+    var flag_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+    defer flag_members.deinit(gpa);
+    for (members.items) |member| {
+        try flag_members.append(gpa, .{
+            .name = member.name,
+            .type = types.Primitive.boolean_t,
+            .is_optional = true,
+            .is_readonly = member.is_readonly,
+            .is_method = false,
+        });
+    }
+    for ([_][]const u8{ "toString", "toLocaleString" }) |name| {
+        try flag_members.append(gpa, .{
+            .name = try sint.intern(name),
+            .type = types.Primitive.boolean_t,
+            .is_optional = true,
+            .is_readonly = false,
+            .is_method = false,
+        });
+    }
+    try flag_members.append(gpa, .{
+        .name = try sint.intern("Symbol.unscopables"),
+        .type = types.Primitive.boolean_t,
+        .is_optional = true,
+        .is_readonly = true,
+        .is_method = false,
+    });
+    const unscopables = try ti.internObjectTypeWithIndexAndSymbol(flag_members.items, types.Primitive.none, flag_type, types.Primitive.none);
+    try members.append(gpa, .{
+        .name = try sint.intern("Symbol.unscopables"),
+        .type = unscopables,
+        .is_optional = false,
+        .is_readonly = true,
+        .is_method = false,
+    });
     const proto = try ti.internObjectType(members.items);
     try cache.readonly_array_proto_by_elem.put(gpa, elem, proto);
     return proto;
@@ -1517,6 +1557,33 @@ test "lib: arrayProto exposes length/push/map/flatMap" {
     try T.expect(ti.objectMember(proto, push_id) != null);
     try T.expect(ti.objectMember(proto, map_id) != null);
     try T.expect(ti.objectMember(proto, flat_map_id) != null);
+}
+
+test "lib: readonly array unscopables map keys to optional boolean flags" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+    const array = try ti.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, types.Primitive.number_t, types.Primitive.none);
+    const proto = try readonlyArrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, array, &rest_set);
+    const symbol = try sint.intern("Symbol.unscopables");
+    const flags = ti.objectMember(proto, symbol) orelse return error.TestUnexpectedResult;
+    try T.expect(ti.objectMemberInfo(proto, symbol).?.is_readonly);
+    const length = ti.objectMemberInfo(flags, try sint.intern("length")) orelse return error.TestUnexpectedResult;
+    try T.expect(length.is_optional and length.is_readonly);
+    try T.expectEqual(types.Primitive.boolean_t, length.type);
+    const map = ti.objectMemberInfo(flags, try sint.intern("map")) orelse return error.TestUnexpectedResult;
+    try T.expect(map.is_optional and !map.is_method);
+    try T.expectEqual(types.Primitive.boolean_t, map.type);
+    try T.expect(ti.objectMember(flags, try sint.intern("push")) == null);
+    const index = ti.objectNumberIndex(flags);
+    try T.expectEqual(@as(usize, 2), ti.unionMembers(index).len);
+    try T.expect(std.mem.indexOfScalar(TypeId, ti.unionMembers(index), types.Primitive.boolean_t) != null);
+    try T.expect(std.mem.indexOfScalar(TypeId, ti.unionMembers(index), types.Primitive.undefined_t) != null);
 }
 
 test "lib: array entries iterator preserves index and element tuple types" {

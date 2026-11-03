@@ -112950,7 +112950,12 @@ pub const Checker = struct {
     fn arrayPrototypeForReceiver(self: *Checker, receiver: TypeId, element: TypeId) CheckError!TypeId {
         if (self.typeIsReadonlyArrayLike(receiver)) {
             const readonly_array = try self.internReadonlyArrayType(element);
-            return lib.readonlyArrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, readonly_array, &self.rest_signatures) catch return error.OutOfMemory;
+            const proto = lib.readonlyArrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, readonly_array, &self.rest_signatures) catch return error.OutOfMemory;
+            const unscopables_name = self.string_interner.intern("Symbol.unscopables") catch return error.OutOfMemory;
+            if (self.interner.objectMember(proto, unscopables_name)) |unscopables| {
+                try self.readonly_index_types.put(self.gpa, unscopables, .{ .string = false, .number = true, .symbol = false });
+            }
+            return proto;
         }
         return lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, &self.rest_signatures) catch return error.OutOfMemory;
     }
@@ -122902,6 +122907,9 @@ pub const Checker = struct {
                         }
                         if (found_count > 1) break :blk try self.optionalChainResult(types.Primitive.any, element_is_optional_chain);
                         if (found_count == 1) break :blk try self.optionalChainResult(found_t, element_is_optional_chain);
+                        if (try self.lookupArrayLikePrototypeMember(obj_t, key)) |member_t| {
+                            break :blk try self.optionalChainResult(member_t, element_is_optional_chain);
+                        }
                     }
                     if (try self.patternIndexValueForIndexType(obj_t, idx_t)) |pattern_idx| {
                         break :blk try self.optionalChainResult(
