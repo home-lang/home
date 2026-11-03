@@ -548,12 +548,37 @@ const Builder = struct {
 
     fn objectBody(self: *Builder, typ: TypeId, declaration: ?*const schema.Declaration) error{OutOfMemory}!*const schema.Expression {
         const source = self.compilation.type_interner.objectMembers(typ);
+        // A JavaScript function constructor keeps its template parameters on
+        // each invocation. The function value's `prototype` is `any` in
+        // TypeScript even when constructed instances have inferred members.
+        const function_constructor = jsdoc_types.isJavaScriptPath(self.path) and blk: {
+            var has_call = false;
+            var has_construct = false;
+            for (source) |member| {
+                const name = self.compilation.interner.get(member.name);
+                has_call = has_call or std.mem.eql(u8, name, "__call");
+                has_construct = has_construct or std.mem.eql(u8, name, "__construct");
+            }
+            break :blk has_call and has_construct;
+        };
+        const generic_constructor = for (source) |member| {
+            if (std.mem.eql(u8, self.compilation.interner.get(member.name), "__construct") and
+                self.compilation.checked_types.generic_signature_params.contains(member.type)) break true;
+        } else false;
         const members = try self.arena.alloc(schema.Member, source.len);
         for (source, members) |member, *out| {
             if (member.visibility != .public and declaration == null) return self.unsupported();
+            const name = self.compilation.interner.get(member.name);
+            const member_type = if (generic_constructor and
+                self.compilation.checked_types.generic_signature_params.contains(member.type))
+                try lowerVisibleSignatureInArena(self.arena, self.path, self.compilation, member.type)
+            else if (function_constructor and std.mem.eql(u8, name, "prototype"))
+                try self.expression(.{ .primitive = Primitive.any })
+            else
+                try self.lower(member.type);
             out.* = .{
-                .name = self.compilation.interner.get(member.name),
-                .type = try self.lower(member.type),
+                .name = name,
+                .type = member_type,
                 .optional = member.is_optional,
                 .readonly = member.is_readonly,
                 .method = member.is_method,
