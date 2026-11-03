@@ -487,7 +487,26 @@ fn arrayUnscopablesFlags(
 ) !TypeId {
     var flag_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
     defer flag_members.deinit(gpa);
-    for (array_members) |member| {
+    // A mapped type enumerates each distinct keyof property once, in the
+    // merged lib declaration order. The synthetic prototype stores overloads
+    // as repeated members and has a different order, so copy neither its
+    // duplicates nor its storage order into the mapped result.
+    const declared_order = [_][]const u8{
+        "length", "toString", "toLocaleString", "pop", "push", "concat", "join",
+        "reverse", "shift", "slice", "sort", "splice", "unshift", "indexOf",
+        "lastIndexOf", "every", "some", "forEach", "map", "filter", "reduce",
+        "reduceRight", "find", "findIndex", "fill", "copyWithin", "entries",
+        "keys", "values", "includes", "flatMap", "flat", "at", "findLast",
+        "findLastIndex", "toReversed", "toSorted", "toSpliced", "with",
+        "Symbol.iterator",
+    };
+    for (declared_order) |name| {
+        const member = for (array_members) |candidate| {
+            if (std.mem.eql(u8, sint.get(candidate.name), name)) break candidate;
+        } else if (std.mem.eql(u8, name, "toString") or std.mem.eql(u8, name, "toLocaleString"))
+            types.ObjectMember{ .name = try sint.intern(name), .type = types.Primitive.boolean_t, .is_optional = true, .is_readonly = false, .is_method = false }
+        else
+            continue;
         try flag_members.append(gpa, .{
             .name = member.name,
             .type = types.Primitive.boolean_t,
@@ -496,12 +515,16 @@ fn arrayUnscopablesFlags(
             .is_method = false,
         });
     }
-    for ([_][]const u8{ "toString", "toLocaleString" }) |name| {
+    // Retain future prototype additions after the known lib members.
+    for (array_members) |member| {
+        if (for (flag_members.items) |flag| {
+            if (flag.name == member.name) break true;
+        } else false) continue;
         try flag_members.append(gpa, .{
-            .name = try sint.intern(name),
+            .name = member.name,
             .type = types.Primitive.boolean_t,
             .is_optional = true,
-            .is_readonly = false,
+            .is_readonly = member.is_readonly,
             .is_method = false,
         });
     }
@@ -1588,6 +1611,7 @@ test "lib: readonly array unscopables map keys to optional boolean flags" {
     const proto = try readonlyArrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, array, &rest_set);
     const symbol = try sint.intern("Symbol.unscopables");
     const flags = ti.objectMember(proto, symbol) orelse return error.TestUnexpectedResult;
+    try T.expectEqual(@as(usize, 32), ti.objectMembers(flags).len);
     try T.expect(ti.objectMemberInfo(proto, symbol).?.is_readonly);
     const length = ti.objectMemberInfo(flags, try sint.intern("length")) orelse return error.TestUnexpectedResult;
     try T.expect(length.is_optional and length.is_readonly);
@@ -1614,6 +1638,7 @@ test "lib: mutable array unscopables include mutator flags" {
     const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, &rest_set);
     const symbol = try sint.intern("Symbol.unscopables");
     const flags = ti.objectMember(proto, symbol) orelse return error.TestUnexpectedResult;
+    try T.expectEqual(@as(usize, 41), ti.objectMembers(flags).len);
     try T.expect(ti.objectMemberInfo(proto, symbol).?.is_readonly);
     const length = ti.objectMemberInfo(flags, try sint.intern("length")) orelse return error.TestUnexpectedResult;
     try T.expect(length.is_optional and !length.is_readonly);

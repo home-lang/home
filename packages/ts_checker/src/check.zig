@@ -164004,7 +164004,105 @@ pub const Checker = struct {
                 }
             }
         }
-        return null;
+        return self.allocPropertyMissingObjectShape(target_t);
+    }
+
+    /// Render an anonymous object's properties for TS2339. TypeScript's
+    /// node builder counts the approximate type-node length while visiting
+    /// properties; after 160 units it elides the middle but keeps the last
+    /// property. This also covers mapped objects with optional members and
+    /// index signatures, which the small-literal printer above omits.
+    fn allocPropertyMissingObjectShape(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection or
+            self.interner.objectSymbolIndex(t) != types.Primitive.none or
+            self.pattern_index_signatures.contains(t)) return null;
+        const members = self.interner.objectMembers(t);
+        var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer seen_names.deinit(self.gpa);
+        for (members) |member| {
+            // This renderer expects one resolved property per name. A raw
+            // overload list needs the signature-merging printer instead.
+            if (seen_names.contains(member.name)) return null;
+            try seen_names.put(self.gpa, member.name, {});
+        }
+        const string_index = self.interner.objectStringIndex(t);
+        const number_index = self.interner.objectNumberIndex(t);
+        if (members.len == 0 and string_index == types.Primitive.none and number_index == types.Primitive.none) return null;
+
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        try buf.appendSlice(arena, "{ ");
+        var approximate_length: usize = 0;
+        const readonly = self.readonly_index_types.get(t) orelse ReadonlyIndexDomains{ .string = false, .number = false, .symbol = false };
+        for ([_]struct { kind: []const u8, value: TypeId, is_readonly: bool }{
+            .{ .kind = "string", .value = string_index, .is_readonly = readonly.string },
+            .{ .kind = "number", .value = number_index, .is_readonly = readonly.number },
+        }) |index| {
+            if (index.value == types.Primitive.none) continue;
+            const value_name = (try self.allocObjectShapeMemberTypeName(index.value)) orelse return null;
+            const param_name = self.indexParamName(t, index.kind);
+            try buf.appendSlice(arena, if (index.is_readonly) "readonly " else "");
+            try buf.appendSlice(arena, "[");
+            try buf.appendSlice(arena, param_name);
+            try buf.appendSlice(arena, ": ");
+            try buf.appendSlice(arena, index.kind);
+            try buf.appendSlice(arena, "]: ");
+            try buf.appendSlice(arena, value_name);
+            try buf.appendSlice(arena, "; ");
+            // indexInfoToIndexSignatureDeclarationHelper counts the key type,
+            // value type, and parameter name, but not readonly punctuation.
+            approximate_length += param_name.len + 4 + index.kind.len + value_name.len;
+            if (index.value < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(index.value).is_union and
+                self.interner.unionMembers(index.value).len == 2) approximate_length += 1;
+        }
+        for (members, 0..) |member, index| {
+            if (member.is_method or member.visibility != .public) return null;
+            if (approximate_length > 160 and index + 4 < members.len) {
+                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "... {d} more ...; ", .{members.len - index - 1}));
+                const last = members[members.len - 1];
+                if (!try self.appendPropertyMissingShapeMember(&buf, arena, last, null)) return null;
+                try buf.append(arena, '}');
+                return buf.items;
+            }
+            if (!try self.appendPropertyMissingShapeMember(&buf, arena, member, &approximate_length)) return null;
+        }
+        try buf.append(arena, '}');
+        return buf.items;
+    }
+
+    fn appendPropertyMissingShapeMember(
+        self: *Checker,
+        buf: *std.ArrayListUnmanaged(u8),
+        arena: std.mem.Allocator,
+        member: types.ObjectMember,
+        approximate_length: ?*usize,
+    ) CheckError!bool {
+        const name = self.string_interner.getOptional(member.name) orelse return false;
+        const type_name = (try self.allocObjectShapeMemberTypeName(member.type)) orelse return false;
+        if (member.is_readonly) try buf.appendSlice(arena, "readonly ");
+        if (!try self.appendObjectShapeMember(buf, arena, member)) return false;
+        if (member.is_optional) try buf.append(arena, '?');
+        try buf.appendSlice(arena, ": ");
+        try buf.appendSlice(arena, type_name);
+        const add_undefined = member.is_optional and !self.typeNameIncludesUndefined(member.type, type_name);
+        if (add_undefined) try buf.appendSlice(arena, " | undefined");
+        try buf.appendSlice(arena, "; ");
+        if (approximate_length) |length| {
+            length.* += name.len + 1 + (if (member.is_readonly) @as(usize, 9) else 0) + type_name.len;
+            if (add_undefined) {
+                // The two union constituents each add two units; undefined
+                // adds nine. The emitted separator is one unit shorter.
+                length.* += 13;
+            } else if (member.type < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(member.type).is_union and
+                self.interner.unionMembers(member.type).len == 2)
+            {
+                length.* += 1;
+            }
+        }
+        return true;
     }
 
     fn allocPropertyMissingTargetTypeNameAt(self: *Checker, node: NodeId, target_t: TypeId) !?[]const u8 {
