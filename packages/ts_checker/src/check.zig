@@ -159214,6 +159214,12 @@ pub const Checker = struct {
             return true;
         }
         if (self.globalThisHasProperty(node, name)) return false;
+        if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node) and
+            ((self.nodeIsThisReference(object_node) and self.thisIsGlobalScriptThis(object_node)) or
+                object_is_global_this_receiver))
+        {
+            return true;
+        }
         if (object_is_global_this_receiver and
             !self.sourceHasBlockScopedGlobalDeclarationText(name) and
             (self.strict_flags.no_implicit_any or self.sourceHasCheckJsDirective()))
@@ -223599,6 +223605,7 @@ test "checker: checked JS global property assignments require declared members" 
         \\var y = 2;
         \\window.z = 3;
         \\globalThis.alpha = 4;
+        \\globalThis.nested.value = 5;
     );
     defer destroySetup(s);
     s.checker.setAllowJsEnabled(true);
@@ -223608,9 +223615,11 @@ test "checker: checked JS global property assignments require declared members" 
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.global_this_no_index_signature));
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, 9002));
-    try T.expectEqual(@as(u32, 2), s.checker.unmodeled_any_sites.count());
+    // TypeScript 5.7.3 accepts direct and nested `globalThis` writes in a
+    // checked JavaScript script; only `window.z` is missing.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.global_this_no_index_signature));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: top exposes sibling global var declarations" {
