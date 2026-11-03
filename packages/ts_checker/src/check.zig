@@ -65354,6 +65354,7 @@ pub const Checker = struct {
         var display_args: std.ArrayListUnmanaged(TypeId) = .empty;
         defer display_args.deinit(self.gpa);
         for (info.params, 0..) |param_t, index| {
+            if (!self.interner.isDirectTypeParameter(param_t)) return fallback;
             const argument_t = if (index < args.len)
                 try self.lowererLowerWithTypeParams(args[index])
             else blk: {
@@ -81836,6 +81837,7 @@ pub const Checker = struct {
                             // resolve through `lookupNarrow`.
                             for (info.params, 0..) |param_t, idx| {
                                 if (idx >= args.len) break;
+                                if (!self.interner.isDirectTypeParameter(param_t)) continue;
                                 const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
                                 const arg_t = subs.get(param_t) orelse continue;
                                 try self.recordNarrow(tp.name, arg_t);
@@ -81866,8 +81868,7 @@ pub const Checker = struct {
                             try self.pushNarrowScope();
                             defer self.popNarrowScope();
                             for (info.params) |param_t| {
-                                if (param_t >= self.interner.pool.typeCount()) continue;
-                                if (!self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
+                                if (!self.interner.isDirectTypeParameter(param_t)) continue;
                                 const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
                                 const arg_t = subs.get(param_t) orelse continue;
                                 try self.recordNarrow(tp.name, arg_t);
@@ -102622,9 +102623,7 @@ pub const Checker = struct {
             var missing_required_arg = false;
             const first_unsupplied = @min(arg_types.items.len, formal_params.items.len);
             for (formal_params.items[first_unsupplied..]) |param_t| {
-                if (param_t >= self.interner.pool.typeCount() or
-                    !self.interner.pool.flagsOf(param_t).is_type_parameter)
-                {
+                if (!self.interner.isDirectTypeParameter(param_t)) {
                     missing_required_arg = true;
                     break;
                 }
@@ -177700,6 +177699,10 @@ pub const Checker = struct {
         if (alias.params.len == 0) return param_t;
         const fallbacks = try self.diag_arena.allocator().alloc(TypeId, alias.params.len);
         for (alias.params, 0..) |type_param, i| {
+            if (!self.interner.isDirectTypeParameter(type_param)) {
+                fallbacks[i] = types.Primitive.unknown;
+                continue;
+            }
             const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(type_param)];
             fallbacks[i] = if (payload.default != types.Primitive.none)
                 payload.default
@@ -184366,8 +184369,7 @@ pub const Checker = struct {
         const fallbacks = try self.gpa.alloc(TypeId, type_params.len);
         defer self.gpa.free(fallbacks);
         for (type_params, 0..) |param_t, i| {
-            const fallback = if (param_t < self.interner.pool.typeCount() and
-                self.interner.pool.flagsOf(param_t).is_type_parameter)
+            const fallback = if (self.interner.isDirectTypeParameter(param_t))
             blk: {
                 const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
                 break :blk if (payload.default != types.Primitive.none)
@@ -191544,8 +191546,7 @@ pub const Checker = struct {
             const source_arg = if (index < explicit_nodes.len)
                 try self.lowererLowerWithTypeParams(explicit_nodes[index])
             else blk: {
-                if (param >= self.interner.pool.typeCount() or
-                    !self.interner.pool.flagsOf(param).is_type_parameter) return false;
+                if (!self.interner.isDirectTypeParameter(param)) return false;
                 const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param)];
                 if (payload.default == types.Primitive.none) return false;
                 break :blk self.substituteType(payload.default, &substitutions) catch payload.default;
