@@ -164001,6 +164001,20 @@ pub const Checker = struct {
                 }
             }
         }
+        if (target_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(target_t).is_object_type and
+            !self.typeIsArrayLikeObject(target_t) and
+            self.namedTypeForId(target_t) == null and
+            !self.alias_display_names.contains(target_t) and
+            !self.qualified_alias_diagnostic_names.contains(target_t) and
+            !self.program_type_display_names.contains(target_t) and
+            !self.builtin_object_names.contains(target_t))
+        {
+            // TS2339 renders anonymous objects with the type-node budget.
+            // The general simple-name printer expands every property, so it
+            // would bypass the middle elision on larger inline shapes.
+            if (try self.allocPropertyMissingObjectShape(target_t)) |shape| return shape;
+        }
         if (try self.allocSimpleTypeName(target_t)) |name| return name;
         if (self.alias_display_names.get(target_t)) |name| return name;
         if (target_t >= self.interner.pool.typeCount()) return null;
@@ -290226,6 +290240,29 @@ test "checker: infer through an intersection respects concrete members" {
         TsCodes.type_not_assignable,
         "Type '{ x: string; }' is not assignable to type 'never'.",
     ));
+}
+
+test "checker: TS2339 elides the middle of a large anonymous object" {
+    const s = try newSetup(
+        \\declare const flags: {
+        \\  p1?: boolean; p2?: boolean; p3?: boolean; p4?: boolean;
+        \\  p5?: boolean; p6?: boolean; p7?: boolean; p8?: boolean;
+        \\  p9?: boolean; p10?: boolean; p11?: boolean; p12?: boolean;
+        \\};
+        \\flags.missing;
+    );
+    defer destroySetup(s);
+    s.checker.strict_flags.strict_null_checks = true;
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    var found = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.property_does_not_exist) continue;
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "p7?: boolean | undefined; ... 4 more ...; p12?: boolean | undefined;") != null);
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "p8?:") == null);
+        found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: well-known symbol array writes report readonly property errors" {
