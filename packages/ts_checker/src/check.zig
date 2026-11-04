@@ -33229,13 +33229,25 @@ pub const Checker = struct {
             else
                 try self.checkExpression(member.object);
             if (try self.lookupObjectMember(receiver_t, member.name)) |member_t| {
+                if (try self.singleResolvedUnionCallSignature(member_t)) |signature| return signature;
                 if (self.firstSignatureType(member_t)) |signature| return signature;
             }
             if (try self.programImportedClassContextualMemberType(receiver_t, member.name)) |member_t| {
+                if (try self.singleResolvedUnionCallSignature(member_t)) |signature| return signature;
                 if (self.firstSignatureType(member_t)) |signature| return signature;
             }
         }
+        if (try self.singleResolvedUnionCallSignature(callee_t)) |signature| return signature;
         return self.firstSignatureType(callee_t);
+    }
+
+    fn singleResolvedUnionCallSignature(self: *Checker, t: TypeId) CheckError!?TypeId {
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        if (try self.collectResolvedUnionSignatures(t, false, &signatures) and signatures.items.len == 1) {
+            return signatures.items[0];
+        }
+        return null;
     }
 
     /// Select an overload for contextual object-literal checking only when
@@ -34571,6 +34583,26 @@ pub const Checker = struct {
         return true;
     }
 
+    fn contextualSignatureForFunctionTarget(self: *Checker, fn_node: NodeId, target_t: TypeId) CheckError!?TypeId {
+        if (target_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(target_t).is_intersection or
+            !self.strict_flags.no_implicit_any) return self.firstSignatureType(target_t);
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        try self.collectCallSignatures(target_t, &signatures);
+        var combined: ?TypeId = null;
+        for (signatures.items) |signature| {
+            if (self.functionExceedsContextualSignatureArity(fn_node, signature)) continue;
+            if (combined) |previous| {
+                if (!try self.unionSignatureTypeParametersIdentical(previous, signature)) return null;
+                combined = try self.combineIntersectionSignaturePair(previous, signature);
+            } else {
+                combined = signature;
+            }
+        }
+        return combined;
+    }
+
     fn contextualParameterTypeForFunctionParam(self: *Checker, fn_node: NodeId, param_node: NodeId, target_t: TypeId) ?TypeId {
         if (self.functionExceedsContextualSignatureArity(fn_node, target_t)) return null;
         const param_index = self.functionValueParameterIndex(fn_node, param_node) orelse return null;
@@ -34597,7 +34629,9 @@ pub const Checker = struct {
         self.collectCallSignatures(target_t, &sigs) catch return null;
         for (sigs.items) |sig| {
             const candidate = self.contextualParameterTypeForSignature(sig, param_index, source_is_rest) orelse return null;
-            if (!self.mergeContextualParameterType(&found, candidate)) return null;
+            if (flags.is_intersection and self.strict_flags.no_implicit_any and found != types.Primitive.none) {
+                found = self.unionOrAny(&.{ found, candidate }) catch return null;
+            } else if (!self.mergeContextualParameterType(&found, candidate)) return null;
         }
         return if (found == types.Primitive.none) null else found;
     }
@@ -110132,6 +110166,15 @@ pub const Checker = struct {
         right: TypeId,
         is_construct: bool,
     ) CheckError!TypeId {
+        var right_to_left: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer right_to_left.deinit(self.gpa);
+        if (self.generic_signature_params.get(left)) |left_type_params| {
+            if (self.generic_signature_params.get(right)) |right_type_params| {
+                for (right_type_params, left_type_params) |right_param, left_param| {
+                    try right_to_left.put(self.gpa, right_param, left_param);
+                }
+            }
+        }
         const left_params = self.interner.signatureParams(left);
         const right_params = self.interner.signatureParams(right);
         const min_args = @max(self.signatureMinRequiredArgs(left, left_params), self.signatureMinRequiredArgs(right, right_params));
@@ -110148,9 +110191,14 @@ pub const Checker = struct {
         defer params.deinit(self.gpa);
         var position: usize = 0;
         while (position < result_count) : (position += 1) {
+            const right_at_position = self.unionSignatureTypeAtPosition(right, position);
+            const mapped_right = if (right_at_position) |right_t|
+                try self.substituteTypeWithFreshMemo(right_t, &right_to_left)
+            else
+                null;
             var parameter_t = try self.intersectUnionSignatureParameterTypes(
                 self.unionSignatureTypeAtPosition(left, position),
-                self.unionSignatureTypeAtPosition(right, position),
+                mapped_right,
             );
             const is_rest = either_has_rest and
                 ((needs_extra_rest and position == result_count - 1) or
@@ -110165,7 +110213,10 @@ pub const Checker = struct {
         }
 
         const left_return = self.interner.signatureReturn(left) orelse types.Primitive.any;
-        const right_return = self.interner.signatureReturn(right) orelse types.Primitive.any;
+        const right_return = try self.substituteTypeWithFreshMemo(
+            self.interner.signatureReturn(right) orelse types.Primitive.any,
+            &right_to_left,
+        );
         const return_t = try self.unionOrAny(&.{ left_return, right_return });
         try self.registerDiagnosticUnionDisplayName(return_t, &.{ left_return, right_return });
         const is_abstract_construct = self.signatureIsAbstractConstruct(left) or
@@ -110176,6 +110227,9 @@ pub const Checker = struct {
             is_construct,
             is_construct and is_abstract_construct,
         ) catch return error.OutOfMemory;
+        if (self.generic_signature_params.get(left) orelse self.generic_signature_params.get(right)) |type_params| {
+            if (!self.generic_signature_params.contains(result)) try self.recordGenericSignatureParams(result, type_params);
+        }
         try self.copySignatureParameterMetadata(result, if (left_is_longest) left else right);
         try self.signature_min_args.put(
             self.gpa,
@@ -110184,7 +110238,10 @@ pub const Checker = struct {
         );
         if (either_has_rest) try self.rest_signatures.put(self.gpa, result, {});
         const left_this = self.signatureThisParam(left);
-        const right_this = self.signatureThisParam(right);
+        const right_this = if (self.signatureThisParam(right)) |right_t|
+            try self.substituteTypeWithFreshMemo(right_t, &right_to_left)
+        else
+            null;
         if (left_this != null or right_this != null) {
             const this_t = if (left_this == null)
                 right_this.?
@@ -110195,6 +110252,96 @@ pub const Checker = struct {
             try self.signature_this_params.put(self.gpa, result, this_t);
         }
         try self.recordUnionSignaturePredicate(result, &.{ left, right });
+        return result;
+    }
+
+    fn unionSignatureTypeParametersIdentical(self: *Checker, left: TypeId, right: TypeId) CheckError!bool {
+        const left_params = self.generic_signature_params.get(left) orelse &.{};
+        const right_params = self.generic_signature_params.get(right) orelse &.{};
+        if (left_params.len != right_params.len) return false;
+        if (left_params.len == 0) return true;
+        var right_to_left: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer right_to_left.deinit(self.gpa);
+        for (right_params, left_params) |right_param, left_param| {
+            try right_to_left.put(self.gpa, right_param, left_param);
+        }
+        for (right_params, left_params) |right_param, left_param| {
+            const left_constraint = self.typeParameterConstraint(left_param) orelse types.Primitive.unknown;
+            const right_constraint = self.typeParameterConstraint(right_param) orelse types.Primitive.unknown;
+            const mapped = try self.substituteTypeWithFreshMemo(right_constraint, &right_to_left);
+            if (!(self.engine.isIdenticalTo(left_constraint, mapped) catch return error.OutOfMemory)) return false;
+        }
+        return true;
+    }
+
+    fn combineIntersectionSignaturePair(self: *Checker, left: TypeId, right: TypeId) CheckError!TypeId {
+        var right_to_left: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer right_to_left.deinit(self.gpa);
+        if (self.generic_signature_params.get(left)) |left_type_params| {
+            if (self.generic_signature_params.get(right)) |right_type_params| {
+                for (right_type_params, left_type_params) |right_param, left_param| {
+                    try right_to_left.put(self.gpa, right_param, left_param);
+                }
+            }
+        }
+        const left_params = self.interner.signatureParams(left);
+        const right_params = self.interner.signatureParams(right);
+        const left_rest = self.rest_signatures.contains(left) and left_params.len > 0;
+        const right_rest = self.rest_signatures.contains(right) and right_params.len > 0;
+        const left_is_longest = left_params.len >= right_params.len;
+        const longest_count = @max(left_params.len, right_params.len);
+        const longest_has_rest = if (left_is_longest) left_rest else right_rest;
+        const either_has_rest = left_rest or right_rest;
+        const needs_extra_rest = either_has_rest and !longest_has_rest;
+        const result_count = longest_count + @intFromBool(needs_extra_rest);
+        var params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer params.deinit(self.gpa);
+        for (0..result_count) |position| {
+            const left_t = self.unionSignatureTypeAtPosition(left, position) orelse types.Primitive.unknown;
+            const right_raw = self.unionSignatureTypeAtPosition(right, position) orelse types.Primitive.unknown;
+            const right_t = try self.substituteTypeWithFreshMemo(right_raw, &right_to_left);
+            var parameter_t = try self.unionOrAny(&.{ left_t, right_t });
+            const is_rest = either_has_rest and
+                ((needs_extra_rest and position == result_count - 1) or
+                    (!needs_extra_rest and position == longest_count - 1));
+            if (is_rest) {
+                parameter_t = self.interner.internArrayType(self.string_interner, parameter_t) catch return error.OutOfMemory;
+            }
+            try params.append(self.gpa, parameter_t);
+        }
+        const left_return = self.interner.signatureReturn(left) orelse types.Primitive.any;
+        const right_return = try self.substituteTypeWithFreshMemo(
+            self.interner.signatureReturn(right) orelse types.Primitive.any,
+            &right_to_left,
+        );
+        const return_t = if (left_return == right_return)
+            left_return
+        else
+            self.interner.internIntersection(&.{ left_return, right_return }) catch return error.OutOfMemory;
+        const result = self.interner.internSignature(params.items, return_t, false) catch return error.OutOfMemory;
+        if (self.generic_signature_params.get(left) orelse self.generic_signature_params.get(right)) |type_params| {
+            if (!self.generic_signature_params.contains(result)) try self.recordGenericSignatureParams(result, type_params);
+        }
+        try self.copySignatureParameterMetadata(result, if (left_is_longest) left else right);
+        try self.signature_min_args.put(self.gpa, result, @max(
+            self.signatureMinRequiredArgs(left, left_params),
+            self.signatureMinRequiredArgs(right, right_params),
+        ));
+        if (either_has_rest) try self.rest_signatures.put(self.gpa, result, {});
+        const left_this = self.signatureThisParam(left);
+        const right_this = if (self.signatureThisParam(right)) |right_t|
+            try self.substituteTypeWithFreshMemo(right_t, &right_to_left)
+        else
+            null;
+        if (left_this != null or right_this != null) {
+            const this_t = if (left_this == null)
+                right_this.?
+            else if (right_this == null or left_this.? == right_this.?)
+                left_this.?
+            else
+                try self.unionOrAny(&.{ left_this.?, right_this.? });
+            try self.signature_this_params.put(self.gpa, result, this_t);
+        }
         return result;
     }
 
@@ -110236,11 +110383,6 @@ pub const Checker = struct {
             signatures.shrinkRetainingCapacity(write);
             const len = signatures.items.len - start;
             if (len == 0) return true;
-            for (signatures.items[start .. start + len]) |signature| {
-                if (self.unionSignatureHasFreeGenericParameters(signature)) {
-                    return false;
-                }
-            }
             if (len > 1) {
                 overloaded_branch_count += 1;
                 overloaded_branch_index = member_index;
@@ -110290,6 +110432,7 @@ pub const Checker = struct {
             }
             const branch_signature = signatures.items[start];
             for (out.items) |*result| {
+                if (!try self.unionSignatureTypeParametersIdentical(result.*, branch_signature)) return false;
                 result.* = try self.combineUnionSignaturePair(result.*, branch_signature, is_construct);
             }
         }
@@ -110405,6 +110548,17 @@ pub const Checker = struct {
                 TsCodes.abstract_class_instantiation,
                 "Cannot create an instance of an abstract class.",
             );
+        }
+        if (self.generic_signature_params.contains(selected)) {
+            const inference_args = try self.gpa.dupe(TypeId, arg_types);
+            defer self.gpa.free(inference_args);
+            for (args[0..@min(args.len, inference_args.len)], 0..) |arg, index| {
+                if (!self.isContextualFunctionExpressionLike(arg)) continue;
+                const resolved = self.hir.typeOf(arg);
+                if (self.interner.isSignature(resolved)) inference_args[index] = resolved;
+            }
+            const instantiated = try self.instantiateSignatureFromArgs(selected, args, inference_args);
+            return self.interner.signatureReturn(instantiated) orelse types.Primitive.any;
         }
         return self.interner.signatureReturn(selected) orelse types.Primitive.any;
     }
@@ -161543,7 +161697,7 @@ pub const Checker = struct {
             const cur_params = try self.gpa.dupe(TypeId, self.interner.signatureParams(effective_sig));
             defer self.gpa.free(cur_params);
             if (i >= cur_params.len) continue;
-            const param_sig = self.firstSignatureType(cur_params[i]) orelse continue;
+            const param_sig = (try self.contextualSignatureForFunctionTarget(arg, cur_params[i])) orelse continue;
 
             // What this argument turned out to be, as evidence for the type
             // parameters still free in the signature.
@@ -174858,13 +175012,15 @@ pub const Checker = struct {
             if (inferred_generic_member_callback and
                 self.functionExpressionHasContextSensitiveParameters(args[i]))
             {
-                if (self.firstSignatureType(param_t)) |contextual_sig| {
+                if (try self.contextualSignatureForFunctionTarget(args[i], param_t)) |contextual_sig| {
                     // Recheck only when inference changes the callback's
                     // context; an identical context already has body types
                     // and diagnostics from its first check.
                     if (!self.functionSignatureMatchesContext(args[i], contextual_sig)) {
                         self.removePriorDiagnosticsInNodeSpan(args[i], TsCodes.property_does_not_exist);
-                        try self.checkFunctionWithContextualSignature(args[i], contextual_sig);
+                        var inferred_sig: TypeId = types.Primitive.none;
+                        try self.checkFunctionWithContextualSignatureMode(args[i], contextual_sig, true, &inferred_sig);
+                        if (inferred_sig != types.Primitive.none) arg_t = inferred_sig;
                     }
                 }
             }
@@ -194597,6 +194753,16 @@ pub const Checker = struct {
         const tgt_t = (try self.allocSimpleTypeName(target)) orelse
             (try self.allocObjectTypeShape(target)) orelse
             "unknown";
+        if (self.readonlyArrayLikeAssignedToMutable(source, target)) {
+            return .{
+                .code = TsCodes.readonly_type_to_mutable_type,
+                .message = try std.fmt.allocPrint(
+                    arena,
+                    "The type '{s}' is 'readonly' and cannot be assigned to the mutable type '{s}'.",
+                    .{ src_t, tgt_t },
+                ),
+            };
+        }
         const msg = try std.fmt.allocPrint(
             arena,
             "Type '{s}' is not assignable to type '{s}'.",
@@ -245697,6 +245863,49 @@ test "checker: callable union composition requires compatible predicate kinds an
     try s.checker.signature_predicates.put(T.allocator, string_guard, string_pred);
     const different_kind = try s.checker.combineUnionSignaturePair(number_guard, string_guard, false);
     try T.expect(!s.checker.signature_predicates.contains(different_kind));
+}
+
+test "checker: callable union maps alpha-equivalent generic binders" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const left_param = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("U"), types.Primitive.unknown, types.Primitive.none, .bivariant,
+    );
+    const right_param = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("V"), types.Primitive.unknown, types.Primitive.none, .bivariant,
+    );
+    const incompatible_param = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("W"), types.Primitive.number_t, types.Primitive.none, .bivariant,
+    );
+    const left = try s.ti.internSignature(&.{left_param}, left_param, false);
+    const right = try s.ti.internSignature(&.{right_param}, right_param, false);
+    const incompatible = try s.ti.internSignature(&.{incompatible_param}, incompatible_param, false);
+    try s.checker.recordGenericSignatureParams(left, &.{left_param});
+    try s.checker.recordGenericSignatureParams(right, &.{right_param});
+    try s.checker.recordGenericSignatureParams(incompatible, &.{incompatible_param});
+
+    try T.expect(try s.checker.unionSignatureTypeParametersIdentical(left, right));
+    try T.expect(!try s.checker.unionSignatureTypeParametersIdentical(left, incompatible));
+    const callable = try s.ti.internUnion(&.{ left, right });
+    var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+    defer signatures.deinit(T.allocator);
+    try T.expect(try s.checker.collectResolvedUnionSignatures(callable, false, &signatures));
+    try T.expectEqual(@as(usize, 1), signatures.items.len);
+    const combined = signatures.items[0];
+    try T.expectEqualSlices(TypeId, &.{left_param}, s.checker.generic_signature_params.get(combined).?);
+    try T.expectEqualSlices(TypeId, &.{left_param}, s.ti.signatureParams(combined));
+    try T.expectEqual(left_param, s.ti.signatureReturn(combined).?);
+
+    const left_callback = try s.ti.internSignature(&.{ types.Primitive.number_t, left_param }, left_param, false);
+    const right_callback = try s.ti.internSignature(&.{ types.Primitive.string_t, right_param }, right_param, false);
+    try s.checker.recordGenericSignatureParams(left_callback, &.{left_param});
+    try s.checker.recordGenericSignatureParams(right_callback, &.{right_param});
+    const contextual = try s.checker.combineIntersectionSignaturePair(left_callback, right_callback);
+    try T.expectEqualSlices(TypeId, &.{
+        try s.ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.string_t }),
+        left_param,
+    }, s.ti.signatureParams(contextual));
+    try T.expectEqual(left_param, s.ti.signatureReturn(contextual).?);
 }
 
 test "checker: callable union composition handles three predicate branches and combined receivers" {
