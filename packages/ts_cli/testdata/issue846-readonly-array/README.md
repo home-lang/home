@@ -38,6 +38,32 @@ is assigned to `string`; Home now preserves those types instead of treating
 the iterator values as `any`. The stream step pins all three locations,
 messages, and exit status.
 
+`tsconfig-jsdoc-union.json` and its no-`checkJs` control isolate JSDoc
+`ReadonlyArray<number[] | string[]>` precedence across the import boundary.
+Both imported element types assign to `number[] | string[]`, and their indexed
+values assign to `number | string`. An invalid assignment to `boolean` yields
+one TS2322 at `jsdoc-union.ts(7,7)` in both TypeScript 5.7.3 and Home, with
+matching nested explanation and exit status. This is the focused CLI oracle
+for [#974](https://github.com/home-lang/home/issues/974).
+
+`tsconfig-flat.json` and `tsconfig-flat-no-checkjs.json` check default-depth
+`flat()` on admitted JavaScript
+readonly and mutable arrays whose elements are `number[] | string[]`.
+TypeScript 5.7.3 gives the imported readonly element the type
+`number[] | string[]` and returns `(number | string)[]` from `flat()` on both
+surfaces. The valid result assignment succeeds; assigning the source element
+or flattened result to `number[]`, and the mutable result to `boolean[]`,
+reports three TS2322 diagnostics. A local readonly-array control supplies a
+fourth TS2322 for its flattened result. This guards both JSDoc union precedence
+([#974](https://github.com/home-lang/home/issues/974)) and the distributive
+`FlatArray` element result ([#973](https://github.com/home-lang/home/issues/973)).
+The `ArrayLikeOnly` control has a numeric index signature and `length` but
+does not extend `ReadonlyArray`; `flat()` preserves that object. Assigning
+its flattened result to `number[]` adds one TS2322 diagnostic.
+Home matches the five diagnostic sites and explanations, but currently prints
+the imported source union in the opposite order at line 5; that exact-stream
+gap is tracked in [#975](https://github.com/home-lang/home/issues/975).
+
 `tsconfig-concat.json` checks that readonly arrays can be concatenated into
 either readonly or mutable receivers while the result remains a mutable
 `number[]`. Its invalid result assignment must elaborate the array *element*
