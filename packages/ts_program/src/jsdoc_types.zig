@@ -507,7 +507,10 @@ fn parseTypeExpressionWithParameters(gpa: std.mem.Allocator, text: []const u8, p
     errdefer containers.deinit(gpa);
     var current = trimmed;
     while (true) {
-        if (std.mem.endsWith(u8, current, "[]")) {
+        // A suffix after a top-level union belongs to its last member:
+        // `number[] | string[]` is a union of arrays, while
+        // `(number[] | string[])[]` is an array of a union.
+        if (std.mem.endsWith(u8, current, "[]") and topLevelUnionEnd(current) == null) {
             try containers.append(gpa, .array);
             current = std.mem.trim(u8, current[0 .. current.len - 2], " \t\r\n");
             continue;
@@ -946,6 +949,15 @@ test "JSDoc union expression parser preserves precedence and nested wrappers" {
     defer readonly.deinit(std.testing.allocator);
     try std.testing.expectEqualSlices(Container, &.{ .readonly_array, .array }, readonly.containers);
     try std.testing.expectEqual(@as(usize, 2), readonly.base.union_type.len);
+
+    const union_of_arrays = (try parseTypeExpression(std.testing.allocator, "ReadonlyArray<number[] | string[]>")).?;
+    defer union_of_arrays.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(Container, &.{.readonly_array}, union_of_arrays.containers);
+    try std.testing.expectEqual(@as(usize, 2), union_of_arrays.base.union_type.len);
+    try std.testing.expectEqualSlices(Container, &.{.array}, union_of_arrays.base.union_type[0].containers);
+    try std.testing.expectEqualSlices(Container, &.{.array}, union_of_arrays.base.union_type[1].containers);
+    try std.testing.expectEqual(Primitive.number_t, union_of_arrays.base.union_type[0].base.primitive);
+    try std.testing.expectEqual(Primitive.string_t, union_of_arrays.base.union_type[1].base.primitive);
 
     try std.testing.expect((try parseTypeExpression(std.testing.allocator, "string | ")) == null);
     const object_array = (try parseTypeExpression(std.testing.allocator, "Array<string | { value: number }>")).?;
