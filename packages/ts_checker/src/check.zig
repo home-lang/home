@@ -115377,7 +115377,7 @@ pub const Checker = struct {
                 for (info.params[0..count], arguments[0..count]) |parameter, argument| {
                     try substitutions.put(self.gpa, parameter, argument);
                     if (parameter >= self.interner.pool.typeCount() or
-                        !self.interner.pool.flagsOf(parameter).is_type_parameter)
+                        !self.interner.isDirectTypeParameter(parameter))
                     {
                         continue;
                     }
@@ -127793,7 +127793,19 @@ pub const Checker = struct {
         if (visited.contains(t)) return;
         try visited.put(self.gpa, t, {});
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) {
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                try self.collectJsxUnfixedTypeParamFallbacks(member, subs, visited);
+            }
+            return;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                try self.collectJsxUnfixedTypeParamFallbacks(member, subs, visited);
+            }
+            return;
+        }
+        if (self.interner.isDirectTypeParameter(t)) {
             if (self.isThisTypeParameter(t) or subs.contains(t)) return;
             const payload_idx = self.interner.pool.payloadOf(t);
             const fallback = if (payload_idx < self.interner.pool.type_parameter_payloads.items.len) blk: {
@@ -127806,18 +127818,6 @@ pub const Checker = struct {
                     types.Primitive.unknown;
             } else types.Primitive.unknown;
             try subs.put(self.gpa, t, fallback);
-            return;
-        }
-        if (flags.is_union) {
-            for (self.interner.unionMembers(t)) |member| {
-                try self.collectJsxUnfixedTypeParamFallbacks(member, subs, visited);
-            }
-            return;
-        }
-        if (flags.is_intersection) {
-            for (self.interner.intersectionMembers(t)) |member| {
-                try self.collectJsxUnfixedTypeParamFallbacks(member, subs, visited);
-            }
             return;
         }
         if (flags.is_object_type) {
@@ -290549,6 +290549,20 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     // Reuse the union payload offset as a parameter payload with a default.
     // A flag-only reader would wrongly accept that unrelated default.
     s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(aggregate)].default = types.Primitive.string_t;
+    var jsx_fallbacks: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer jsx_fallbacks.deinit(s.checker.gpa);
+    var visited_jsx_fallbacks: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer visited_jsx_fallbacks.deinit(s.checker.gpa);
+    try s.checker.collectJsxUnfixedTypeParamFallbacks(aggregate, &jsx_fallbacks, &visited_jsx_fallbacks);
+    try T.expect(!jsx_fallbacks.contains(aggregate));
+    try T.expectEqual(types.Primitive.string_t, jsx_fallbacks.get(first).?);
+    const parameter_intersection = try s.ti.internIntersection(&.{ first, indexed });
+    try T.expect(s.ti.pool.flagsOf(parameter_intersection).is_intersection);
+    visited_jsx_fallbacks.clearRetainingCapacity();
+    jsx_fallbacks.clearRetainingCapacity();
+    try s.checker.collectJsxUnfixedTypeParamFallbacks(parameter_intersection, &jsx_fallbacks, &visited_jsx_fallbacks);
+    try T.expect(!jsx_fallbacks.contains(parameter_intersection));
+    try T.expectEqual(types.Primitive.string_t, jsx_fallbacks.get(first).?);
     try T.expect(s.checker.typeContainsConstructSignatureReferencingParams(aggregate, &.{first}));
     try T.expect(!s.checker.typeContainsConstructSignatureReferencingParams(aggregate, &.{key_param}));
     const diagnostic_sig = try s.ti.internSignature(&.{}, aggregate, false);
