@@ -194790,16 +194790,13 @@ pub const Checker = struct {
             self.interner.pool.flagsOf(source).is_union and
             !self.interner.pool.flagsOf(target).is_union)
         {
-            var saw_assignable = false;
             var incompatible: ?TypeId = null;
             for (self.interner.unionMembers(source)) |member| {
-                if (self.engine.isAssignableTo(member, target) catch false) {
-                    saw_assignable = true;
-                } else if (incompatible == null) {
+                if (incompatible == null and !(self.engine.isAssignableTo(member, target) catch false)) {
                     incompatible = member;
                 }
             }
-            if (saw_assignable and incompatible != null) {
+            if (incompatible != null) {
                 const children = try arena.alloc(DiagnosticChainEntry, 1);
                 children[0] = try self.typeNotAssignableChainEntry(incompatible.?, target, false);
                 return .{ .code = TsCodes.type_not_assignable, .message = msg, .children = children };
@@ -285129,6 +285126,21 @@ test "checker: array-origin assignability elaborates element type without index 
     try T.expectEqual(@as(u32, TsCodes.type_not_assignable), chain[0].code);
     try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", chain[0].message);
     try T.expectEqual(@as(usize, 0), chain[0].children.len);
+}
+
+test "checker: array-origin assignability explains a union element when every member fails" {
+    const s = try newSetup("const x = 1;");
+    defer destroySetup(s);
+    const union_element = try s.ti.internUnion(&.{ types.Primitive.string_t, types.Primitive.number_t });
+    const source = try s.ti.internArrayType(&s.sint, union_element);
+    const target = try s.ti.internArrayType(&s.sint, types.Primitive.boolean_t);
+    try s.checker.array_origin_types.put(T.allocator, source, {});
+    try s.checker.array_origin_types.put(T.allocator, target, {});
+    const chain = try s.checker.buildAssignabilityElaborationChain(source, target);
+    try T.expectEqual(@as(usize, 1), chain.len);
+    try T.expectEqualStrings("Type 'string | number' is not assignable to type 'boolean'.", chain[0].message);
+    try T.expectEqual(@as(usize, 1), chain[0].children.len);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'boolean'.", chain[0].children[0].message);
 }
 
 test "checker: buildAssignabilityElaborationChain emits TS2330 for paired index key mismatch" {
