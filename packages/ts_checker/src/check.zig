@@ -113317,17 +113317,38 @@ pub const Checker = struct {
         return element_t;
     }
 
+    fn flatArrayElementAtDefaultDepth(self: *Checker, element: TypeId) CheckError!TypeId {
+        if (self.interner.pool.flagsOf(element).is_union) {
+            // Interning a result may move the type pool's union-member storage.
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(element));
+            defer self.gpa.free(members);
+            var flattened: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer flattened.deinit(self.gpa);
+            for (members) |member| {
+                try flattened.append(self.gpa, try self.flatArrayElementAtDefaultDepth(member));
+            }
+            return self.interner.internUnion(flattened.items) catch return error.OutOfMemory;
+        }
+        // FlatArray<T, 1> unwraps ReadonlyArray elements. A numeric index
+        // signature by itself does not establish that relation: ArrayLike<T>
+        // has one, but TypeScript leaves it intact when flattening.
+        if (!self.array_origin_types.contains(element) and !self.isActualTupleType(element)) return element;
+        const inner = self.interner.objectNumberIndex(element);
+        return if (inner == types.Primitive.none) element else inner;
+    }
+
     fn arrayPrototypeForReceiver(self: *Checker, receiver: TypeId, element: TypeId) CheckError!TypeId {
+        const flat_elem = try self.flatArrayElementAtDefaultDepth(element);
         if (self.typeIsReadonlyArrayLike(receiver)) {
             const readonly_array = try self.internReadonlyArrayType(element);
-            const proto = lib.readonlyArrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, readonly_array, &self.rest_signatures) catch return error.OutOfMemory;
+            const proto = lib.readonlyArrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, flat_elem, readonly_array, &self.rest_signatures) catch return error.OutOfMemory;
             const unscopables_name = self.string_interner.intern("Symbol.unscopables") catch return error.OutOfMemory;
             if (self.interner.objectMember(proto, unscopables_name)) |unscopables| {
                 try self.readonly_index_types.put(self.gpa, unscopables, .{ .string = false, .number = true, .symbol = false });
             }
             return proto;
         }
-        return lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, &self.rest_signatures) catch return error.OutOfMemory;
+        return lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, flat_elem, &self.rest_signatures) catch return error.OutOfMemory;
     }
 
     fn isIteratorObjectType(self: *Checker, t: TypeId) CheckError!bool {
@@ -115045,7 +115066,7 @@ pub const Checker = struct {
             .number => |value| self.interner.internNumberLiteral(value) catch return error.OutOfMemory,
             .boolean => |value| self.interner.internBooleanLiteral(value),
             .unique_symbol => |identity| self.interner.internUniqueSymbol(.{ .name = self.string_interner.intern(identity) catch return error.OutOfMemory }) catch return error.OutOfMemory,
-            .array => |element| self.interner.internArrayType(self.string_interner, try self.programDeferredLowerExpression(element, context, active, depth + 1)) catch return error.OutOfMemory,
+            .array => |element| self.internMutableArrayType(try self.programDeferredLowerExpression(element, context, active, depth + 1)),
             .readonly_array => |element| self.internReadonlyArrayType(try self.programDeferredLowerExpression(element, context, active, depth + 1)),
             .union_type, .intersection => |members| blk: {
                 const values = try self.gpa.alloc(TypeId, members.len);
@@ -115489,10 +115510,9 @@ pub const Checker = struct {
         args: []const TypeId,
     ) CheckError!?TypeId {
         return switch (expression.*) {
-            .array => |element| self.interner.internArrayType(
-                self.string_interner,
+            .array => |element| try self.internMutableArrayType(
                 self.lowerProgramExpression(element, declaration, args) catch types.Primitive.any,
-            ) catch error.OutOfMemory,
+            ),
             .readonly_array => |element| try self.internReadonlyArrayType(
                 self.lowerProgramExpression(element, declaration, args) catch types.Primitive.any,
             ),
@@ -117086,7 +117106,7 @@ pub const Checker = struct {
             .unique_symbol => |identity| return self.interner.internUniqueSymbol(.{ .name = self.string_interner.intern(identity) catch return error.OutOfMemory }),
             .array => |element| {
                 const element_type = try self.lowerProgramExpression(element, declaration, args);
-                return self.interner.internArrayType(self.string_interner, element_type) catch error.OutOfMemory;
+                return self.internMutableArrayType(element_type);
             },
             .readonly_array => |element| return self.internReadonlyArrayType(try self.lowerProgramExpression(element, declaration, args)),
             .object => |members| {
@@ -170113,6 +170133,12 @@ pub const Checker = struct {
         return self.interner.internUnion(branches.items) catch return error.OutOfMemory;
     }
 
+    fn internMutableArrayType(self: *Checker, element: TypeId) CheckError!TypeId {
+        const array_t = self.interner.internArrayType(self.string_interner, element) catch return error.OutOfMemory;
+        try self.array_origin_types.put(self.gpa, array_t, {});
+        return array_t;
+    }
+
     fn internReadonlyArrayType(self: *Checker, element: TypeId) CheckError!TypeId {
         const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
         const members = [_]types.ObjectMember{.{
@@ -195051,6 +195077,15 @@ pub const Checker = struct {
                 // print the same "Type 'null' ..." explanation twice.
                 const display_target = self.singleNonNullishUnionDiagnosticTarget(member, target) orelse target;
                 entries[0] = try self.typeNotAssignableChainEntry(member, display_target, false);
+                // Readonly-to-mutable already states the reason for failure;
+                // tsc does not elaborate its element type underneath TS4104.
+                if (entries[0].code == TsCodes.type_not_assignable) {
+                    if (try self.arrayOriginElementMismatchEntry(member, display_target)) |element_mismatch| {
+                        const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                        children[0] = element_mismatch;
+                        entries[0].children = children;
+                    }
+                }
                 return entries;
             }
         }
@@ -195336,16 +195371,10 @@ pub const Checker = struct {
         // an Array<number> -> Array<string> failure, without the index-
         // signature wrapper reserved for structural indexed objects. Keep
         // this keyed to source provenance, not an `X[]` display-name guess.
-        if (self.array_origin_types.contains(source) and self.array_origin_types.contains(target)) {
-            const source_elem = self.interner.objectNumberIndex(source);
-            const target_elem = self.interner.objectNumberIndex(target);
-            if (source_elem != types.Primitive.none and target_elem != types.Primitive.none and
-                !(try self.indexSignatureValueAssignable(source_elem, target_elem)))
-            {
-                const slice = try arena.alloc(DiagnosticChainEntry, 1);
-                slice[0] = try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
-                return slice;
-            }
+        if (try self.arrayOriginElementMismatchEntry(source, target)) |element_mismatch| {
+            const slice = try arena.alloc(DiagnosticChainEntry, 1);
+            slice[0] = element_mismatch;
+            return slice;
         }
 
         const incompatible_idx_pairs = [_]struct { key: []const u8, src: TypeId, tgt: TypeId }{
@@ -195570,6 +195599,15 @@ pub const Checker = struct {
         }
 
         return empty;
+    }
+
+    fn arrayOriginElementMismatchEntry(self: *Checker, source: TypeId, target: TypeId) CheckError!?DiagnosticChainEntry {
+        if (!self.array_origin_types.contains(source) or !self.array_origin_types.contains(target)) return null;
+        const source_elem = self.interner.objectNumberIndex(source);
+        const target_elem = self.interner.objectNumberIndex(target);
+        if (source_elem == types.Primitive.none or target_elem == types.Primitive.none or
+            try self.indexSignatureValueAssignable(source_elem, target_elem)) return null;
+        return try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
     }
 
     fn buildSignatureArityElaborationChain(
@@ -215556,6 +215594,51 @@ test "checker: source-owned rest tuple signatures retain their call boundary" {
     try T.expectEqual(@as(?u64, 2), s.checker.fixedTupleLength(params[0]));
     try T.expectEqual(types.Primitive.number_t, s.checker.tupleElementType(params[0], 0));
     try T.expectEqual(types.Primitive.string_t, s.checker.tupleElementType(params[0], 1));
+}
+
+test "checker: program array projection retains array origin separately from indexed objects" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const number: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.number_t };
+    const array: ProgramClassSchema.Expression = .{ .array = &number };
+    const declaration: ProgramClassSchema.Declaration = .{
+        .path = "/owner.js",
+        .position = 0,
+        .name = "numbers",
+        .body = &array,
+    };
+    const imported_array = try s.checker.lowerProgramExpression(&array, &declaration, &.{});
+    try T.expect(s.checker.array_origin_types.contains(imported_array));
+    try T.expectEqual(types.Primitive.number_t, s.ti.objectNumberIndex(imported_array));
+
+    const indexed_object = try s.ti.internObjectTypeWithIndex(&.{.{
+        .name = try s.sint.intern("length"),
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }}, types.Primitive.none, types.Primitive.number_t);
+    try T.expect(!s.checker.array_origin_types.contains(indexed_object));
+}
+
+test "checker: flat default depth unwraps arrays but preserves indexed objects" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const numbers = try s.checker.internMutableArrayType(types.Primitive.number_t);
+    const strings = try s.checker.internReadonlyArrayType(types.Primitive.string_t);
+    const arrays = try s.ti.internUnion(&.{ numbers, strings });
+    const expected = try s.ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.string_t });
+    try T.expectEqual(expected, try s.checker.flatArrayElementAtDefaultDepth(arrays));
+
+    const indexed_object = try s.ti.internObjectTypeWithIndex(&.{.{
+        .name = try s.sint.intern("length"),
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }}, types.Primitive.none, types.Primitive.number_t);
+    try T.expectEqual(indexed_object, try s.checker.flatArrayElementAtDefaultDepth(indexed_object));
 }
 
 test "checker: source-owned anonymous constraints report without a local declaration node" {
@@ -282335,7 +282418,7 @@ test "checker: unrelated generic U does not change readonly flatMap inference" {
     try T.expect(s.checker.lookupNarrow(u_name) == null);
     const alias = hir_mod.typeAliasOf(&s.hir, hir_mod.blockStmts(&s.hir, s.root)[0]);
     const alias_param = s.hir.typeOf(s.hir.childSlice(alias.type_params_start, alias.type_params_len)[0]);
-    const proto = s.checker.lib_cache.readonly_array_proto_by_elem.get(types.Primitive.number_t) orelse return error.MissingArrayPrototype;
+    const proto = s.checker.lib_cache.readonly_array_proto_by_elem.get(.{ .elem = types.Primitive.number_t, .flat_elem = types.Primitive.number_t }) orelse return error.MissingArrayPrototype;
     const flat_map_sig = s.ti.objectMember(proto, try s.sint.intern("flatMap")) orelse return error.MissingFlatMap;
     const callback_sig = s.ti.signatureParams(flat_map_sig)[0];
     const callback_return = s.ti.signatureReturn(callback_sig) orelse return error.MissingCallbackReturn;
@@ -285141,6 +285224,34 @@ test "checker: array-origin assignability explains a union element when every me
     try T.expectEqualStrings("Type 'string | number' is not assignable to type 'boolean'.", chain[0].message);
     try T.expectEqual(@as(usize, 1), chain[0].children.len);
     try T.expectEqualStrings("Type 'string' is not assignable to type 'boolean'.", chain[0].children[0].message);
+}
+
+test "checker: union of arrays explains the incompatible array member's element" {
+    const s = try newSetup("const x = 1;");
+    defer destroySetup(s);
+    const numbers = try s.ti.internArrayType(&s.sint, types.Primitive.number_t);
+    const strings = try s.ti.internArrayType(&s.sint, types.Primitive.string_t);
+    try s.checker.array_origin_types.put(T.allocator, numbers, {});
+    try s.checker.array_origin_types.put(T.allocator, strings, {});
+    const source = try s.ti.internUnion(&.{ numbers, strings });
+    const chain = try s.checker.buildAssignabilityElaborationChain(source, numbers);
+    try T.expectEqual(@as(usize, 1), chain.len);
+    try T.expectEqualStrings("Type 'string[]' is not assignable to type 'number[]'.", chain[0].message);
+    try T.expectEqual(@as(usize, 1), chain[0].children.len);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", chain[0].children[0].message);
+}
+
+test "checker: readonly union member stops before mutable-array element elaboration" {
+    const s = try newSetup("const x = 1;");
+    defer destroySetup(s);
+    const numbers = try s.ti.internArrayType(&s.sint, types.Primitive.number_t);
+    const readonly_strings = try s.checker.internReadonlyArrayType(types.Primitive.string_t);
+    try s.checker.array_origin_types.put(T.allocator, numbers, {});
+    const source = try s.ti.internUnion(&.{ numbers, readonly_strings });
+    const chain = try s.checker.buildAssignabilityElaborationChain(source, numbers);
+    try T.expectEqual(@as(usize, 1), chain.len);
+    try T.expectEqual(@as(u32, TsCodes.readonly_type_to_mutable_type), chain[0].code);
+    try T.expectEqual(@as(usize, 0), chain[0].children.len);
 }
 
 test "checker: buildAssignabilityElaborationChain emits TS2330 for paired index key mismatch" {
