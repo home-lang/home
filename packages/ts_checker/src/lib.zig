@@ -878,37 +878,36 @@ pub fn readonlyArrayProto(
 ) !TypeId {
     if (cache.readonly_array_proto_by_elem.get(.{ .elem = elem, .flat_elem = flat_elem })) |cached| return cached;
     const mutable = try arrayProto(cache, ti, sint, gpa, elem, flat_elem, rest_set);
-    const readonly_names = std.StaticStringMap(void).initComptime(.{
-        .{"length"},    .{"toString"},      .{"toLocaleString"},
-        .{"map"},       .{"flatMap"},
-        .{"filter"},    .{"forEach"},       .{"every"},
-        .{"some"},      .{"includes"},      .{"indexOf"},
-        .{"slice"},     .{"join"},          .{"find"},
-        .{"concat"},    .{"toSorted"},      .{"toReversed"},
-        .{"toSpliced"}, .{"with"},          .{"values"},
-        .{"keys"},      .{"entries"},       .{"Symbol.iterator"},
-        .{"reduce"},    .{"reduceRight"},   .{"findIndex"},
-        .{"findLast"},  .{"findLastIndex"}, .{"lastIndexOf"},
-        .{"at"},        .{"flat"},
-    });
+    // Keep the declaration order of ReadonlyArray across lib.es5 and the
+    // later array libraries. Missing-property diagnostics use this order;
+    // Array<T>'s mutable declaration has a different method order.
+    const readonly_order = [_][]const u8{
+        "length", "toString", "toLocaleString", "concat", "join", "slice",
+        "indexOf", "lastIndexOf", "every", "some", "forEach", "map",
+        "filter", "reduce", "reduceRight", "find", "findIndex",
+        "entries", "keys", "values", "Symbol.iterator", "includes",
+        "flatMap", "flat", "at", "findLast", "findLastIndex",
+        "toReversed", "toSorted", "toSpliced", "with",
+    };
     var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
     defer members.deinit(gpa);
     const mutable_members = try gpa.dupe(types.ObjectMember, ti.objectMembers(mutable));
     defer gpa.free(mutable_members);
-    for (mutable_members) |member| {
-        if (!readonly_names.has(sint.get(member.name))) continue;
-        var inherited = member;
-        if (std.mem.eql(u8, sint.get(member.name), "length")) inherited.is_readonly = true;
-        // lib.es2019.array.d.ts declares flatMap's callback array as T[]
-        // even on ReadonlyArray<T>; the es5 callback methods use readonly T[].
-        // Keep that declared distinction instead of rewriting every callback.
-        if (inherited.is_method and !std.mem.eql(u8, sint.get(member.name), "flatMap")) {
-            inherited.type = try readonlyArrayCallbackSignature(ti, gpa, inherited.type, elem, readonly_array);
+    for (readonly_order) |name| {
+        for (mutable_members) |member| {
+            if (!std.mem.eql(u8, sint.get(member.name), name)) continue;
+            var inherited = member;
+            if (std.mem.eql(u8, name, "length")) inherited.is_readonly = true;
+            // lib.es2019.array.d.ts declares flatMap's callback array as T[]
+            // even on ReadonlyArray<T>; the es5 callbacks use readonly T[].
+            if (inherited.is_method and !std.mem.eql(u8, name, "flatMap")) {
+                inherited.type = try readonlyArrayCallbackSignature(ti, gpa, inherited.type, elem, readonly_array);
+            }
+            if (cache.every_guard_type_params.get(member.type)) |narrowed| {
+                try cache.every_guard_type_params.put(gpa, inherited.type, narrowed);
+            }
+            try members.append(gpa, inherited);
         }
-        if (cache.every_guard_type_params.get(member.type)) |narrowed| {
-            try cache.every_guard_type_params.put(gpa, inherited.type, narrowed);
-        }
-        try members.append(gpa, inherited);
     }
     try members.append(gpa, .{
         .name = try sint.intern("Symbol.unscopables"),
@@ -1600,6 +1599,10 @@ test "lib: readonly array unscopables map keys to optional boolean flags" {
     const array = try ti.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, types.Primitive.number_t, types.Primitive.none);
     const proto = try readonlyArrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, array, &rest_set);
     try T.expect(ti.objectMember(proto, try sint.intern("push")) == null);
+    const ordered = ti.objectMembers(proto);
+    for ([_][]const u8{ "length", "toString", "toLocaleString", "concat", "concat", "join", "slice", "indexOf" }, 0..) |name, i| {
+        try T.expectEqualStrings(name, sint.get(ordered[i].name));
+    }
     for ([_][]const u8{ "toString", "toLocaleString" }) |name| {
         const method = ti.objectMember(proto, try sint.intern(name)) orelse return error.TestUnexpectedResult;
         try T.expectEqual(types.Primitive.string_t, ti.signatureReturn(method).?);

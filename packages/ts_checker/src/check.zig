@@ -5711,6 +5711,9 @@ pub const Checker = struct {
     /// object types. Preserve their origin so diagnostics don't mistake
     /// custom `{ length; [n: number] }` interfaces for real arrays.
     array_origin_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Active conditional FlatArray element checks. Recursive array element
+    /// types can re-enter while constructing the readonly target shape.
+    flat_array_element_in_progress: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Object-literal unions widened through TypeScript's normalization pass.
     /// Relation diagnostics use this to retain whole-union ownership unless
     /// every branch rejects the same present source property.
@@ -6961,6 +6964,7 @@ pub const Checker = struct {
         self.checkjs_object_expando_narrows.deinit(self.gpa);
         self.tuple_origin_types.deinit(self.gpa);
         self.array_origin_types.deinit(self.gpa);
+        self.flat_array_element_in_progress.deinit(self.gpa);
         self.normalized_object_literal_unions.deinit(self.gpa);
         self.tuple_trailing_rest_types.deinit(self.gpa);
         self.tuple_trailing_variadic_types.deinit(self.gpa);
@@ -72805,6 +72809,8 @@ pub const Checker = struct {
         var child_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer child_names.deinit(self.gpa);
         for (child_members.items) |m| try child_names.put(self.gpa, m.name, {});
+        var inherited_names: std.AutoHashMapUnmanaged(hir_mod.StringId, bool) = .empty;
+        defer inherited_names.deinit(self.gpa);
 
         var inherited: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer inherited.deinit(self.gpa);
@@ -72816,7 +72822,11 @@ pub const Checker = struct {
                 if (self.interfaceExtendsDependsOnAliasReferencingChild(ext_node, child_name)) continue;
             }
             const parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
-            try self.appendInheritedInterfaceMembers(parent_t, &child_names, &inherited);
+            const member_parent = if (self.compactReadonlyArrayElement(parent_t)) |element|
+                try self.readonlyArrayStructuralType(element)
+            else
+                parent_t;
+            try self.appendInheritedInterfaceMembers(member_parent, &child_names, &inherited_names, &inherited);
             self.inheritInterfaceIndexSignatures(parent_t, string_idx, number_idx, symbol_idx);
         }
         if (inherited.items.len > 0) {
@@ -72938,6 +72948,7 @@ pub const Checker = struct {
         self: *Checker,
         parent_t: TypeId,
         child_names: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        inherited_names: *std.AutoHashMapUnmanaged(hir_mod.StringId, bool),
         inherited: *std.ArrayListUnmanaged(types.ObjectMember),
     ) CheckError!void {
         if (parent_t >= self.interner.pool.typeCount()) return;
@@ -72958,7 +72969,7 @@ pub const Checker = struct {
         }
         if (flags.is_intersection) {
             for (self.interner.intersectionMembers(parent_t)) |member_t| {
-                try self.appendInheritedInterfaceMembers(member_t, child_names, inherited);
+                try self.appendInheritedInterfaceMembers(member_t, child_names, inherited_names, inherited);
             }
             return;
         }
@@ -72968,6 +72979,14 @@ pub const Checker = struct {
         for (self.interner.objectMembers(parent_t)) |pm| {
             const is_signature_member = self.syntheticSignatureMemberName(pm.name);
             if (!is_signature_member and child_names.contains(pm.name)) continue;
+            if (!is_signature_member) {
+                if (inherited_names.get(pm.name)) |was_method| {
+                    // Distinct methods with one name are inherited overloads.
+                    // Keep each signature; a prior property still wins over
+                    // another declaration of the same property.
+                    if (!was_method or !pm.is_method) continue;
+                }
+            }
             if (pm.name == synthetic_static_name) {
                 if (static_class_name) |class_name| {
                     const is_declared_static = if (self.class_static_member_names.getPtr(class_name)) |names|
@@ -72977,8 +72996,10 @@ pub const Checker = struct {
                     if (!is_declared_static) continue;
                 }
             }
+            if (!is_signature_member and !inherited_names.contains(pm.name)) {
+                try inherited_names.put(self.gpa, pm.name, pm.is_method);
+            }
             try inherited.append(self.gpa, pm);
-            if (!is_signature_member) try child_names.put(self.gpa, pm.name, {});
         }
     }
 
@@ -97470,6 +97491,19 @@ pub const Checker = struct {
         if (try self.classStaticAssignableTo(source_t, target_t)) return true;
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
         if (self.expandingGenericObjectAssignmentMismatch(source_t, target_t)) return false;
+        if (self.compactReadonlyArrayElement(target_t)) |element| {
+            if (source_t < self.interner.pool.typeCount()) {
+                const source_flags = self.interner.pool.flagsOf(source_t);
+                if (source_flags.is_object_type and !source_flags.is_union and
+                    !source_flags.is_intersection and !source_flags.is_signature and
+                    !self.array_origin_types.contains(source_t) and
+                    !self.tuple_origin_types.contains(source_t) and
+                    !self.isActualTupleType(source_t))
+                {
+                    return self.checkerAssignableTo(source_t, try self.readonlyArrayStructuralType(element));
+                }
+            }
+        }
         if (try self.arrayPrototypeAssignableToObject(source_t, target_t)) return true;
         if (try self.coinductiveObjectMembersAssignable(source_t, target_t)) return true;
         return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
@@ -113347,6 +113381,9 @@ pub const Checker = struct {
     }
 
     fn flatArrayElementAtDefaultDepth(self: *Checker, element: TypeId) CheckError!TypeId {
+        const active = try self.flat_array_element_in_progress.getOrPut(self.gpa, element);
+        if (active.found_existing) return element;
+        defer _ = self.flat_array_element_in_progress.remove(element);
         if (self.interner.pool.flagsOf(element).is_union) {
             // Interning a result may move the type pool's union-member storage.
             const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(element));
@@ -113358,12 +113395,15 @@ pub const Checker = struct {
             }
             return self.interner.internUnion(flattened.items) catch return error.OutOfMemory;
         }
-        // FlatArray<T, 1> unwraps ReadonlyArray elements. A numeric index
-        // signature by itself does not establish that relation: ArrayLike<T>
-        // has one, but TypeScript leaves it intact when flattening.
-        if (!self.array_origin_types.contains(element) and !self.isActualTupleType(element)) return element;
+        // FlatArray<T, 1> uses T extends ReadonlyArray<infer U>. That is a
+        // structural relation: interfaces inheriting the method surface (and
+        // objects implementing it) unwrap, while a bare index signature does
+        // not. The origin check keeps actual arrays on the direct path.
         const inner = self.interner.objectNumberIndex(element);
-        return if (inner == types.Primitive.none) element else inner;
+        if (inner == types.Primitive.none) return element;
+        if (self.array_origin_types.contains(element) or self.isActualTupleType(element)) return inner;
+        const readonly_array = try self.readonlyArrayStructuralType(inner);
+        return if (try self.checkerAssignableTo(element, readonly_array)) inner else element;
     }
 
     fn arrayPrototypeForReceiver(self: *Checker, receiver: TypeId, element: TypeId) CheckError!TypeId {
@@ -143178,6 +143218,13 @@ pub const Checker = struct {
         {
             return false;
         }
+        // Index and length alone do not satisfy ReadonlyArray's methods.
+        // Let the structural relation inspect non-array sources against the
+        // complete target shape instead of accepting their element type.
+        if (self.array_origin_types.contains(target_t) and
+            !self.array_origin_types.contains(source_t) and
+            !self.tuple_origin_types.contains(source_t) and
+            !self.isActualTupleType(source_t)) return null;
         const source_elem = self.interner.objectNumberIndex(source_t);
         const iterator_name = self.string_interner.intern("Symbol.iterator") catch return error.OutOfMemory;
         if (self.interner.objectMember(target_t, iterator_name) != null and
@@ -170187,6 +170234,47 @@ pub const Checker = struct {
         return array_t;
     }
 
+    fn compactReadonlyArrayElement(self: *Checker, t: TypeId) ?TypeId {
+        if (!self.array_origin_types.contains(t) or !self.readonly_index_types.contains(t)) return null;
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return null;
+        const members = self.interner.objectMembers(t);
+        if (members.len != 1 or !std.mem.eql(u8, self.string_interner.get(members[0].name), "length")) return null;
+        const element = self.interner.objectNumberIndex(t);
+        return if (element == types.Primitive.none) null else element;
+    }
+
+    /// TypeScript relates ReadonlyArray structurally against the methods in
+    /// its library interface. Keep the compact indexed representation for
+    /// value operations, and materialize the complete apparent target only
+    /// when a relation or interface heritage needs those members.
+    fn readonlyArrayStructuralType(self: *Checker, element: TypeId) CheckError!TypeId {
+        const core = try self.internReadonlyArrayType(element);
+        const flat_element = try self.flatArrayElementAtDefaultDepth(element);
+        const proto = lib.readonlyArrayProto(
+            &self.lib_cache,
+            self.interner,
+            self.string_interner,
+            self.gpa,
+            element,
+            flat_element,
+            core,
+            &self.rest_signatures,
+        ) catch return error.OutOfMemory;
+        const unscopables_name = self.string_interner.intern("Symbol.unscopables") catch return error.OutOfMemory;
+        if (self.interner.objectMember(proto, unscopables_name)) |unscopables| {
+            try self.readonly_index_types.put(self.gpa, unscopables, .{ .string = false, .number = true, .symbol = false });
+        }
+        const structural = self.interner.internObjectTypeWithIndex(
+            self.interner.objectMembers(proto),
+            types.Primitive.none,
+            element,
+        ) catch return error.OutOfMemory;
+        try self.readonly_index_types.put(self.gpa, structural, .{});
+        return structural;
+    }
+
     fn internNoInferType(self: *Checker, inner: TypeId) CheckError!TypeId {
         const marker = self.string_interner.intern("__home_no_infer") catch return error.OutOfMemory;
         const brand = self.interner.internFreshTypeParameterWithFlags(
@@ -196330,14 +196418,59 @@ pub const Checker = struct {
         target: TypeId,
         include_structural_array: bool,
     ) CheckError!bool {
+        const readonly_element = self.compactReadonlyArrayElement(target);
+        const full_readonly_target = readonly_element != null;
         if (self.actualTupleLength(target) != null or
             (!self.array_origin_types.contains(target) and
                 !(include_structural_array and self.objectTypeIsArrayLikeContainer(target))) or
-            self.objectTypeIsArrayLikeContainer(source))
+            (self.objectTypeIsArrayLikeContainer(source) and !full_readonly_target))
         {
             return false;
         }
         const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
+        if (full_readonly_target) {
+            if (source >= self.interner.pool.typeCount()) return false;
+            const source_flags = self.interner.pool.flagsOf(source);
+            if (!source_flags.is_object_type or source_flags.is_union or
+                source_flags.is_intersection or source_flags.is_signature) return false;
+            // An indexed object may still lack ReadonlyArray's methods. The
+            // readonly library shape carries them in declaration order, so
+            // count the unique required members the source actually lacks.
+            // toString and toLocaleString come from Object on both sides.
+            if (self.array_origin_types.contains(source) or self.tuple_origin_types.contains(source)) return false;
+            var seen: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+            defer seen.deinit(self.gpa);
+            var first: [4]hir_mod.StringId = undefined;
+            var total: usize = 0;
+            const structural = try self.readonlyArrayStructuralType(readonly_element.?);
+            for (self.interner.objectMembers(structural)) |member| {
+                if (member.is_optional or seen.contains(member.name)) continue;
+                try seen.put(self.gpa, member.name, {});
+                const name = self.string_interner.get(member.name);
+                if (std.mem.eql(u8, name, "toString") or std.mem.eql(u8, name, "toLocaleString")) continue;
+                if (source < self.interner.pool.typeCount() and
+                    self.interner.objectMemberInfo(source, member.name) != null) continue;
+                if (total < first.len) first[total] = member.name;
+                total += 1;
+            }
+            if (total <= 5) return false;
+            const source_name = (try self.missingPropertyTypeName(source)) orelse return false;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is missing the following properties from type '{s}': {s}, {s}, {s}, {s}, and {d} more.",
+                .{
+                    source_name,
+                    target_name,
+                    self.string_interner.get(first[0]),
+                    self.string_interner.get(first[1]),
+                    self.string_interner.get(first[2]),
+                    self.string_interner.get(first[3]),
+                    total - 4,
+                },
+            );
+            try self.report(diag_node, TsCodes.type_missing_properties_truncated, msg);
+            return true;
+        }
         var missing_total: usize = 0;
         if (std.mem.endsWith(u8, target_name, "[]")) {
             // `internArrayType` stores only `length` plus the number
@@ -215672,6 +215805,72 @@ test "checker: flat default depth unwraps arrays but preserves indexed objects" 
         .is_method = false,
     }}, types.Primitive.none, types.Primitive.number_t);
     try T.expectEqual(indexed_object, try s.checker.flatArrayElementAtDefaultDepth(indexed_object));
+
+    const readonly_numbers = try s.checker.readonlyArrayStructuralType(types.Primitive.number_t);
+    var derived_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+    defer derived_members.deinit(T.allocator);
+    try derived_members.appendSlice(T.allocator, s.ti.objectMembers(readonly_numbers));
+    try derived_members.append(T.allocator, .{
+        .name = try s.sint.intern("tag"),
+        .type = types.Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    });
+    const derived = try s.ti.internObjectTypeWithIndex(
+        derived_members.items,
+        types.Primitive.none,
+        types.Primitive.number_t,
+    );
+    try T.expect(!s.checker.array_origin_types.contains(derived));
+    try T.expect(try s.checker.engine.isAssignableTo(derived, readonly_numbers));
+    try T.expect(try s.checker.checkerAssignableTo(derived, readonly_numbers));
+    try T.expectEqual(types.Primitive.number_t, try s.checker.flatArrayElementAtDefaultDepth(derived));
+}
+
+test "checker: ReadonlyArray requires its method surface for structural assignment" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const readonly_array = try s.checker.readonlyArrayStructuralType(types.Primitive.number_t);
+    for ([_][]const u8{ "concat", "join", "slice", "indexOf" }) |name| {
+        try T.expect(s.ti.objectMember(readonly_array, try s.sint.intern(name)) != null);
+    }
+
+    const indexed = try s.ti.internObjectTypeWithIndex(&.{.{
+        .name = try s.sint.intern("length"),
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = true,
+        .is_method = false,
+    }}, types.Primitive.none, types.Primitive.number_t);
+    const compact = try s.checker.internReadonlyArrayType(types.Primitive.number_t);
+    try T.expectEqual(@as(?bool, null), try s.checker.arrayElementAssignmentResult(indexed, compact));
+    try T.expect(!try s.checker.checkerAssignableTo(indexed, compact));
+    try T.expect(!try s.checker.checkerAssignableTo(indexed, readonly_array));
+    try T.expectEqual(indexed, try s.checker.flatArrayElementAtDefaultDepth(indexed));
+}
+
+test "checker: interface extending ReadonlyArray inherits its assignable shape" {
+    const s = try newSetup("interface Arrayish extends ReadonlyArray<number> { tag: string; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const derived = s.checker.type_names.get(try s.sint.intern("Arrayish")) orelse return error.TestUnexpectedResult;
+    const required = try s.checker.readonlyArrayStructuralType(types.Primitive.number_t);
+    var concat_overloads: usize = 0;
+    const concat_name = try s.sint.intern("concat");
+    for (s.ti.objectMembers(derived)) |member| {
+        if (member.name == concat_name) concat_overloads += 1;
+    }
+    try T.expectEqual(@as(usize, 2), concat_overloads);
+    for (s.ti.objectMembers(required)) |member| {
+        try T.expect(s.ti.objectMemberInfo(derived, member.name) != null);
+    }
+    try T.expect(try s.checker.checkerAssignableTo(derived, required));
+    const compact = try s.checker.internReadonlyArrayType(types.Primitive.number_t);
+    try T.expect(try s.checker.checkerAssignableTo(derived, compact));
+    try T.expectEqual(types.Primitive.number_t, try s.checker.flatArrayElementAtDefaultDepth(derived));
 }
 
 test "checker: source-owned anonymous constraints report without a local declaration node" {
