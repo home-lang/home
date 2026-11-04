@@ -59,6 +59,18 @@ fn testMatches(filter: ?[]const u8, name: []const u8) bool {
     return true;
 }
 
+fn splitTestFilters(b: *std.Build, csv: []const u8) []const []const u8 {
+    const count = std.mem.count(u8, csv, ",") + 1;
+    const filters = b.allocator.alloc([]const u8, count) catch @panic("out of memory");
+    var parts = std.mem.splitScalar(u8, csv, ',');
+    for (filters) |*filter| {
+        const needle = std.mem.trim(u8, parts.next().?, " \t");
+        if (needle.len == 0) @panic("ts-lsp-test-filters contains an empty filter");
+        filter.* = needle;
+    }
+    return filters;
+}
+
 fn dependOnTest(
     test_step: *std.Build.Step,
     run_step: *std.Build.Step,
@@ -428,6 +440,13 @@ pub fn build(b: *std.Build) void {
         "ts-lsp-test-filter",
         "Only compile/run ts_lsp tests whose name contains this substring",
     );
+    const ts_lsp_test_filters = b.option(
+        []const u8,
+        "ts-lsp-test-filters",
+        "Comma-separated substrings for a ts_lsp test shard",
+    );
+    if (ts_lsp_test_filter != null and ts_lsp_test_filters != null)
+        @panic("choose either ts-lsp-test-filter or ts-lsp-test-filters");
     const ts_driver_test_filter = b.option(
         []const u8,
         "ts-driver-test-filter",
@@ -4120,7 +4139,7 @@ pub fn build(b: *std.Build) void {
 
     const ts_lsp_tests = b.addTest(.{
         .root_module = ts_lsp_pkg,
-        .filters = if (ts_lsp_test_filter) |needle| &.{needle} else &.{},
+        .filters = if (ts_lsp_test_filters) |needles| splitTestFilters(b, needles) else if (ts_lsp_test_filter) |needle| &.{needle} else &.{},
     });
     const run_ts_lsp_tests = b.addRunArtifact(ts_lsp_tests);
     dependOnTest(test_step, &run_ts_lsp_tests.step, test_filter, "ts_lsp");
