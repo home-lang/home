@@ -8,4 +8,10 @@
 
 `tsconfig-iterable-union.json` checks iteration on `T | readonly string[]` and `T | string` where `T extends number[]`. Aggregate unions inherit their constituents' type-parameter and string flags; neither flag may prevent traversal of the union. TypeScript reports only the two intentional TS2322 assignments of `string | number` to `string`. Combining the generic `map` signatures on the array union is tracked separately in [#972](https://github.com/home-lang/home/issues/972).
 
+`tsconfig-heritage-union.json` checks that `U | V` assigns to `T` when both
+parameters extend `T`, while `U | number` does not. TypeScript 5.7.3 reports
+one TS2322 on the incompatible function's return expression. The union's
+inherited type-parameter flag must not make the whole union pass as one
+parameter.
+
 Run the exact CLI comparison through `scripts/tests/compare-issue846-oracles.mjs` after building `home-tsc`.

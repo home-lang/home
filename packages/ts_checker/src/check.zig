@@ -10861,7 +10861,7 @@ pub const Checker = struct {
                         r.value != hir_mod.none_node_id and
                         self.current_function_return_node != hir_mod.none_node_id and
                         self.returnValueIsLiteralExpression(r.value) and
-                        self.typeParameterAssignmentNeedsInstantiationCheck(ret_t, declared))
+                        try self.typeParameterAssignmentNeedsInstantiationCheck(ret_t, declared))
                     {
                         try self.reportTypeNotAssignable(
                             node,
@@ -10869,6 +10869,23 @@ pub const Checker = struct {
                             declared,
                             "Type is not assignable to function return type.",
                         );
+                        emitted_nullish_return_mismatch = true;
+                    }
+                    if (!emitted_nullish_return_mismatch and
+                        r.value != hir_mod.none_node_id and
+                        self.interner.isDirectTypeParameter(declared) and
+                        ret_t < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(ret_t).is_union and
+                        try self.typeParameterAssignmentNeedsInstantiationCheck(ret_t, declared))
+                    {
+                        // Each union member must independently assign to a
+                        // bare return type parameter. An unrelated member
+                        // cannot be accepted because another member has the
+                        // target in its constraint chain.
+                        try self.reportTypeNotAssignable(node, ret_t, declared, "Type is not assignable to function return type.");
+                        if (self.current_function_return_sig) |sig| {
+                            try self.attachExpectedTypeFromSignatureReturnRelated(sig);
+                        }
                         emitted_nullish_return_mismatch = true;
                     }
                     if (!emitted_nullish_return_mismatch and
@@ -39299,7 +39316,7 @@ pub const Checker = struct {
                     !array_literal_ok and
                     !object_literal_ok and
                     !loose_nullish_ok and
-                    (self.typeParameterAssignmentNeedsInstantiationCheck(default_t, declared_param_t) or
+                    ((try self.typeParameterAssignmentNeedsInstantiationCheck(default_t, declared_param_t)) or
                         !(self.engine.isAssignableTo(default_t, declared_param_t) catch true)))
                 {
                     // Plain parameters anchor at the parameter name,
@@ -56069,6 +56086,18 @@ pub const Checker = struct {
             !self.isThisTypeParameter(target))
         {
             if (source == types.Primitive.any or source == types.Primitive.never) return true;
+            if (source < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source).is_union) {
+                // A union inherits the type-parameter flag of any member,
+                // but it is not itself a type parameter. Every constituent
+                // must satisfy the target independently. Snapshot the list
+                // because a recursive relation can intern more types.
+                const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(source));
+                defer self.gpa.free(members);
+                for (members) |member| {
+                    if (!try self.heritageAssignableDepth(member, target, depth + 1)) return false;
+                }
+                return true;
+            }
             if (source < self.interner.pool.typeCount() and
                 self.interner.pool.flagsOf(source).is_type_parameter)
             {
@@ -119369,7 +119398,7 @@ pub const Checker = struct {
                     // stays permissive on type-parameter targets to
                     // support inference, so assignment expressions pin
                     // the user-facing error before the generic relation.
-                    if (self.typeParameterAssignmentNeedsInstantiationCheck(assignment_check_value_t, target_t) and
+                    if (try self.typeParameterAssignmentNeedsInstantiationCheck(assignment_check_value_t, target_t) and
                         !(try self.tupleSpreadIdentifierAssignableToTypeParameter(a.value, target_t)))
                     {
                         try self.reportAssignmentTypeNotAssignable(node, a.value, a.target, assignment_check_value_t, value_t, target_t, "Type is not assignable to target type.");
@@ -156498,10 +156527,7 @@ pub const Checker = struct {
     /// inference-slot acceptance.
     fn unrelatedTypeParameterAssignment(self: *Checker, source: TypeId, target: TypeId) bool {
         if (source == target) return false;
-        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
-        const sf = self.interner.pool.flagsOf(source);
-        const tf = self.interner.pool.flagsOf(target);
-        if (!sf.is_type_parameter or !tf.is_type_parameter) return false;
+        if (!self.interner.isDirectTypeParameter(source) or !self.interner.isDirectTypeParameter(target)) return false;
         var cur: TypeId = source;
         var hops: u32 = 0;
         while (hops < 16) : (hops += 1) {
@@ -156515,7 +156541,7 @@ pub const Checker = struct {
         return true;
     }
 
-    fn typeParameterAssignmentNeedsInstantiationCheck(self: *Checker, source: TypeId, target: TypeId) bool {
+    fn typeParameterAssignmentNeedsInstantiationCheck(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
         if (source == target) return false;
         // `any` and `never` are assignable to every type — including a
         // bare type parameter — so they never trigger the "could be
@@ -156528,16 +156554,23 @@ pub const Checker = struct {
         {
             return false;
         }
-        if (target >= self.interner.pool.typeCount()) return false;
-        const tf = self.interner.pool.flagsOf(target);
-        if (!tf.is_type_parameter) return false;
-        if (tf.is_union) return false;
+        if (!self.interner.isDirectTypeParameter(target)) return false;
         if (self.jsDocGenericUnionAssignableToTypeParameter(source, target) catch false) return false;
         if (self.nonNullableIntersectionSourceAssignableToTarget(source, target) catch false) return false;
         if (self.mappedSourceAssignableToTypeParameterTarget(source, target)) return false;
         if (self.intersectionSourceContainsTypeParameter(source, target)) return false;
         if (self.tupleSpreadSourceAssignableToTypeParameter(source, target)) return false;
-        if (source < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source).is_type_parameter) {
+        if (source < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source).is_union) {
+            // Recursive checks may intern types and move the union pool.
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(source));
+            defer self.gpa.free(members);
+            for (members) |member| if (member == types.Primitive.any) return false;
+            for (members) |member| {
+                if (try self.typeParameterAssignmentNeedsInstantiationCheck(member, target)) return true;
+            }
+            return false;
+        }
+        if (self.interner.isDirectTypeParameter(source)) {
             return self.unrelatedTypeParameterAssignment(source, target);
         }
         return true;
@@ -290604,6 +290637,31 @@ test "checker: alpha-equivalent generic signatures relate through nested unions"
     b.base.checker.strict_flags.strict_null_checks = true;
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(!checkerHasCode(b, TsCodes.type_not_assignable));
+}
+
+test "checker: generic union return checks every constituent against the parameter" {
+    const s = try newSetup(
+        \\function compatible<T, U extends T, V extends T>(value: U | V): T { return value; }
+        \\function incompatible<T, U extends T>(value: U | number): T { return value; }
+    );
+    defer destroySetup(s);
+    s.checker.strict_flags.strict_null_checks = true;
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: heritage relation traverses union members before type-parameter payloads" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const t = try s.ti.internTypeParameter(try s.sint.intern("T"), types.Primitive.none, types.Primitive.none);
+    const u = try s.ti.internTypeParameter(try s.sint.intern("U"), t, types.Primitive.none);
+    const v = try s.ti.internTypeParameter(try s.sint.intern("V"), t, types.Primitive.none);
+    const compatible = try s.ti.internUnion(&.{ u, v });
+    const incompatible = try s.ti.internUnion(&.{ u, types.Primitive.number_t });
+    try T.expect(s.ti.pool.flagsOf(compatible).is_type_parameter);
+    try T.expect(s.ti.pool.flagsOf(compatible).is_union);
+    try T.expect(try s.checker.heritageAssignableDepth(compatible, t, 0));
+    try T.expect(!try s.checker.heritageAssignableDepth(incompatible, t, 0));
 }
 
 test "checker: contextual generic conditional returns reuse alpha substitutions" {
