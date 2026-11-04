@@ -72,6 +72,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-unscopables-missing.json',
   'packages/ts_cli/testdata/issue963-aggregate-type-parameter/tsconfig-infer-union.json',
   'packages/ts_cli/testdata/issue963-aggregate-type-parameter/tsconfig-infer-intersection.json',
+  'packages/ts_cli/testdata/issue963-aggregate-type-parameter/tsconfig-iterable-union.json',
   'packages/ts_cli/testdata/issue960-readonly-own-methods/tsconfig.json',
   'packages/ts_cli/testdata/issue970-unique-symbol-keyof/tsconfig-arrays.json',
   'packages/ts_cli/testdata/issue970-unique-symbol-keyof/tsconfig-computed.json',

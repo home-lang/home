@@ -34678,7 +34678,7 @@ pub const Checker = struct {
         if (t == types.Primitive.none or self.typeIsAnyLike(t)) return false;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(t)) {
             const constraint = self.typeParameterConstraint(t) orelse return false;
             return constraint != t and self.arrayCallbackReceiverIsArrayLike(constraint);
         }
@@ -37366,7 +37366,7 @@ pub const Checker = struct {
         if (t == types.Primitive.string_t) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(t)) {
             const constraint = self.typeParameterConstraint(t) orelse return false;
             if (constraint == t) return false;
             return self.isIterableLikeType(constraint);
@@ -37411,7 +37411,7 @@ pub const Checker = struct {
         if (self.typeIsAnyLike(t)) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(t)) {
             const constraint = self.typeParameterConstraint(t) orelse return false;
             if (constraint == t) return false;
             return self.isAsyncIterableLikeType(constraint);
@@ -37447,7 +37447,7 @@ pub const Checker = struct {
         if (self.typeIsAnyLike(t)) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(t)) {
             const constraint = self.typeParameterConstraint(t) orelse return false;
             if (constraint == t) return false;
             return self.isForAwaitIterableLikeType(constraint);
@@ -37524,8 +37524,8 @@ pub const Checker = struct {
         if (t == types.Primitive.string_t) return types.Primitive.string_t;
         if (t >= self.interner.pool.typeCount()) return types.Primitive.any;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_string and !flags.is_object_type) return types.Primitive.string_t;
-        if (flags.is_type_parameter) {
+        if (flags.is_string and !flags.is_union and !flags.is_intersection and !flags.is_object_type) return types.Primitive.string_t;
+        if (self.interner.isDirectTypeParameter(t)) {
             const constraint = self.typeParameterConstraint(t) orelse return types.Primitive.any;
             if (constraint == t) return types.Primitive.any;
             return try self.iterableElementType(constraint);
@@ -109076,14 +109076,12 @@ pub const Checker = struct {
     }
 
     fn unconstrainedTypeParameter(self: *Checker, t: TypeId) bool {
-        if (t >= self.interner.pool.typeCount()) return false;
-        if (!self.interner.pool.flagsOf(t).is_type_parameter) return false;
+        if (!self.interner.isDirectTypeParameter(t)) return false;
         return self.typeParameterConstraint(t) == null;
     }
 
     fn typeParameterObjectPrototypeMember(self: *Checker, t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
-        if (t >= self.interner.pool.typeCount()) return null;
-        if (!self.interner.pool.flagsOf(t).is_type_parameter) return null;
+        if (!self.interner.isDirectTypeParameter(t)) return null;
         const constraint = self.typeParameterConstraint(t) orelse return null;
         if (constraint == types.Primitive.object_t) return try self.broadObjectPrototypeMember(name);
         if (constraint >= self.interner.pool.typeCount()) return null;
@@ -112826,12 +112824,18 @@ pub const Checker = struct {
 
     fn arrayElementType(self: *Checker, obj_t: TypeId) CheckError!TypeId {
         const flags = self.interner.pool.flagsOf(obj_t);
+        if (self.interner.isDirectTypeParameter(obj_t)) {
+            const constraint = self.typeParameterConstraint(obj_t) orelse return types.Primitive.none;
+            if (constraint == obj_t) return types.Primitive.none;
+            return self.arrayElementType(constraint);
+        }
         if (flags.is_union) {
-            const members = self.interner.unionMembers(obj_t);
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(obj_t));
+            defer self.gpa.free(members);
             var elems: std.ArrayListUnmanaged(TypeId) = .empty;
             defer elems.deinit(self.gpa);
             for (members) |member_t| {
-                const elem_t = self.interner.objectNumberIndex(member_t);
+                const elem_t = try self.arrayElementType(member_t);
                 if (elem_t == types.Primitive.none) return types.Primitive.none;
                 try elems.append(self.gpa, elem_t);
             }
@@ -113233,6 +113237,11 @@ pub const Checker = struct {
             }
             if (resolved.items.len == 0) return null;
             return self.interner.internUnion(resolved.items) catch return error.OutOfMemory;
+        }
+        if (self.interner.isDirectTypeParameter(t)) {
+            const constraint = self.typeParameterConstraint(t) orelse return null;
+            if (constraint == t) return null;
+            return self.lookupArrayLikePrototypeMember(constraint, name);
         }
         if (!flags.is_object_type or flags.is_intersection) return null;
         if (try self.isIteratorObjectType(t)) return try self.iteratorHelperMember(t, name);
@@ -290297,6 +290306,7 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     try T.expect(s.ti.pool.flagsOf(aggregate).is_union);
     try T.expect(s.ti.pool.flagsOf(aggregate).is_type_parameter);
     try T.expect(s.ti.pool.payloadOf(aggregate) < s.ti.pool.type_parameter_payloads.items.len);
+    try T.expect(!s.checker.unconstrainedTypeParameter(aggregate));
     try T.expect(!s.checker.typeParameterHasDefault(aggregate));
     var defaults: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
     defer defaults.deinit(T.allocator);
@@ -290380,6 +290390,30 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     defer label.deinit(T.allocator);
     try s.checker.appendTypeParameterListLabel(&label, &fake_params);
     try T.expectEqualStrings("<T>", label.items);
+}
+
+test "checker: aggregate array union retains iterable members and element types" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const number_array = try s.ti.internArrayType(&s.sint, types.Primitive.number_t);
+    const readonly_string_array = try s.checker.internReadonlyArrayType(types.Primitive.string_t);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("ArrayParam"), number_array, types.Primitive.none, .bivariant,
+    );
+    const aggregate = try s.ti.internUnion(&.{ parameter, readonly_string_array });
+    const element = try s.ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.string_t });
+    try T.expect(s.ti.pool.flagsOf(aggregate).is_type_parameter);
+    try T.expect(s.ti.pool.flagsOf(aggregate).is_union);
+    try T.expect(!s.checker.unconstrainedTypeParameter(aggregate));
+    try T.expect(s.checker.isIterableLikeType(aggregate));
+    try T.expect(s.checker.isForAwaitIterableLikeType(aggregate));
+    try T.expect(s.checker.arrayCallbackReceiverIsArrayLike(aggregate));
+    try T.expectEqual(element, try s.checker.iterableElementType(aggregate));
+    try T.expectEqual(element, try s.checker.arrayElementType(aggregate));
+    try T.expect((try s.checker.lookupArrayLikePrototypeMember(aggregate, try s.sint.intern("map"))) != null);
+    const string_or_parameter = try s.ti.internUnion(&.{ parameter, types.Primitive.string_t });
+    try T.expect(s.checker.isIterableLikeType(string_or_parameter));
+    try T.expectEqual(element, try s.checker.iterableElementType(string_or_parameter));
 }
 
 test "checker: infer through a union binds its parameter member" {

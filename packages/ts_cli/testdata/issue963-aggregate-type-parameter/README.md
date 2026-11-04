@@ -6,4 +6,6 @@
 
 `tsconfig-infer-intersection.json` covers the matching intersection case. Intersections carry their own flag in Home, but still need structural infer matching. `infer U` captures the source only when that source also satisfies `{ x: number }`. TypeScript reports TS2322 on the wrong `y` property and on assigning to the `never` result.
 
+`tsconfig-iterable-union.json` checks iteration on `T | readonly string[]` and `T | string` where `T extends number[]`. Aggregate unions inherit their constituents' type-parameter and string flags; neither flag may prevent traversal of the union. TypeScript reports only the two intentional TS2322 assignments of `string | number` to `string`. Combining the generic `map` signatures on the array union is tracked separately in [#972](https://github.com/home-lang/home/issues/972).
+
 Run the exact CLI comparison through `scripts/tests/compare-issue846-oracles.mjs` after building `home-tsc`.
