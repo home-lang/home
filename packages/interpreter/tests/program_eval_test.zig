@@ -99,3 +99,176 @@ test "eval: runaway user recursion returns a runtime error" {
         \\}
     ));
 }
+
+test "eval: deferred user function calls keep the pending return value" {
+    try runProgram(
+        \\struct Box {
+        \\  v: int,
+        \\}
+        \\
+        \\impl Box {
+        \\  fn get(self): int {
+        \\    defer cleanup()
+        \\    return self.v
+        \\  }
+        \\}
+        \\
+        \\fn cleanup() {
+        \\}
+        \\
+        \\fn direct(): int {
+        \\  defer cleanup()
+        \\  return 7
+        \\}
+        \\
+        \\fn in_if(): int {
+        \\  if true {
+        \\    defer cleanup()
+        \\    return 8
+        \\  }
+        \\  return 0
+        \\}
+        \\
+        \\fn in_else(): int {
+        \\  if false {
+        \\    return 0
+        \\  } else {
+        \\    defer cleanup()
+        \\    return 9
+        \\  }
+        \\  return 0
+        \\}
+        \\
+        \\fn in_while(): int {
+        \\  while true {
+        \\    defer cleanup()
+        \\    return 10
+        \\  }
+        \\  return 0
+        \\}
+        \\
+        \\fn in_range_loop(): int {
+        \\  for i in 0..3 {
+        \\    defer cleanup()
+        \\    return i + 11
+        \\  }
+        \\  return 0
+        \\}
+        \\
+        \\fn in_array_loop(): int {
+        \\  for x in [12] {
+        \\    defer cleanup()
+        \\    return x
+        \\  }
+        \\  return 0
+        \\}
+        \\
+        \\fn in_block(): int {
+        \\  {
+        \\    defer cleanup()
+        \\    return 13
+        \\  }
+        \\  return 0
+        \\}
+        \\
+        \\fn main() {
+        \\  let closure = fn(): int {
+        \\    defer cleanup()
+        \\    return 14
+        \\  }
+        \\  let box = Box { v: 15 }
+        \\  assert(direct() == 7)
+        \\  assert(in_if() == 8)
+        \\  assert(in_else() == 9)
+        \\  assert(in_while() == 10)
+        \\  assert(in_range_loop() == 11)
+        \\  assert(in_array_loop() == 12)
+        \\  assert(in_block() == 13)
+        \\  assert(closure() == 14)
+        \\  assert(box.get() == 15)
+        \\}
+    );
+}
+
+test "eval: a value left behind by a call inside a defer does not replace the pending return" {
+    try runProgram(
+        \\fn noop() {
+        \\}
+        \\
+        \\fn cleanup() {
+        \\  let c = fn(): int {
+        \\    return 99
+        \\  }
+        \\  c()
+        \\  defer noop()
+        \\}
+        \\
+        \\fn outer(): int {
+        \\  defer cleanup()
+        \\  return 7
+        \\}
+        \\
+        \\fn main() {
+        \\  assert(outer() == 7)
+        \\}
+    );
+}
+
+test "eval: a return inside a deferred block still sets the returned value" {
+    try runProgram(
+        \\fn final_return(): int {
+        \\  defer {
+        \\    return 5
+        \\  }
+        \\  return 7
+        \\}
+        \\
+        \\fn earlier_return(): int {
+        \\  defer {
+        \\    return 6
+        \\    0
+        \\  }
+        \\  return 7
+        \\}
+        \\
+        \\fn main() {
+        \\  assert(final_return() == 5)
+        \\  assert(earlier_return() == 6)
+        \\}
+    );
+}
+
+test "eval: deferred calls run in reverse order before the return value is used" {
+    try runProgram(
+        \\fn inner(): int {
+        \\  defer note(1)
+        \\  return 99
+        \\}
+        \\
+        \\let mut order = 0
+        \\
+        \\fn note(n: int) {
+        \\  order = order * 10 + n
+        \\}
+        \\
+        \\fn first() {
+        \\  note(2)
+        \\}
+        \\
+        \\fn second() {
+        \\  assert(inner() == 99)
+        \\  note(3)
+        \\}
+        \\
+        \\fn outer(): int {
+        \\  defer first()
+        \\  defer second()
+        \\  return 7
+        \\}
+        \\
+        \\fn main() {
+        \\  assert(outer() == 7)
+        \\  assert(order == 132)
+        \\}
+    );
+}
