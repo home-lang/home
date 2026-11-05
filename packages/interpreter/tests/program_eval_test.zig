@@ -59,6 +59,35 @@ test "eval: nested arithmetic expression" {
     try runProgram("fn main() { print((1 + 2) * 3 - 4) }");
 }
 
+test "eval: dividing the minimum integer by -1 reports the overflow" {
+    try testing.expectError(error.RuntimeError, runProgram(
+        \\fn main() {
+        \\  let x = -9223372036854775807 - 1
+        \\  print(x / -1)
+        \\}
+    ));
+    try testing.expectError(error.RuntimeError, runProgram(
+        \\fn main() {
+        \\  let x = -9223372036854775807 - 1
+        \\  print(x ~/ -1)
+        \\}
+    ));
+    try testing.expectError(error.RuntimeError, runProgram(
+        \\fn main() {
+        \\  let x = -9223372036854775807 - 1
+        \\  print(x /! -1)
+        \\}
+    ));
+    try runProgram(
+        \\fn main() {
+        \\  let x = -9223372036854775807 - 1
+        \\  assert(is_none(x /? -1))
+        \\  assert(x / 1 == x)
+        \\  assert(x ~/ 2 == -4611686018427387904)
+        \\}
+    );
+}
+
 test "eval: multiple statements and a returning function" {
     // Exercises several evaluateExpression entries across statements and a
     // user-function call — all of which were unreachable while expression depth

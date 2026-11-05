@@ -11615,8 +11615,8 @@ pub const Interpreter = struct {
                     const result: i64 = switch (op) {
                         .Sub => std.math.sub(i64, l, r) catch return error.RuntimeError,
                         .Mul => std.math.mul(i64, l, r) catch return error.RuntimeError,
-                        .Div => @divTrunc(l, r),
-                        .IntDiv => @divTrunc(l, r),
+                        .Div => std.math.divTrunc(i64, l, r) catch return error.RuntimeError,
+                        .IntDiv => std.math.divTrunc(i64, l, r) catch return error.RuntimeError,
                         // Use truncated remainder (@rem) for consistency with TypeScript/C/Java
                         // semantics where the sign of the result matches the dividend:
                         //   -7 % 3 == -1 (not 2 as with floored @mod)
@@ -11766,7 +11766,7 @@ pub const Interpreter = struct {
             .SaturatingAdd => std.math.add(i64, l, r) catch null,
             .SaturatingSub => std.math.sub(i64, l, r) catch null,
             .SaturatingMul => std.math.mul(i64, l, r) catch null,
-            .SaturatingDiv => if (r == 0) null else @divTrunc(l, r),
+            .SaturatingDiv => if (r == 0) null else std.math.divTrunc(i64, l, r) catch null,
             else => null,
         };
 
@@ -11836,7 +11836,10 @@ pub const Interpreter = struct {
             .CheckedDiv => if (r == 0) {
                 std.debug.print("Division by zero in checked division\n", .{});
                 return error.RuntimeError;
-            } else @divTrunc(l, r),
+            } else std.math.divTrunc(i64, l, r) catch {
+                std.debug.print("Integer overflow in checked division\n", .{});
+                return error.RuntimeError;
+            },
             else => l,
         };
 
