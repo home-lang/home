@@ -1200,7 +1200,7 @@ pub const Interpreter = struct {
             },
             .StringLiteral => |lit| {
                 // Process escape sequences in string literals
-                const processed = try self.processStringEscapes(lit.value);
+                const processed = try self.processStringEscapes(lit.value, false);
                 return Value{ .String = processed };
             },
             .InterpolatedString => |interp| {
@@ -1208,8 +1208,9 @@ pub const Interpreter = struct {
                 var result = std.ArrayList(u8).empty;
                 defer result.deinit(self.arena.allocator());
 
-                // Add first part
-                try result.appendSlice(self.arena.allocator(), interp.parts[0]);
+                // Add first part. Parts keep their escape sequences as
+                // written, like string literals, so decode them the same way.
+                try result.appendSlice(self.arena.allocator(), try self.processStringEscapes(interp.parts[0], true));
 
                 // Interleave expressions and remaining parts
                 for (interp.expressions, 0..) |interp_expr, i| {
@@ -1219,7 +1220,7 @@ pub const Interpreter = struct {
 
                     // Add next part if it exists
                     if (i + 1 < interp.parts.len) {
-                        try result.appendSlice(self.arena.allocator(), interp.parts[i + 1]);
+                        try result.appendSlice(self.arena.allocator(), try self.processStringEscapes(interp.parts[i + 1], true));
                     }
                 }
 
@@ -12075,7 +12076,9 @@ pub const Interpreter = struct {
 
     /// Process escape sequences in a string literal
     /// Converts \n, \t, \r, \\, \", \', \0, \xNN to their actual character values
-    fn processStringEscapes(self: *Interpreter, input: []const u8) InterpreterError![]const u8 {
+    /// `interpolated` decodes `\$`, which only interpolated strings accept as
+    /// an escape (so a literal `${` can be written).
+    fn processStringEscapes(self: *Interpreter, input: []const u8, interpolated: bool) InterpreterError![]const u8 {
         // Quick check: if no backslashes, return as-is
         var has_escape = false;
         for (input) |c| {
@@ -12116,6 +12119,11 @@ pub const Interpreter = struct {
                     },
                     '\'' => {
                         try result.append(self.arena.allocator(), '\'');
+                        i += 2;
+                    },
+                    '$' => {
+                        if (!interpolated) try result.append(self.arena.allocator(), '\\');
+                        try result.append(self.arena.allocator(), '$');
                         i += 2;
                     },
                     '0' => {

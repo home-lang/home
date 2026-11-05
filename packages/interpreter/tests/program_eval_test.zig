@@ -89,6 +89,28 @@ test "eval: finite recursive calls remain valid" {
     );
 }
 
+test "eval: interpolated strings decode escape sequences" {
+    try runProgram(
+        \\fn main() {
+        \\  let x = 1
+        \\  assert(len("\n${x}") == 2)
+        \\  assert("a\t${x}\tb" == "a\t1\tb")
+        \\  assert("q: \"${x}\"" == "q: \"1\"")
+        \\  assert(len("\${x} is ${x}") == 9)
+        \\}
+    );
+}
+
+test "eval: raw and triple-quoted strings keep a backslash before $" {
+    try runProgram(
+        \\fn main() {
+        \\  assert(r"\$".contains("\\"))
+        \\  assert(r#"\$"#.contains("\\"))
+        \\  assert("""\$""".contains("\\"))
+        \\}
+    );
+}
+
 test "eval: runaway user recursion returns a runtime error" {
     try testing.expectError(error.RuntimeError, runProgram(
         \\fn recurse(n: i32): i32 {
