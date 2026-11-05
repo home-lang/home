@@ -12392,6 +12392,30 @@ pub const Interpreter = struct {
 
                 return true;
             },
+            .Range => |range_pattern| {
+                // Range pattern: start..end (exclusive) or start..=end (inclusive)
+                if (value != .Int) return false;
+                const start = try self.evaluateExpression(range_pattern.start, env);
+                const end = try self.evaluateExpression(range_pattern.end, env);
+                if (start != .Int or end != .Int) return false;
+                if (value.Int < start.Int) return false;
+                return if (range_pattern.inclusive) value.Int <= end.Int else value.Int < end.Int;
+            },
+            .Or => |or_patterns| {
+                // Or pattern: matches if any alternative matches. Each
+                // alternative binds into a scratch scope so a failed one
+                // leaves no bindings behind; the winner's are copied to env.
+                for (or_patterns) |alt_pattern| {
+                    var alt_env = Environment.init(self.arena.allocator(), env);
+                    defer alt_env.deinit();
+                    if (try self.matchPatternNode(alt_pattern, value, &alt_env)) {
+                        var it = alt_env.bindings.iterator();
+                        while (it.next()) |entry| try env.define(entry.key_ptr.*, entry.value_ptr.*);
+                        return true;
+                    }
+                }
+                return false;
+            },
             else => {
                 // Other pattern types not yet implemented
                 return false;
