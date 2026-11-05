@@ -141,6 +141,24 @@ test "checker recognizes never as the bottom type" {
     ));
 }
 
+test "checker frees for-loop and capture scopes" {
+    try std.testing.expect(try checkSource(
+        \\fn run() {
+        \\    for x in [10, 20] {
+        \\        let next = x + 1
+        \\    }
+        \\}
+    ));
+    try std.testing.expect(try checkSource(
+        \\fn run() {
+        \\    let value = 1
+        \\    if (value) |v| {
+        \\        let next = v + 1
+        \\    }
+        \\}
+    ));
+}
+
 test "checker types panic as a string-taking bottom expression" {
     try std.testing.expect(try checkSource(
         \\fn fail(): string {
