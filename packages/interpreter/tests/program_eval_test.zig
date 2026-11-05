@@ -46,6 +46,23 @@ test "eval: print a string literal (hello world)" {
     );
 }
 
+test "eval: floor, ceil and round keep 2^63 as a float" {
+    try runProgram(
+        \\fn main() {
+        \\  let max = 9223372036854775807.0
+        \\  assert(is_float(floor(max)))
+        \\  assert(is_float(ceil(max)))
+        \\  assert(is_float(round(max)))
+        \\  assert(is_int(floor(9223372036854774784.0)))
+        \\  assert(floor(9223372036854774784.0) == 9223372036854774784)
+        \\  assert(is_int(ceil(-9223372036854775808.0)))
+        \\  assert(ceil(-9223372036854775808.0) == -9223372036854775807 - 1)
+        \\  assert(is_int(round(2.5)))
+        \\  assert(round(2.5) == 3)
+        \\}
+    );
+}
+
 test "eval: let-binding then use" {
     try runProgram(
         \\fn main() {
