@@ -130,6 +130,53 @@ test "checker accepts a correctly typed function return" {
     ));
 }
 
+fn checkSourceInArena(source: []const u8) !bool {
+    // Arena: the checker does not free for-loop scopes yet.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var lexer = home.lexer.Lexer.init(allocator, source);
+    const tokens = try lexer.tokenize();
+    var parser = try home.parser.Parser.init(allocator, tokens.items);
+    const program = try parser.parse();
+    var checker = home.types.TypeChecker.init(allocator, program);
+    return checker.check();
+}
+
+test "checker defines the index variable of an enumerating for loop" {
+    try std.testing.expect(try checkSourceInArena(
+        \\fn run() {
+        \\    for i, x in [10, 20] {
+        \\        let next = i + 1
+        \\    }
+        \\}
+    ));
+    // For a map the first name is bound to the value, not an int position.
+    try std.testing.expect(!try checkSourceInArena(
+        \\fn run() {
+        \\    for value, key in {"k": true} {
+        \\        let out = value + 1
+        \\    }
+        \\}
+    ));
+    try std.testing.expect(!try checkSourceInArena(
+        \\fn run() {
+        \\    let data = {"k": true} as ?Map<string, bool>
+        \\    for value, key in data {
+        \\        let out = value + 1
+        \\    }
+        \\}
+    ));
+    // Same name twice: the item is bound last, as at run time.
+    try std.testing.expect(try checkSourceInArena(
+        \\fn run() {
+        \\    for x, x in ["hello"] {
+        \\        let out = x + "!"
+        \\    }
+        \\}
+    ));
+}
+
 test "checker recognizes never as the bottom type" {
     try std.testing.expect(try checkSource(
         \\fn halt(): never {
