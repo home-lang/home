@@ -2254,16 +2254,20 @@ pub const TypeChecker = struct {
                 for (try_stmt.catch_clauses) |catch_clause| {
                     // Create new scope for error variable if present
                     if (catch_clause.error_name) |error_name| {
+                        const saved_env = try self.allocator.create(TypeEnvironment);
+                        saved_env.* = self.env;
+
                         var catch_env = TypeEnvironment.init(self.allocator);
-                        catch_env.parent = &self.env;
-                        defer catch_env.deinit();
+                        catch_env.parent = saved_env;
+                        self.env = catch_env;
+                        defer {
+                            self.env.deinit();
+                            self.env = saved_env.*;
+                            self.allocator.destroy(saved_env);
+                        }
 
                         // Define error variable (type is string for now)
-                        try catch_env.define(error_name, Type.String);
-
-                        const saved_env = self.env;
-                        self.env = catch_env;
-                        defer self.env = saved_env;
+                        try self.env.define(error_name, Type.String);
 
                         for (catch_clause.body.statements) |catch_body_stmt| {
                             self.checkStatement(catch_body_stmt) catch |err| {

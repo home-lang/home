@@ -886,3 +886,23 @@ test "checker rejects missing static methods" {
         \\}
     ));
 }
+
+test "checker resolves enclosing variables inside a catch clause" {
+    try std.testing.expect(try checkSource(
+        \\fn run() {
+        \\    let x = 1
+        \\    try {
+        \\    } catch (e) {
+        \\        let y = x
+        \\    }
+        \\}
+    ));
+    try std.testing.expect(try checkSourceErrorContains(
+        \\fn run() {
+        \\    try {
+        \\    } catch (e) {
+        \\        let y = missing
+        \\    }
+        \\}
+    , "Undefined variable"));
+}
