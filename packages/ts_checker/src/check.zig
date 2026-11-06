@@ -113483,6 +113483,66 @@ pub const Checker = struct {
             return error.OutOfMemory;
     }
 
+    /// TypeScript selects `filter<S extends T>(predicate: (value: T, index:
+    /// number) => value is S)` and the matching `find` overload when the
+    /// argument is a type predicate. The ordinary overload types the argument
+    /// identically, so only the result changes, and the narrowed type is the
+    /// argument's own predicate target.
+    fn iteratorPredicateCallResult(self: *Checker, node: NodeId, current: TypeId) CheckError!TypeId {
+        const call = hir_mod.callOf(self.hir, node);
+        if (call.args_len != 1) return current;
+        const raw_callee_t = self.hir.typeOf(call.callee);
+        // An optional-chained member access records `signature | undefined`.
+        const callee_t = self.subtractNullUndefined(raw_callee_t) catch raw_callee_t;
+        const is_filter = self.lib_cache.iterator_filter_signatures.contains(callee_t);
+        if (!is_filter and !self.lib_cache.iterator_find_signatures.contains(callee_t)) return current;
+        const argument = self.hir.childSlice(call.args_start, call.args_len)[0];
+        const narrowed = self.argumentPredicateTarget(argument) orelse return current;
+        if (narrowed == types.Primitive.none) return current;
+        if (!is_filter) {
+            return self.interner.internUnion(&.{ narrowed, types.Primitive.undefined_t }) catch
+                return error.OutOfMemory;
+        }
+        return self.iteratorHelperResult(narrowed);
+    }
+
+    /// The type an argument asserts about its first parameter, whether it is a
+    /// function expression carrying signature metadata or a reference to a
+    /// declared predicate function.
+    fn argumentPredicateTarget(self: *Checker, argument: NodeId) ?TypeId {
+        if (self.signature_predicates.get(self.hir.typeOf(argument))) |predicate| {
+            if (predicate.param_index == 0 and !predicate.is_asserts) return predicate.target_type;
+        }
+        if (self.hir.kindOf(argument) == .identifier) {
+            const name = hir_mod.identifierOf(self.hir, argument).name;
+            if (self.fn_predicates.get(name)) |predicate| {
+                if (predicate.param_index == 0 and !predicate.is_asserts) return predicate.target_type;
+            }
+        }
+        return null;
+    }
+
+    /// `reduce(callbackfn)` with no initial value accumulates in the yielded
+    /// element type. Selecting that signature before the arguments are checked
+    /// gives the callback the same parameter types TypeScript gives it.
+    fn iteratorReduceSignatureForArity(self: *Checker, node: NodeId, callee_t: TypeId) CheckError!TypeId {
+        const call = hir_mod.callOf(self.hir, node);
+        if (call.args_len != 1) return callee_t;
+        const elem = self.lib_cache.iterator_reduce_signatures.get(callee_t) orelse return callee_t;
+        const callback = self.interner.internSignature(
+            &.{ elem, elem, types.Primitive.number_t },
+            elem,
+            false,
+        ) catch return error.OutOfMemory;
+        const selected = self.interner.internSignature(&.{callback}, elem, false) catch
+            return error.OutOfMemory;
+        // Contextual typing of the callback reads the callee node's recorded
+        // type rather than the local one, so the selected overload has to
+        // reach the node as well.
+        self.hir.setType(call.callee, selected);
+        return selected;
+    }
+
     /// `depth` steps below the receiver, or null when the argument's depth is
     /// not statically known (TypeScript then keeps the unresolved
     /// conditional) or is below `-1` (TypeScript indexes its decrement tuple
@@ -113523,6 +113583,19 @@ pub const Checker = struct {
         }
     }
 
+    /// `values()` / `keys()` / `entries()` / `[Symbol.iterator]()` all return
+    /// `ArrayIterator<...>` in TypeScript 5.7.3.
+    fn nameArrayIteratorResults(self: *Checker, proto: TypeId) CheckError!void {
+        for ([_][]const u8{ "values", "keys", "entries", "Symbol.iterator" }) |method| {
+            const name = self.string_interner.intern(method) catch return error.OutOfMemory;
+            const member = self.interner.objectMember(proto, name) orelse continue;
+            const iterator = self.interner.signatureReturn(member) orelse continue;
+            const yielded = self.interner.objectNumberIndex(iterator);
+            if (yielded == types.Primitive.none) continue;
+            try self.nameIteratorObjectType(iterator, "ArrayIterator", yielded);
+        }
+    }
+
     fn arrayPrototypeForReceiver(self: *Checker, receiver: TypeId, element: TypeId) CheckError!TypeId {
         const flat_elem = try self.flatArrayElementAtDefaultDepth(element);
         if (self.typeIsReadonlyArrayLike(receiver)) {
@@ -113532,9 +113605,12 @@ pub const Checker = struct {
             if (self.interner.objectMember(proto, unscopables_name)) |unscopables| {
                 try self.readonly_index_types.put(self.gpa, unscopables, .{ .string = false, .number = true, .symbol = false });
             }
+            try self.nameArrayIteratorResults(proto);
             return proto;
         }
-        return lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, flat_elem, &self.rest_signatures) catch return error.OutOfMemory;
+        const proto = lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, flat_elem, &self.rest_signatures) catch return error.OutOfMemory;
+        try self.nameArrayIteratorResults(proto);
+        return proto;
     }
 
     fn isIteratorObjectType(self: *Checker, t: TypeId) CheckError!bool {
@@ -113557,31 +113633,173 @@ pub const Checker = struct {
         if (!try self.isIteratorObjectType(receiver)) return null;
         const elem = self.interner.objectNumberIndex(receiver);
         const method = self.string_interner.get(name);
+        const number_t = types.Primitive.number_t;
         if (std.mem.eql(u8, method, "toArray")) {
+            // `toArray(): T[]`. The result is a real array, not an indexed
+            // object, so incompatible assignments elaborate through the
+            // element type the way every other array result does.
             const array = self.interner.internArrayType(self.string_interner, elem) catch return error.OutOfMemory;
+            try self.array_origin_types.put(self.gpa, array, {});
             return self.interner.internSignature(&.{}, array, false) catch return error.OutOfMemory;
         }
         if (std.mem.eql(u8, method, "take") or std.mem.eql(u8, method, "drop")) {
-            return self.interner.internSignature(&.{types.Primitive.number_t}, receiver, false) catch return error.OutOfMemory;
+            const taken = try self.iteratorHelperResult(elem);
+            return self.interner.internSignature(&.{number_t}, taken, false) catch return error.OutOfMemory;
         }
         if (std.mem.eql(u8, method, "filter")) {
-            const callback = self.interner.internSignature(&.{ elem, types.Primitive.number_t }, types.Primitive.unknown, false) catch return error.OutOfMemory;
-            return self.interner.internSignature(&.{callback}, receiver, false) catch return error.OutOfMemory;
+            // The ordinary overload keeps `T`. A `value is S` argument selects
+            // the predicate overload, which the call site resolves.
+            const callback = try self.iteratorHelperCallback(elem, types.Primitive.unknown);
+            const kept = try self.iteratorHelperResult(elem);
+            const signature = self.interner.internSignature(&.{callback}, kept, false) catch
+                return error.OutOfMemory;
+            try self.lib_cache.iterator_filter_signatures.put(self.gpa, signature, elem);
+            return signature;
         }
-        if (std.mem.eql(u8, method, "map")) {
-            const result = self.interner.internTypeParameter(self.string_interner.intern("U") catch return error.OutOfMemory, types.Primitive.none, types.Primitive.none) catch return error.OutOfMemory;
-            const callback = self.interner.internSignature(&.{ elem, types.Primitive.number_t }, result, false) catch return error.OutOfMemory;
-            const iterator = lib.iteratorObjectType(self.interner, self.string_interner, result, false) catch return error.OutOfMemory;
-            const signature = self.interner.internSignature(&.{callback}, iterator, false) catch return error.OutOfMemory;
-            if (!self.generic_signature_params.contains(signature)) {
-                const owned = try self.gpa.alloc(TypeId, 1);
-                errdefer self.gpa.free(owned);
-                owned[0] = result;
-                try self.generic_signature_params.put(self.gpa, signature, owned);
-            }
+        if (std.mem.eql(u8, method, "forEach")) {
+            // `forEach(callbackfn: (value: T, index: number) => void): void`.
+            const callback = try self.iteratorHelperCallback(elem, types.Primitive.void_t);
+            return self.interner.internSignature(&.{callback}, types.Primitive.void_t, false) catch
+                return error.OutOfMemory;
+        }
+        if (std.mem.eql(u8, method, "some") or std.mem.eql(u8, method, "every")) {
+            // `(predicate: (value: T, index: number) => unknown): boolean`.
+            const callback = try self.iteratorHelperCallback(elem, types.Primitive.unknown);
+            return self.interner.internSignature(&.{callback}, types.Primitive.boolean_t, false) catch
+                return error.OutOfMemory;
+        }
+        if (std.mem.eql(u8, method, "find")) {
+            // `find(predicate: (value: T, index: number) => unknown): T |
+            // undefined`, with the same call-site predicate overload as
+            // `filter`.
+            const callback = try self.iteratorHelperCallback(elem, types.Primitive.unknown);
+            const optional = self.interner.internUnion(&.{ elem, types.Primitive.undefined_t }) catch
+                return error.OutOfMemory;
+            const signature = self.interner.internSignature(&.{callback}, optional, false) catch
+                return error.OutOfMemory;
+            try self.lib_cache.iterator_find_signatures.put(self.gpa, signature, elem);
+            return signature;
+        }
+        if (std.mem.eql(u8, method, "map") or std.mem.eql(u8, method, "flatMap")) {
+            // `map<U>(callbackfn: (value: T, index: number) => U)` and
+            // `flatMap<U>(callback: (value: T, index: number) => Iterator<U> |
+            // Iterable<U>)` both yield `IteratorObject<U, undefined, unknown>`.
+            const result = self.interner.internTypeParameter(
+                self.string_interner.intern("U") catch return error.OutOfMemory,
+                types.Primitive.none,
+                types.Primitive.none,
+            ) catch return error.OutOfMemory;
+            const is_flat = std.mem.eql(u8, method, "flatMap");
+            const callback_result = if (is_flat) blk: {
+                // An iterable of U covers both the iterator and the array
+                // forms the callback may return.
+                const inner_iterator = try self.iteratorHelperResult(result);
+                const inner_array = try self.internReadonlyArrayType(result);
+                break :blk self.interner.internUnion(&.{ inner_iterator, inner_array }) catch
+                    return error.OutOfMemory;
+            } else result;
+            const callback = try self.iteratorHelperCallback(elem, callback_result);
+            const iterator = try self.iteratorHelperResult(result);
+            const signature = self.interner.internSignature(&.{callback}, iterator, false) catch
+                return error.OutOfMemory;
+            try self.registerIteratorHelperTypeParameter(signature, result);
+            return signature;
+        }
+        if (std.mem.eql(u8, method, "reduce")) {
+            // TypeScript declares three overloads. The first two accumulate in
+            // `T`; the third accumulates in its own `U`, inferred from the
+            // initial value. One signature whose accumulator defaults to `T`
+            // covers all three: inference from `initialValue` wins when it is
+            // present, and the default applies when it is omitted.
+            const accumulator = self.interner.internTypeParameter(
+                self.string_interner.intern("U") catch return error.OutOfMemory,
+                types.Primitive.none,
+                elem,
+            ) catch return error.OutOfMemory;
+            const callback = self.interner.internSignature(
+                &.{ accumulator, elem, number_t },
+                accumulator,
+                false,
+            ) catch return error.OutOfMemory;
+            const optional_initial = self.interner.internUnion(
+                &.{ accumulator, types.Primitive.undefined_t },
+            ) catch return error.OutOfMemory;
+            const signature = self.interner.internSignature(
+                &.{ callback, optional_initial },
+                accumulator,
+                false,
+            ) catch return error.OutOfMemory;
+            try self.signature_min_args.put(self.gpa, signature, 1);
+            try self.registerIteratorHelperTypeParameter(signature, accumulator);
+            // A call without an initial value accumulates in `T` instead; the
+            // call site swaps this signature out before the callback is
+            // contextually typed. Keeping the two-parameter signature here
+            // also keeps the `1-2` argument range in an arity diagnostic.
+            try self.lib_cache.iterator_reduce_signatures.put(self.gpa, signature, elem);
             return signature;
         }
         return null;
+    }
+
+    /// TypeScript 5.7.3 names each built-in iterator after its owner
+    /// (`ArrayIterator<T>`, `MapIterator<T>`, `SetIterator<T>`) and names
+    /// every iterator-helper result `IteratorObject<T, undefined, unknown>`.
+    /// Without a name, a diagnostic about an iterator receiver renders no
+    /// type at all. The recorded type arguments let generic instantiation
+    /// re-render the name for the substituted element.
+    fn nameIteratorObjectType(
+        self: *Checker,
+        iterator: TypeId,
+        owner: []const u8,
+        element: TypeId,
+    ) CheckError!void {
+        if (self.alias_display_names.contains(iterator)) return;
+        const element_name = (try self.allocSimpleTypeName(element)) orelse return;
+        const arena = self.diag_arena.allocator();
+        const is_helper_result = std.mem.eql(u8, owner, "IteratorObject");
+        const text = if (is_helper_result)
+            try std.fmt.allocPrint(arena, "IteratorObject<{s}, undefined, unknown>", .{element_name})
+        else
+            try std.fmt.allocPrint(arena, "{s}<{s}>", .{ owner, element_name });
+        const args = try arena.alloc(TypeId, if (is_helper_result) 3 else 1);
+        args[0] = element;
+        if (is_helper_result) {
+            args[1] = types.Primitive.undefined_t;
+            args[2] = types.Primitive.unknown;
+        }
+        try self.alias_display_names.put(self.gpa, iterator, text);
+        try self.alias_type_args.put(self.gpa, iterator, args);
+    }
+
+    /// `IteratorObject<T, undefined, unknown>` — the declared result of every
+    /// iterator helper that yields another iterator.
+    fn iteratorHelperResult(self: *Checker, element: TypeId) CheckError!TypeId {
+        const iterator = lib.iteratorObjectType(self.interner, self.string_interner, element, false) catch
+            return error.OutOfMemory;
+        try self.nameIteratorObjectType(iterator, "IteratorObject", element);
+        return iterator;
+    }
+
+    /// `(value: T, index: number) => Result` — the shape every iterator
+    /// helper callback has in TypeScript 5.7.3.
+    fn iteratorHelperCallback(self: *Checker, elem: TypeId, result: TypeId) CheckError!TypeId {
+        return self.interner.internSignature(
+            &.{ elem, types.Primitive.number_t },
+            result,
+            false,
+        ) catch return error.OutOfMemory;
+    }
+
+    fn registerIteratorHelperTypeParameter(
+        self: *Checker,
+        signature: TypeId,
+        type_parameter: TypeId,
+    ) CheckError!void {
+        if (self.generic_signature_params.contains(signature)) return;
+        const owned = try self.gpa.alloc(TypeId, 1);
+        errdefer self.gpa.free(owned);
+        owned[0] = type_parameter;
+        try self.generic_signature_params.put(self.gpa, signature, owned);
     }
 
     fn lookupArrayLikePrototypeMember(self: *Checker, t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
@@ -120697,6 +120915,9 @@ pub const Checker = struct {
                         break :blk types.Primitive.symbol_t;
                     }
                 }
+                // Pick the no-initial-value `reduce` overload before the
+                // callback is contextually typed against the generic one.
+                callee_t = try self.iteratorReduceSignatureForArity(node, callee_t);
                 const args = hir_mod.callArgs(self.hir, node);
                 const commonjs_define_property_call = (try self.commonJsDefinePropertyCall(node)) != null;
                 var arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -125286,10 +125507,14 @@ pub const Checker = struct {
             try self.recordUnmodeledAny(node)
         else
             t;
-        // `arr.flat(depth)` resolves its own result from the literal depth;
-        // the synthetic signature can only carry the default.
+        // `arr.flat(depth)` resolves its own result from the literal depth,
+        // and an iterator's `filter` / `find` from the argument's type
+        // predicate; the synthetic signatures can only carry the defaults.
         const depth_adjusted_t = if (expression_kind == .call_expr)
-            try self.explicitDepthFlatCallResult(node, recovery_t)
+            try self.iteratorPredicateCallResult(
+                node,
+                try self.explicitDepthFlatCallResult(node, recovery_t),
+            )
         else
             recovery_t;
         const result_t = try self.resolveGenericType((try self.inlineJsDocCastType(node, depth_adjusted_t)) orelse depth_adjusted_t);
@@ -151429,6 +151654,9 @@ pub const Checker = struct {
         const value_iter_t = lib.iteratorObjectType(self.interner, self.string_interner, value_t, false) catch return error.OutOfMemory;
         const key_iter_t = lib.iteratorObjectType(self.interner, self.string_interner, key_t, false) catch return error.OutOfMemory;
         const entry_iter_t = lib.iteratorObjectType(self.interner, self.string_interner, entry_t, false) catch return error.OutOfMemory;
+        try self.nameIteratorObjectType(value_iter_t, "MapIterator", value_t);
+        try self.nameIteratorObjectType(key_iter_t, "MapIterator", key_t);
+        try self.nameIteratorObjectType(entry_iter_t, "MapIterator", entry_t);
         const sig_values = self.interner.internSignature(&[_]TypeId{}, value_iter_t, false) catch return error.OutOfMemory;
         const sig_keys = self.interner.internSignature(&[_]TypeId{}, key_iter_t, false) catch return error.OutOfMemory;
         const sig_entries = self.interner.internSignature(&[_]TypeId{}, entry_iter_t, false) catch return error.OutOfMemory;
@@ -151489,6 +151717,8 @@ pub const Checker = struct {
         const entry_t = self.interner.internObjectTypeWithIndex(entry_members.items, types.Primitive.none, entry_union) catch return error.OutOfMemory;
         const value_iter_t = lib.iteratorObjectType(self.interner, self.string_interner, value_t, false) catch return error.OutOfMemory;
         const entry_iter_t = lib.iteratorObjectType(self.interner, self.string_interner, entry_t, false) catch return error.OutOfMemory;
+        try self.nameIteratorObjectType(value_iter_t, "SetIterator", value_t);
+        try self.nameIteratorObjectType(entry_iter_t, "SetIterator", entry_t);
         const sig_values = self.interner.internSignature(&[_]TypeId{}, value_iter_t, false) catch return error.OutOfMemory;
         const sig_entries = self.interner.internSignature(&[_]TypeId{}, entry_iter_t, false) catch return error.OutOfMemory;
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;

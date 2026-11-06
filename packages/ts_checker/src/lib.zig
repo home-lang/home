@@ -85,6 +85,14 @@ pub const LibCache = struct {
     /// user-declared `flat`. Object types are not interned by structure, so
     /// comparing against a freshly rebuilt prototype is not reliable.
     flat_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Iterator-helper signature -> the element type the receiver yields.
+    /// TypeScript overloads `filter` and `find` on a type predicate and
+    /// `reduce` on the presence of an initial value; the checker resolves
+    /// those at the call site, where the argument and the arity are known,
+    /// and needs to recognize its own synthetic member first.
+    iterator_filter_signatures: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    iterator_find_signatures: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    iterator_reduce_signatures: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     /// Signature identities for the built-in `Array.sort` callback, whose
     /// declaration uses `(a: T, b: T) => number` rather than synthesized
     /// positional names. The checker reads this only for diagnostics.
@@ -105,6 +113,9 @@ pub const LibCache = struct {
         self.every_guard_type_params.deinit(gpa);
         self.flat_map_type_params.deinit(gpa);
         self.flat_signatures.deinit(gpa);
+        self.iterator_filter_signatures.deinit(gpa);
+        self.iterator_find_signatures.deinit(gpa);
+        self.iterator_reduce_signatures.deinit(gpa);
     }
 };
 
@@ -243,10 +254,22 @@ pub fn iteratorObjectType(
     const next_sig = try ti.internSignature(&[_]TypeId{}, next_result_t, false);
     const iterator_sig = try ti.internSignature(&[_]TypeId{}, types.Primitive.any, false);
     const dispose_sig = try ti.internSignature(&[_]TypeId{}, if (is_async) types.Primitive.any else types.Primitive.void_t, false);
+    // `readonly [Symbol.toStringTag]: string` is declared alongside the
+    // helper methods on `IteratorObject` / `AsyncIteratorObject`. The nominal
+    // key keeps `it[Symbol.toStringTag]` out of the numeric index signature.
+    const to_string_tag = try sint.intern("Symbol.toStringTag");
     const members = [_]types.ObjectMember{
         .{ .name = try sint.intern("next"), .type = next_sig, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern(if (is_async) "Symbol.asyncIterator" else "Symbol.iterator"), .type = iterator_sig, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern(if (is_async) "Symbol.asyncDispose" else "Symbol.dispose"), .type = dispose_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{
+            .name = to_string_tag,
+            .key_type = try ti.internUniqueSymbol(.{ .name = to_string_tag }),
+            .type = types.Primitive.string_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        },
     };
     return ti.internObjectTypeWithIndex(&members, types.Primitive.none, elem);
 }
