@@ -5,7 +5,7 @@
 // explicit noEmit override keeps this audit read-only even when a new fixture
 // forgets to set it in tsconfig.json. Build home-tsc before invoking this.
 import { spawnSync } from 'node:child_process'
-import { statSync } from 'node:fs'
+import { readdirSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -40,15 +40,19 @@ if (version.error || version.status !== 0 || version.stdout.trim() !== 'Version 
   process.exit(2)
 }
 
-const files = spawnSync('rg', ['--files', 'packages/ts_cli/testdata', '-g', 'tsconfig*.json'], {
-  cwd: repo,
-  encoding: 'utf8',
-})
-if (files.error || files.status !== 0) {
-  console.error('Could not enumerate fixture configs:', files.error?.message ?? files.stderr)
-  process.exit(2)
+// Enumerate with Node rather than ripgrep: the audit must run on a machine
+// that has no rg, and a missing binary previously stopped it before the first
+// comparison.
+function fixtureConfigs(directory) {
+  const found = []
+  for (const entry of readdirSync(resolve(repo, directory), { withFileTypes: true })) {
+    const path = `${directory}/${entry.name}`
+    if (entry.isDirectory()) found.push(...fixtureConfigs(path))
+    else if (entry.name.startsWith('tsconfig') && entry.name.endsWith('.json')) found.push(path)
+  }
+  return found
 }
-const configs = files.stdout.trim().split('\n').filter(path =>
+const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue846-') || path.includes('/issue965-') ||
   path.includes('/issue966-commonjs-constructor/') ||
   path.includes('/issue968-js-constructor-import/') ||
