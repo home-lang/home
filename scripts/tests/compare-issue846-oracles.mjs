@@ -79,6 +79,8 @@ for (const config of [
   'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-jsdoc-union-no-checkjs.json',
   'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-flat.json',
   'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-flat-no-checkjs.json',
+  'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-flat-depth.json',
+  'packages/ts_cli/testdata/issue846-readonly-array/tsconfig-flat-depth-no-checkjs.json',
   'packages/ts_cli/testdata/issue963-aggregate-type-parameter/tsconfig-infer-union.json',
   'packages/ts_cli/testdata/issue963-aggregate-type-parameter/tsconfig-infer-intersection.json',
   'packages/ts_cli/testdata/issue963-aggregate-type-parameter/tsconfig-iterable-union.json',

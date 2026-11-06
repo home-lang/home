@@ -64,6 +64,23 @@ Home matches the five diagnostic sites and explanations, but currently prints
 the imported source union in the opposite order at line 5; that exact-stream
 gap is tracked in [#975](https://github.com/home-lang/home/issues/975).
 
+`tsconfig-flat-depth.json` and its no-`checkJs` control pin the explicit
+`flat(depth)` result. TypeScript 5.7.3 evaluates `FlatArray<A, D>` by
+unwrapping one `ReadonlyArray` level per depth step, counting the receiver
+itself, and stops as soon as the operand is no longer a readonly array. On
+`readonly number[][][]`, `flat(0)` keeps `number[][][]`, `flat(1)` equals the
+default depth, `flat(2)` reaches `number[]`, and `flat(9)` saturates there.
+An interface extending `ReadonlyArray<number>` unwraps while the numeric-index
+`ArrayLikeOnly` is preserved, a readonly tuple keeps its element union at
+depth 0 and flattens it at depth 1, `2 as const` counts as depth 2, chained
+calls compose, imported checked-JavaScript arrays follow the same rule, and an
+optional-chained receiver keeps its `undefined`. Both engines report only the
+two intentional TS2322 diagnostics at `flat-depth.ts(22,7)` and `(24,7)`,
+with identical elaborations and exit status. A depth that is not statically
+known still yields the default-depth result in Home, where TypeScript keeps an
+unresolved `FlatArray` conditional; that remaining difference is tracked in
+[#973](https://github.com/home-lang/home/issues/973).
+
 `tsconfig-concat.json` checks that readonly arrays can be concatenated into
 either readonly or mutable receivers while the result remains a mutable
 `number[]`. Its invalid result assignment must elaborate the array *element*
