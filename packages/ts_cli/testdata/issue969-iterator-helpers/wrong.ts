@@ -1,0 +1,16 @@
+const values: number[] = [1, 2, 3];
+const it = values.values();
+const wrongMap: number[] = it.map((value) => value.toString()).toArray();
+const wrongFilter: string[] = it.filter((value) => value > 1).toArray();
+const wrongTake: string[] = it.take(2).toArray();
+const wrongReduce: string = it.reduce((acc, value) => acc + value);
+const wrongFind: number = it.find((value) => value > 1);
+const wrongSome: number = it.some((value) => value > 1);
+const wrongFlatMap: number[] = it.flatMap((value) => [value.toString()]).toArray();
+const wrongForEach: number = it.forEach((value) => { void value; });
+void wrongMap; void wrongFilter; void wrongTake; void wrongReduce;
+void wrongFind; void wrongSome; void wrongFlatMap; void wrongForEach;
+const wrongTakeResult: string = it.take(2);
+const wrongMapResult: string = it.map((value) => value + 1);
+const wrongFilterResult: string = it.filter((value) => value > 1);
+void wrongTakeResult; void wrongMapResult; void wrongFilterResult;

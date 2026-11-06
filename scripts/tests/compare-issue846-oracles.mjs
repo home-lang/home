@@ -93,6 +93,10 @@ for (const config of [
   'packages/ts_cli/testdata/issue970-unique-symbol-keyof/tsconfig-program.json',
   'packages/ts_cli/testdata/issue971-object-display/tsconfig.json',
   'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig.json',
+  'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-helpers.json',
+  'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-wrong.json',
+  'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-errors.json',
+  'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-guards.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
