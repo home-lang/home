@@ -78,6 +78,13 @@ pub const LibCache = struct {
     /// non-mutating signatures with `Array<T>`, but never inherits mutation
     /// members merely because both types have a numeric index signature.
     readonly_array_proto_by_elem: std.AutoHashMapUnmanaged(struct { elem: TypeId, flat_elem: TypeId }, TypeId) = .empty,
+    /// Every synthetic `flat` signature handed to a receiver, mutable or
+    /// readonly. The signature's return type carries the default depth of 1,
+    /// so a call that passes an explicit depth has to recompute it; the
+    /// checker uses this set to recognize its own member rather than a
+    /// user-declared `flat`. Object types are not interned by structure, so
+    /// comparing against a freshly rebuilt prototype is not reliable.
+    flat_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Signature identities for the built-in `Array.sort` callback, whose
     /// declaration uses `(a: T, b: T) => number` rather than synthesized
     /// positional names. The checker reads this only for diagnostics.
@@ -97,6 +104,7 @@ pub const LibCache = struct {
         self.sort_comparator_signatures.deinit(gpa);
         self.every_guard_type_params.deinit(gpa);
         self.flat_map_type_params.deinit(gpa);
+        self.flat_signatures.deinit(gpa);
     }
 };
 
@@ -750,6 +758,7 @@ pub fn arrayProto(
     // whole union to `any` loses both valid and invalid assignments.
     const flat_ret = try ti.internArrayType(sint, flat_elem);
     const sig_flat = try ti.internSignature(&[_]TypeId{optional_number_t}, flat_ret, false);
+    try cache.flat_signatures.put(gpa, sig_flat, {});
     // `fill(value: T, start?: number, end?: number): T[]`.
     const sig_fill = try ti.internSignature(&[_]TypeId{ elem, optional_number_t, optional_number_t }, arr_t, false);
     // `copyWithin(target: number, start: number, end?: number): T[]`.
@@ -905,6 +914,9 @@ pub fn readonlyArrayProto(
             }
             if (cache.every_guard_type_params.get(member.type)) |narrowed| {
                 try cache.every_guard_type_params.put(gpa, inherited.type, narrowed);
+            }
+            if (cache.flat_signatures.contains(member.type)) {
+                try cache.flat_signatures.put(gpa, inherited.type, {});
             }
             try members.append(gpa, inherited);
         }

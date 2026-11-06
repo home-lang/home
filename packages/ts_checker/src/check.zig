@@ -113381,29 +113381,146 @@ pub const Checker = struct {
     }
 
     fn flatArrayElementAtDefaultDepth(self: *Checker, element: TypeId) CheckError!TypeId {
-        const active = try self.flat_array_element_in_progress.getOrPut(self.gpa, element);
-        if (active.found_existing) return element;
-        defer _ = self.flat_array_element_in_progress.remove(element);
-        if (self.interner.pool.flagsOf(element).is_union) {
+        // The receiver has already been unwrapped once to reach `element`, so
+        // the default depth of 1 leaves a single further step of budget minus
+        // that one: `FlatArray<A, 1>` = `FlatArray<element, 0>`.
+        return self.flatArrayAtDepth(element, 0);
+    }
+
+    /// TypeScript 5.7.3 declares
+    /// `flat<A, D extends number = 1>(this: A, depth?: D): FlatArray<A, D>[]`
+    /// with
+    ///
+    /// ```ts
+    /// type FlatArray<Arr, Depth extends number> = {
+    ///     done: Arr,
+    ///     recur: Arr extends ReadonlyArray<infer InnerArr>
+    ///         ? FlatArray<InnerArr, [-1, 0, 1, ...][Depth]>
+    ///         : Arr
+    /// }[Depth extends -1 ? "done" : "recur"];
+    /// ```
+    ///
+    /// so each step unwraps one `ReadonlyArray` level and stops as soon as the
+    /// operand is no longer a readonly array; `-1` returns the operand
+    /// unchanged. `Arr` is naked in that conditional, so a union distributes
+    /// and every constituent spends its own remaining budget.
+    fn flatArrayAtDepth(self: *Checker, t: TypeId, remaining: i32) CheckError!TypeId {
+        if (remaining < 0) return t;
+        const active = try self.flat_array_element_in_progress.getOrPut(self.gpa, t);
+        if (active.found_existing) return t;
+        defer _ = self.flat_array_element_in_progress.remove(t);
+        if (self.interner.pool.flagsOf(t).is_union) {
             // Interning a result may move the type pool's union-member storage.
-            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(element));
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(t));
             defer self.gpa.free(members);
             var flattened: std.ArrayListUnmanaged(TypeId) = .empty;
             defer flattened.deinit(self.gpa);
             for (members) |member| {
-                try flattened.append(self.gpa, try self.flatArrayElementAtDefaultDepth(member));
+                try flattened.append(self.gpa, try self.flatArrayAtDepth(member, remaining));
             }
             return self.interner.internUnion(flattened.items) catch return error.OutOfMemory;
         }
-        // FlatArray<T, 1> uses T extends ReadonlyArray<infer U>. That is a
-        // structural relation: interfaces inheriting the method surface (and
-        // objects implementing it) unwrap, while a bare index signature does
-        // not. The origin check keeps actual arrays on the direct path.
-        const inner = self.interner.objectNumberIndex(element);
-        if (inner == types.Primitive.none) return element;
-        if (self.array_origin_types.contains(element) or self.isActualTupleType(element)) return inner;
-        const readonly_array = try self.readonlyArrayStructuralType(inner);
-        return if (try self.checkerAssignableTo(element, readonly_array)) inner else element;
+        // `Arr extends ReadonlyArray<infer U>` is a structural relation:
+        // interfaces inheriting the method surface (and objects implementing
+        // it) unwrap, while a bare index signature does not. The origin check
+        // keeps actual arrays on the direct path.
+        const inner = self.interner.objectNumberIndex(t);
+        if (inner == types.Primitive.none) return t;
+        if (!self.array_origin_types.contains(t) and !self.isActualTupleType(t)) {
+            const readonly_array = try self.readonlyArrayStructuralType(inner);
+            if (!try self.checkerAssignableTo(t, readonly_array)) return t;
+        }
+        return self.flatArrayAtDepth(inner, remaining - 1);
+    }
+
+    /// TypeScript's depth decrement is a 22-element tuple covering `-1`
+    /// through `20`. An index outside it (a depth above 21, or a
+    /// non-integral one) leaves no reachable `done` key, which flattens
+    /// every remaining level; `flat(21)` is the last exactly-counted depth.
+    const flat_saturating_depth: i32 = 1024;
+
+    /// The synthetic `flat` signature bakes in the default depth of 1. A call
+    /// that passes an explicit numeric literal evaluates `FlatArray<A, D>` at
+    /// that depth instead. Literal values are only available from the syntax:
+    /// `checkExpression` gives every numeric literal the type `number`, so an
+    /// overload set keyed on literal depth types could not select here.
+    fn explicitDepthFlatCallResult(self: *Checker, node: NodeId, current: TypeId) CheckError!TypeId {
+        const call = hir_mod.callOf(self.hir, node);
+        if (call.args_len != 1) return current;
+        if (self.hir.kindOf(call.callee) != .member_access) return current;
+        const member = hir_mod.memberOf(self.hir, call.callee);
+        if (!std.mem.eql(u8, self.string_interner.get(member.name), "flat")) return current;
+        const depth = self.flatCallDepthArgument(self.hir.childSlice(call.args_start, call.args_len)[0]) orelse
+            return current;
+        // Only the synthetic array-prototype member carries the default-depth
+        // return type that needs replacing; a user-declared `flat` keeps its
+        // own signature.
+        // An optional-chained member access records `signature | undefined`.
+        const callee_t = self.subtractNullUndefined(self.hir.typeOf(call.callee)) catch
+            self.hir.typeOf(call.callee);
+        if (!self.lib_cache.flat_signatures.contains(callee_t)) return current;
+        // `receiver?.flat(depth)` widens the call result with `undefined` and
+        // reads the member off the non-nullish part of the receiver. Recompute
+        // from the same operand and restore the widening afterwards.
+        const widened_with_undefined = self.typeIncludesUndefined(current);
+        const default_result = if (widened_with_undefined)
+            self.subtractNullUndefined(current) catch current
+        else
+            current;
+        // A call that recovered through `any` (or any other non-array result)
+        // keeps that recovery instead of gaining a computed element type.
+        if (self.interner.objectNumberIndex(default_result) == types.Primitive.none) return current;
+        const receiver_raw = self.hir.typeOf(member.object);
+        if (receiver_raw == types.Primitive.none or receiver_raw >= self.interner.pool.typeCount()) return current;
+        const receiver = self.subtractNullUndefined(receiver_raw) catch receiver_raw;
+        if (try self.arrayElementType(receiver) == types.Primitive.none) return current;
+        const flattened = try self.flatArrayAtDepth(receiver, depth);
+        const result = self.interner.internArrayType(self.string_interner, flattened) catch
+            return error.OutOfMemory;
+        try self.array_origin_types.put(self.gpa, result, {});
+        if (!widened_with_undefined) return result;
+        return self.interner.internUnion(&.{ result, types.Primitive.undefined_t }) catch
+            return error.OutOfMemory;
+    }
+
+    /// `depth` steps below the receiver, or null when the argument's depth is
+    /// not statically known (TypeScript then keeps the unresolved
+    /// conditional) or is below `-1` (TypeScript indexes its decrement tuple
+    /// out of range and defers the result rather than flattening).
+    fn flatCallDepthArgument(self: *Checker, arg: NodeId) ?i32 {
+        const value = self.staticNumericArgumentValue(arg) orelse return null;
+        if (std.math.isNan(value) or std.math.isInf(value)) return flat_saturating_depth;
+        if (value != @trunc(value) or value > 21) return flat_saturating_depth;
+        if (value < -1) return null;
+        return @intFromFloat(value);
+    }
+
+    /// A numeric argument's statically known value. `checkExpression` types
+    /// every bare numeric literal as `number`, so the syntax carries the only
+    /// value for `flat(2)`; a widened-away literal type (`2 as const`,
+    /// `2 as 2`, a `const` binding, an enum member) carries it in the type.
+    fn staticNumericArgumentValue(self: *Checker, arg: NodeId) ?f64 {
+        if (self.interner.literalOfOrNull(self.hir.typeOf(arg))) |literal| {
+            switch (literal) {
+                .number_lit => |bits| return @bitCast(bits),
+                else => return null,
+            }
+        }
+        switch (self.hir.kindOf(arg)) {
+            .literal_number => return hir_mod.literalNumberOf(self.hir, arg),
+            .unary_op => {
+                const unary = hir_mod.unaryOf(self.hir, arg);
+                if (unary.op != .neg) return null;
+                if (self.hir.kindOf(unary.operand) != .literal_number) return null;
+                return -hir_mod.literalNumberOf(self.hir, unary.operand);
+            },
+            .satisfies_expr, .non_null_expr => {
+                // Neither changes the operand's type, so the literal below
+                // still decides the depth.
+                return self.staticNumericArgumentValue(hir_mod.asExpressionOf(self.hir, arg).expr);
+            },
+            else => return null,
+        }
     }
 
     fn arrayPrototypeForReceiver(self: *Checker, receiver: TypeId, element: TypeId) CheckError!TypeId {
@@ -125169,7 +125286,13 @@ pub const Checker = struct {
             try self.recordUnmodeledAny(node)
         else
             t;
-        const result_t = try self.resolveGenericType((try self.inlineJsDocCastType(node, recovery_t)) orelse recovery_t);
+        // `arr.flat(depth)` resolves its own result from the literal depth;
+        // the synthetic signature can only carry the default.
+        const depth_adjusted_t = if (expression_kind == .call_expr)
+            try self.explicitDepthFlatCallResult(node, recovery_t)
+        else
+            recovery_t;
+        const result_t = try self.resolveGenericType((try self.inlineJsDocCastType(node, depth_adjusted_t)) orelse depth_adjusted_t);
         try self.checkJsDocSatisfiesExpression(node, result_t);
         self.hir.setType(node, result_t);
         return result_t;
@@ -215826,6 +215949,99 @@ test "checker: flat default depth unwraps arrays but preserves indexed objects" 
     try T.expect(try s.checker.engine.isAssignableTo(derived, readonly_numbers));
     try T.expect(try s.checker.checkerAssignableTo(derived, readonly_numbers));
     try T.expectEqual(types.Primitive.number_t, try s.checker.flatArrayElementAtDefaultDepth(derived));
+}
+
+test "checker: flat evaluates FlatArray at each explicit depth" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const numbers = try s.checker.internMutableArrayType(types.Primitive.number_t);
+    const nested = try s.checker.internMutableArrayType(numbers);
+    const receiver = try s.checker.internMutableArrayType(nested);
+
+    // `FlatArray<Arr, -1>` is the "done" key: the operand is returned whole.
+    try T.expectEqual(receiver, try s.checker.flatArrayAtDepth(receiver, -1));
+    // Every other depth unwraps one readonly-array level per step, counting
+    // the receiver itself, and stops once the operand is not an array.
+    try T.expectEqual(nested, try s.checker.flatArrayAtDepth(receiver, 0));
+    try T.expectEqual(numbers, try s.checker.flatArrayAtDepth(receiver, 1));
+    try T.expectEqual(types.Primitive.number_t, try s.checker.flatArrayAtDepth(receiver, 2));
+    try T.expectEqual(types.Primitive.number_t, try s.checker.flatArrayAtDepth(receiver, 3));
+    try T.expectEqual(
+        types.Primitive.number_t,
+        try s.checker.flatArrayAtDepth(receiver, Checker.flat_saturating_depth),
+    );
+
+    // A union distributes, and each constituent spends its own budget.
+    const strings = try s.checker.internReadonlyArrayType(types.Primitive.string_t);
+    const mixed = try s.ti.internUnion(&.{ numbers, strings, types.Primitive.boolean_t });
+    const scalars = try s.ti.internUnion(&.{
+        types.Primitive.number_t,
+        types.Primitive.string_t,
+        types.Primitive.boolean_t,
+    });
+    try T.expectEqual(mixed, try s.checker.flatArrayAtDepth(mixed, -1));
+    try T.expectEqual(scalars, try s.checker.flatArrayAtDepth(mixed, 0));
+    try T.expectEqual(scalars, try s.checker.flatArrayAtDepth(mixed, 4));
+
+    // An indexed object is not a `ReadonlyArray`, so no depth unwraps it.
+    const indexed_object = try s.ti.internObjectTypeWithIndex(&.{.{
+        .name = try s.sint.intern("length"),
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }}, types.Primitive.none, types.Primitive.number_t);
+    const indexed_arrays = try s.checker.internMutableArrayType(indexed_object);
+    try T.expectEqual(indexed_object, try s.checker.flatArrayAtDepth(indexed_arrays, 0));
+    try T.expectEqual(indexed_object, try s.checker.flatArrayAtDepth(indexed_arrays, 5));
+}
+
+test "checker: explicit flat depth types the call result" {
+    const s = try newSetup(
+        \\declare const nested: readonly number[][][];
+        \\const kept: number[][][] = nested.flat(0);
+        \\const one: number[][] = nested.flat(1);
+        \\const two: number[] = nested.flat(2);
+        \\const saturated: number[] = nested.flat(9);
+        \\const chained: number[][][] = nested.flat(0).flat(0);
+        \\const wrong: string[] = nested.flat(2);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: optional-chained flat keeps its depth and its undefined" {
+    const s = try newSetup(
+        \\declare const maybe: readonly number[][][] | undefined;
+        \\const widened: number[] | undefined = maybe?.flat(2);
+        \\const wrong: number[] = maybe?.flat(2);
+    );
+    defer destroySetup(s);
+    // `undefined` only reaches an assignment under strictNullChecks.
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    // Only the second assignment fails, and only because of `undefined`.
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: explicit flat depth leaves declared flat members alone" {
+    const s = try newSetup(
+        \\interface Flattener { flat(depth: number): string }
+        \\declare const flattener: Flattener;
+        \\const text: string = flattener.flat(2);
+        \\declare const nested: readonly number[][][];
+        \\declare const depth: number;
+        \\const deferred: number[][] = nested.flat(depth);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // A user-declared `flat` keeps its own return type, and a depth that is
+    // not statically known keeps the declared default-depth result.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: ReadonlyArray requires its method surface for structural assignment" {
