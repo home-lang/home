@@ -179908,8 +179908,7 @@ pub const Checker = struct {
         if (self.typeIsArrayLikeObject(t) and self.actualTupleLength(t) == null) {
             const elem_t = self.interner.objectNumberIndex(t);
             const elem_name = (try self.allocSignatureConstituentDisplayName(elem_t)) orelse return null;
-            const wrap = std.mem.indexOfScalar(u8, elem_name, '|') != null or
-                std.mem.indexOf(u8, elem_name, "=>") != null;
+            const wrap = arrayElementDisplayNeedsParens(elem_name);
             return if (wrap)
                 try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -179928,8 +179927,7 @@ pub const Checker = struct {
                 const elem_t = self.interner.objectNumberIndex(t);
                 if (elem_t != types.Primitive.none) {
                     const elem_name = (try self.allocSignatureConstituentDisplayName(elem_t)) orelse return null;
-                    const wrap = std.mem.indexOfScalar(u8, elem_name, '|') != null or
-                        std.mem.indexOf(u8, elem_name, "=>") != null;
+                    const wrap = arrayElementDisplayNeedsParens(elem_name);
                     return if (wrap)
                         try std.fmt.allocPrint(self.diag_arena.allocator(), "({s})[]", .{elem_name})
                     else
@@ -180619,8 +180617,7 @@ pub const Checker = struct {
                                         try vbuf_sdt.appendSlice(arena_vsdt, ", ...");
                                         const rest_elem_sdt = try self.tupleRestElementTypeAtPosition(t, prefix_count_sdt);
                                         if (try self.simpleDiagnosticTypeName(rest_elem_sdt)) |rest_name_sdt| {
-                                            const wrap_r = std.mem.indexOfScalar(u8, rest_name_sdt, '|') != null or
-                                                std.mem.indexOf(u8, rest_name_sdt, "=>") != null;
+                                            const wrap_r = arrayElementDisplayNeedsParens(rest_name_sdt);
                                             if (wrap_r) {
                                                 try vbuf_sdt.append(arena_vsdt, '(');
                                                 try vbuf_sdt.appendSlice(arena_vsdt, rest_name_sdt);
@@ -201004,6 +201001,34 @@ pub const Checker = struct {
         );
     }
 
+    /// TypeScript parenthesizes an array element whose syntax binds looser
+    /// than the postfix `[]`: a union or intersection, a function or
+    /// constructor type, and a `readonly` array or tuple. The scan stays at
+    /// the top level, so `{ run: () => number }[]` and
+    /// `Map<string, number | boolean>[]` keep their shape — the operator
+    /// there belongs to a nested type and needs no parentheses of its own.
+    fn arrayElementDisplayNeedsParens(name: []const u8) bool {
+        if (std.mem.startsWith(u8, name, "readonly ")) return true;
+        var depth: usize = 0;
+        var index: usize = 0;
+        while (index < name.len) : (index += 1) {
+            switch (name[index]) {
+                '(', '{', '[', '<' => depth += 1,
+                ')', '}', ']' => depth -|= 1,
+                '>' => {
+                    // The `>` of a top-level `=>` ends a function type; any
+                    // other one closes a type-argument list.
+                    if (index > 0 and name[index - 1] == '=') {
+                        if (depth == 0) return true;
+                    } else depth -|= 1;
+                },
+                '|', '&' => if (depth == 0) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
     fn allocSimpleTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         // Defensive recursion cap. The evaluation guards above keep
         // types finite, but a self-referential structural shape that
@@ -201333,8 +201358,7 @@ pub const Checker = struct {
                             }
                             try vbuf.appendSlice(arena_v, ", ...");
                             if (try self.allocSimpleTypeName(num_idx)) |rest_name| {
-                                const wrap_r = std.mem.indexOfScalar(u8, rest_name, '|') != null or
-                                    std.mem.indexOf(u8, rest_name, "=>") != null;
+                                const wrap_r = arrayElementDisplayNeedsParens(rest_name);
                                 if (wrap_r) {
                                     try vbuf.append(arena_v, '(');
                                     try vbuf.appendSlice(arena_v, rest_name);
@@ -201350,10 +201374,9 @@ pub const Checker = struct {
                             break :blk vbuf.items;
                         }
                         if (try self.allocSimpleTypeName(num_idx)) |elem_name| {
-                            // Wrap union element type in parens so
-                            // `T[]` doesn't become ambiguous in prose.
-                            const wrap = std.mem.indexOfScalar(u8, elem_name, '|') != null or
-                                std.mem.indexOf(u8, elem_name, "=>") != null;
+                            // Parenthesize an element whose own syntax
+                            // binds looser than the postfix `[]`.
+                            const wrap = arrayElementDisplayNeedsParens(elem_name);
                             const arena_arr = self.diag_arena.allocator();
                             const out_text = if (wrap)
                                 try std.fmt.allocPrint(arena_arr, "{s}({s})[]", .{ if (self.typeIsReadonlyArrayLike(t)) "readonly " else "", elem_name })
@@ -216138,6 +216161,36 @@ test "checker: program array projection retains array origin separately from ind
         .is_method = false,
     }}, types.Primitive.none, types.Primitive.number_t);
     try T.expect(!s.checker.array_origin_types.contains(indexed_object));
+}
+
+test "checker: array element display parenthesizes only looser syntax" {
+    // Looser than the postfix `[]`: readonly arrays and tuples, unions,
+    // intersections, function and constructor types.
+    for ([_][]const u8{
+        "readonly number[]",
+        "readonly [number, string]",
+        "number | string",
+        "Named & { id: number; }",
+        "(value: number) => string",
+        "new () => Named",
+    }) |name| {
+        try T.expect(Checker.arrayElementDisplayNeedsParens(name));
+    }
+    // Atomic, or an operator that belongs to a nested type.
+    for ([_][]const u8{
+        "number",
+        "number[]",
+        "Named",
+        "{ id: number; }",
+        "{ run: () => number; }",
+        "{ a: number | string; }",
+        "Map<string, number | boolean>",
+        "[number, string]",
+        "`a${string}`",
+        "\"name\"",
+    }) |name| {
+        try T.expect(!Checker.arrayElementDisplayNeedsParens(name));
+    }
 }
 
 test "checker: flat default depth unwraps arrays but preserves indexed objects" {
