@@ -930,11 +930,9 @@ pub const TsConfig = struct {
             }
         }
 
-        // TypeScript visits every matching JSON property in source order.
-        // A dependency error such as checkJs=true/allowJs=false therefore
-        // appears at both option keys, not only the first one. When neither
-        // key exists locally (for example after inheritance), use the
-        // compilerOptions key as the single fallback anchor.
+        // TypeScript anchors an option-dependency diagnostic at the first
+        // matching option key in source order. When neither key exists
+        // locally, use the compilerOptions key as the fallback anchor.
         var located: std.ArrayListUnmanaged(ValidationDiagnostic) = .empty;
         errdefer located.deinit(gpa);
         for (diags.items) |diagnostic| {
@@ -945,11 +943,9 @@ pub const TsConfig = struct {
                         !std.mem.eql(u8, location.name, diagnostic.related_field)) continue;
                     var copy = diagnostic;
                     copy.location = location.key;
-                    // All entries share one message allocation; the first
-                    // returned entry remains its sole owner.
-                    if (found) copy.owns_message = false;
                     try located.append(gpa, copy);
                     found = true;
+                    break;
                 }
                 if (found) continue;
                 var fallback = diagnostic;
@@ -2665,19 +2661,12 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
     }
     merged.compiler_options.extra = combined;
 
-    var combined_locations: std.ArrayListUnmanaged(CompilerOptionLocation) = .empty;
-    for (base.compiler_option_locations) |base_location| {
-        var shadowed = false;
-        for (child.compiler_option_locations) |child_location| {
-            if (std.mem.eql(u8, child_location.name, base_location.name)) {
-                shadowed = true;
-                break;
-            }
-        }
-        if (!shadowed) try combined_locations.append(arena, base_location);
-    }
-    try combined_locations.appendSlice(arena, child.compiler_option_locations);
-    merged.compiler_option_locations = try combined_locations.toOwnedSlice(arena);
+    // Effective values inherit, but program option diagnostics are anchored
+    // in the active child's syntax. Base coordinates cannot describe that
+    // source, including the compilerOptions fallback when no key matches.
+    merged.file_path = child.file_path;
+    merged.compiler_option_locations = child.compiler_option_locations;
+    merged.compiler_options_key_location = child.compiler_options_key_location;
 
     inline for (@typeInfo(HomeOptions).@"struct".field_names) |field_name| {
         const child_value = @field(child.home_options, field_name);
@@ -3666,7 +3655,7 @@ test "tsconfig.validate: dependent options report TS5052" {
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
-    try t.expectEqual(@as(usize, 5), diags.len);
+    try t.expectEqual(@as(usize, 4), diags.len);
     try t.expectEqual(@as(u32, 5052), diags[0].code);
     try t.expectEqualStrings("Option 'strictPropertyInitialization' cannot be specified without specifying option 'strictNullChecks'.", diags[0].message);
     try t.expectEqual(@as(u32, 5052), diags[1].code);
@@ -3674,9 +3663,7 @@ test "tsconfig.validate: dependent options report TS5052" {
     try t.expectEqual(@as(u32, 5052), diags[2].code);
     try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diags[2].message);
     try t.expectEqual(@as(u32, 5052), diags[3].code);
-    try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diags[3].message);
-    try t.expectEqual(@as(u32, 5052), diags[4].code);
-    try t.expectEqualStrings("Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'.", diags[4].message);
+    try t.expectEqualStrings("Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'.", diags[3].message);
 }
 
 test "tsconfig.validate: checkJs implies allowJs when allowJs is omitted" {
@@ -3714,22 +3701,21 @@ test "tsconfig.validate: checkJs implies allowJs when allowJs is omitted" {
     try t.expectEqualStrings("Option 'allowJs' cannot be specified with option 'isolatedDeclarations'.", isolated_diags[0].message);
 }
 
-test "tsconfig.validate: dependent-option diagnostics use every explicit option key" {
+test "tsconfig.validate: dependent-option diagnostics use the first explicit matching key" {
     inline for (.{
-        .{ "{\"compilerOptions\":{\"allowJs\":false,\"checkJs\":true}}", "allowJs", "checkJs" },
-        .{ "{\"compilerOptions\":{\"checkJs\":true,\"allowJs\":false}}", "checkJs", "allowJs" },
+        .{ "{\"compilerOptions\":{\"allowJs\":false,\"checkJs\":true}}", "allowJs", @as(u32, 5052) },
+        .{ "{\"compilerOptions\":{\"checkJs\":true,\"allowJs\":false}}", "checkJs", @as(u32, 5052) },
+        .{ "{\"compilerOptions\":{\"declaration\":false,\"emitDeclarationOnly\":true}}", "declaration", @as(u32, 5069) },
+        .{ "{\"compilerOptions\":{\"emitDeclarationOnly\":true,\"declaration\":false}}", "emitDeclarationOnly", @as(u32, 5069) },
     }) |case| {
         var arena = std.heap.ArenaAllocator.init(t.allocator);
         defer arena.deinit();
         const config = try parseString(t.allocator, arena.allocator(), case[0]);
         const diags = try config.validate(t.allocator);
         defer freeValidationDiagnostics(t.allocator, diags);
-        try t.expectEqual(@as(usize, 2), diags.len);
-        for (diags, [_][]const u8{ case[1], case[2] }) |diag, name| {
-            try t.expectEqual(@as(u32, 5052), diag.code);
-            try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diag.message);
-            try t.expectEqualDeep(config.compilerOptionKeyLocation(name), diag.location);
-        }
+        try t.expectEqual(@as(usize, 1), diags.len);
+        try t.expectEqual(case[2], diags[0].code);
+        try t.expectEqualDeep(config.compilerOptionKeyLocation(case[1]), diags[0].location);
     }
 }
 
@@ -5243,4 +5229,41 @@ test "tsconfig: JSON defaults preserve explicit false and modern resolution mode
     try t.expect(effectiveResolveJsonModule(.{}));
     try t.expect(effectiveResolveJsonModule(.{ .module = .nodenext }));
     try t.expect(!effectiveResolveJsonModule(.{ .module = .node16 }));
+}
+
+test "tsconfig.merge: dependency diagnostics belong to the active child source" {
+    inline for (.{
+        .{ "allowJs", "checkJs", @as(u32, 5052) },
+        .{ "declaration", "emitDeclarationOnly", @as(u32, 5069) },
+    }) |options| {
+        for ([_][]const u8{ "key", "fallback", "none" }) |mode| {
+            var arena = std.heap.ArenaAllocator.init(t.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const base_source = try std.fmt.allocPrint(a, "{{\n\n\n  \"compilerOptions\": {{ \"{s}\": false, \"{s}\": true }}\n}}", .{ options[0], options[1] });
+            var base = try parseString(t.allocator, a, base_source);
+            base.file_path = "/repo/base.json";
+            const child_source = if (std.mem.eql(u8, mode, "key"))
+                try std.fmt.allocPrint(a, "{{\n  \"compilerOptions\": {{\n    \"{s}\": true\n  }}\n}}", .{options[1]})
+            else if (std.mem.eql(u8, mode, "fallback"))
+                "{\n  \"compilerOptions\": {}\n}"
+            else
+                "{}";
+            var child = try parseString(t.allocator, a, child_source);
+            child.file_path = "/repo/tsconfig.json";
+            const merged = try merge(a, base, child);
+            try t.expectEqualStrings("/repo/tsconfig.json", merged.file_path);
+            const diagnostics = try merged.validate(t.allocator);
+            defer freeValidationDiagnostics(t.allocator, diagnostics);
+            try t.expectEqual(@as(usize, 1), diagnostics.len);
+            try t.expectEqual(options[2], diagnostics[0].code);
+            if (std.mem.eql(u8, mode, "none")) {
+                try t.expect(diagnostics[0].location == null);
+            } else {
+                const location = diagnostics[0].location.?;
+                try t.expectEqual(@as(u32, if (std.mem.eql(u8, mode, "key")) 3 else 2), location.line);
+                try t.expectEqual(@as(u32, if (std.mem.eql(u8, mode, "key")) 4 else 2), location.column);
+            }
+        }
+    }
 }

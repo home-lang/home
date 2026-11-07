@@ -793,16 +793,10 @@ fn buildOneProject(
     }
 
     // Output directories are resolved against the project's own dir.
-    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors_outputs_skipped)
-    else
-        null;
+    const out_dir = resolveOutputDirectory(arena, config_path, cfg.compiler_options.out_dir, null) catch return .errors_outputs_skipped;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
-    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors_outputs_skipped)
-    else
-        out_dir;
+    const declaration_dir = (resolveOutputDirectory(arena, config_path, cfg.compiler_options.declaration_dir, null) catch return .errors_outputs_skipped) orelse out_dir;
 
     // Incremental up-to-date check (tsc's getUpToDateStatus, simplified to
     // input/output mtime comparison). Skipped under `--force`.
@@ -954,16 +948,10 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
     }
     if (input_files.items.len == 0) return .up_to_date;
 
-    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .build)
-    else
-        null;
+    const out_dir = resolveOutputDirectory(arena, config_path, cfg.compiler_options.out_dir, null) catch return .build;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
-    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .build)
-    else
-        out_dir;
+    const declaration_dir = (resolveOutputDirectory(arena, config_path, cfg.compiler_options.declaration_dir, null) catch return .build) orelse out_dir;
 
     if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts, emit_js)) {
         return .update_timestamps;
@@ -1293,6 +1281,20 @@ fn moduleResolutionOptionName(value: tsconfig_mod.ModuleResolution) []const u8 {
     return @tagName(value);
 }
 
+/// Configured output directories are relative to the declaring project;
+/// command-line overrides retain the caller's working-directory context.
+/// Returned allocations belong to the supplied arena.
+fn resolveOutputDirectory(
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    configured: ?[]const u8,
+    override: ?[]const u8,
+) !?[]const u8 {
+    if (override) |path| return path;
+    const path = configured orelse return null;
+    return try std.fs.path.resolve(arena, &.{ std.fs.path.dirname(config_path) orelse ".", path });
+}
+
 fn resolverConfigFromConfig(
     arena: std.mem.Allocator,
     cfg: tsconfig_mod.TsConfig,
@@ -1510,16 +1512,10 @@ fn appendProjectCleanOutputs(
         );
     }
 
-    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
-        try std.fs.path.join(arena, &.{ project_dir, d })
-    else
-        null;
+    const out_dir = try resolveOutputDirectory(arena, config_path, cfg.compiler_options.out_dir, null);
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
-    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
-        try std.fs.path.join(arena, &.{ project_dir, d })
-    else
-        out_dir;
+    const declaration_dir = (try resolveOutputDirectory(arena, config_path, cfg.compiler_options.declaration_dir, null)) orelse out_dir;
 
     for (input_files.items) |path| {
         if (ts_program.Program.isDeclarationPath(path)) continue;
@@ -1579,22 +1575,67 @@ const CaseOnlyInputFileMismatch = struct {
     existing_file_index: usize,
 };
 
-fn findCaseOnlyInputFileMismatch(input_files: []const []const u8) ?CaseOnlyInputFileMismatch {
-    for (input_files, 0..) |path, i| {
-        var j: usize = 0;
-        while (j < i) : (j += 1) {
-            const previous = input_files[j];
-            if (std.mem.eql(u8, previous, path)) break;
-            if (!std.ascii.eqlIgnoreCase(previous, path)) continue;
-            return .{
+/// Share one authored read path for case-only spellings proven to name one file.
+/// Keep the input slots for config provenance, using ordinary duplicate-root
+/// handling downstream. Distinct files retain a casing diagnostic; missing or
+/// inaccessible files are left to the ordinary root-file diagnostic path.
+fn retainCaseOnlyReadSpelling(input_files: [][]const u8, previous_index: usize, current_index: usize, spelling: []const u8) void {
+    const previous_read = input_files[previous_index];
+    for (input_files[0..current_index]) |*input| {
+        if (std.mem.eql(u8, input.*, previous_read)) input.* = spelling;
+    }
+    input_files[current_index] = spelling;
+}
+
+fn prepareCaseOnlyInputFiles(
+    gpa: std.mem.Allocator,
+    fs: ts_resolver.FileSystem,
+    input_files: [][]const u8,
+) !?CaseOnlyInputFileMismatch {
+    // Authored names select casing families and config-origin indices. Read
+    // paths can retain the latest spelling without changing comparison identities.
+    const authored = try gpa.dupe([]const u8, input_files);
+    defer gpa.free(authored);
+    var first_mismatch: ?CaseOnlyInputFileMismatch = null;
+    next_input: for (authored, 0..) |path, i| {
+        var has_case_candidate = false;
+        for (authored[0..i], 0..) |previous, j| {
+            if (std.mem.eql(u8, previous, path)) {
+                retainCaseOnlyReadSpelling(input_files, j, i, path);
+                continue :next_input;
+            }
+            has_case_candidate = has_case_candidate or std.ascii.eqlIgnoreCase(previous, path);
+        }
+        if (!has_case_candidate or !fs.fileExists(path)) continue;
+        const canonical = fs.realpath(gpa, path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
+        };
+        defer gpa.free(canonical);
+        var candidate: ?CaseOnlyInputFileMismatch = null;
+        for (authored[0..i], 0..) |previous, j| {
+            if (!std.ascii.eqlIgnoreCase(previous, path) or !fs.fileExists(previous)) continue;
+            const previous_canonical = fs.realpath(gpa, previous) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+            defer gpa.free(previous_canonical);
+            if (std.mem.eql(u8, canonical, previous_canonical)) {
+                // Real paths prove identity, but the retained authored path
+                // supplies relative import context, including for symlinks.
+                retainCaseOnlyReadSpelling(input_files, j, i, path);
+                continue :next_input;
+            }
+            if (candidate == null) candidate = .{
                 .file_name = path,
                 .existing_file_name = previous,
                 .file_index = i,
                 .existing_file_index = j,
             };
         }
+        if (first_mismatch == null) first_mismatch = candidate;
     }
-    return null;
+    return first_mismatch;
 }
 
 const CaseOnlyInputRootContext = struct {
@@ -1699,6 +1740,7 @@ fn alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
     mismatch: CaseOnlyInputFileMismatch,
     chain: []const ts_diagnostics.ChainEntry,
     related: []const ts_diagnostics.Related,
+    format: struct { pretty: bool = false, color: bool = false },
 ) ![]u8 {
     const message = try alreadyIncludedFileNameDiffersOnlyInCasingMessage(gpa, mismatch.file_name, mismatch.existing_file_name);
     defer gpa.free(message);
@@ -1714,11 +1756,13 @@ fn alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
         .chain = chain,
         .related = related,
     };
-    return ts_diagnostics.formatDefault(gpa, diag);
+    return if (format.pretty)
+        ts_diagnostics.formatPretty(gpa, diag, null, format.color)
+    else
+        ts_diagnostics.formatDefault(gpa, diag);
 }
 
-fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, input_files: []const []const u8, root_context: CaseOnlyInputRootContext) bool {
-    const mismatch = findCaseOnlyInputFileMismatch(input_files) orelse return false;
+fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, mismatch: CaseOnlyInputFileMismatch, root_context: CaseOnlyInputRootContext, pretty: bool, color: bool) void {
     var chain_top_buf: [1]ts_diagnostics.ChainEntry = undefined;
     var chain_child_buf: [1]ts_diagnostics.ChainEntry = undefined;
     var owned_chain_child_message: ?[]u8 = null;
@@ -1726,10 +1770,9 @@ fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, input_files: []con
     const chain = caseOnlyInputReasonChain(gpa, root_context, &chain_top_buf, &chain_child_buf, &owned_chain_child_message) catch &.{};
     var related_buf: [2]ts_diagnostics.Related = undefined;
     const related = caseOnlyInputRelatedInfo(root_context, mismatch, &related_buf);
-    const msg = alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(gpa, mismatch, chain, related) catch return true;
+    const msg = alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(gpa, mismatch, chain, related, .{ .pretty = pretty, .color = color }) catch return;
     defer gpa.free(msg);
     printStdout("{s}\n", .{msg});
-    return true;
 }
 
 /// How a root (input) file was specified, for `--explainFiles`.
@@ -3766,6 +3809,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         var parse_ctx: ts_cli.ParseContext = .{};
         opts = ts_cli.parseArgsCtx(gpa, argv.items, &parse_ctx) catch |err| {
             switch (err) {
+                error.UnknownFlag => {
+                    const message = ts_cli.unknownCompilerOptionDiagnostic(gpa, parse_ctx.unknown_option) catch
+                        std.process.exit(@backingInt(ts_cli.ExitCode.internal_error));
+                    defer gpa.free(message);
+                    printStdout("{s}\n", .{message});
+                },
                 // TS6044: a non-boolean flag (e.g. `--outDir`) was the last
                 // argument with no value following it.
                 error.MissingValue => {
@@ -4000,7 +4049,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     }
 
     const config_pretty: ?bool = if (loaded_cfg) |c| c.compiler_options.pretty else null;
-    const pretty = opts.pretty orelse config_pretty orelse default_pretty;
+    // The diagnostic reporter uses command-line/TTY mode; the summary
+    // independently honors the project's effective pretty setting.
+    const pretty = opts.pretty orelse default_pretty;
+    const summary_pretty = opts.pretty orelse config_pretty orelse default_pretty;
     const diagnostic_color = pretty;
 
     // Determine the file list. Precedence:
@@ -4112,10 +4164,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     if (loaded_cfg) |cfg_ptr| {
         const want_buildinfo = cfg_ptr.compiler_options.incremental orelse false;
         if (want_buildinfo) {
-            const out_dir_for_read: ?[]const u8 = opts.out_dir orelse blk: {
-                if (cfg_ptr.compiler_options.out_dir) |d| break :blk d;
-                break :blk null;
-            };
+            const out_dir_for_read = try resolveOutputDirectory(
+                cfg_arena.allocator(),
+                cfg_ptr.file_path,
+                cfg_ptr.compiler_options.out_dir,
+                opts.out_dir,
+            );
             const bi_path: ?[]u8 = blk: {
                 if (cfg_ptr.compiler_options.ts_buildinfo_file) |p| break :blk gpa.dupe(u8, p) catch null;
                 break :blk if (out_dir_for_read) |od|
@@ -4194,7 +4248,13 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
         break :blk .{};
     };
-    if (force_consistent_casing and reportCaseOnlyInputFileDiagnostics(gpa, input_files.items, case_only_root_context)) std.process.exit(1);
+    const case_only_mismatch = try prepareCaseOnlyInputFiles(gpa, resolver_fs.fs(), input_files.items);
+    if (force_consistent_casing) {
+        if (case_only_mismatch) |mismatch| {
+            reportCaseOnlyInputFileDiagnostics(gpa, mismatch, case_only_root_context, pretty, diagnostic_color);
+            std.process.exit(1);
+        }
+    }
 
     const allow_js: bool = blk: {
         if (loaded_cfg) |c| break :blk tsconfig_mod.effectiveAllowJs(c.compiler_options);
@@ -4401,10 +4461,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // admitted program and returns, even though that mode never writes a
     // file. Resolve the paths here so both list-only and ordinary compiles
     // share one verification pass.
-    const out_dir: ?[]const u8 = opts.out_dir orelse blk: {
-        if (loaded_cfg) |c| if (c.compiler_options.out_dir) |d| break :blk d;
-        break :blk null;
-    };
+    const out_dir = try resolveOutputDirectory(
+        cfg_arena.allocator(),
+        if (loaded_cfg) |c| c.file_path else "",
+        if (loaded_cfg) |c| c.compiler_options.out_dir else null,
+        opts.out_dir,
+    );
     const emit_dts: bool = blk: {
         if (opts.declaration) |d| break :blk d;
         if (loaded_cfg) |c| break :blk (c.compiler_options.declaration orelse false) or (c.compiler_options.composite orelse false);
@@ -4414,10 +4476,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         if (loaded_cfg) |c| break :blk c.compiler_options.emit_declaration_only orelse false;
         break :blk false;
     });
-    const declaration_dir: ?[]const u8 = opts.declaration_dir orelse blk: {
-        if (loaded_cfg) |c| if (c.compiler_options.declaration_dir) |d| break :blk d;
-        break :blk out_dir;
-    };
+    const declaration_dir = (try resolveOutputDirectory(
+        cfg_arena.allocator(),
+        if (loaded_cfg) |c| c.file_path else "",
+        if (loaded_cfg) |c| c.compiler_options.declaration_dir else null,
+        opts.declaration_dir,
+    )) orelse out_dir;
     var blocked_outputs: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (blocked_outputs.items) |path| gpa.free(path);
@@ -4455,7 +4519,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
         if (opts.list_files_only) {
             reportErrorSummary(
-                pretty,
+                summary_pretty,
                 stream_error_count,
                 stream_files_with_errors,
                 stream_first_error_file,
@@ -4479,7 +4543,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         reportWatchErrorStatus(stream_error_count);
     } else {
         reportErrorSummary(
-            pretty,
+            summary_pretty,
             stream_error_count,
             stream_files_with_errors,
             stream_first_error_file,
@@ -4530,11 +4594,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // this loop only handles JS / .d.ts emission. The streaming
     // any-errors flag flows into the final exit-code decision.
     const any_errors = any_errors_streaming;
-    // TypeScript's whole-program `--noEmit` path calls `emitBuildInfo`, whose
-    // result is not marked emitSkipped merely because ordinary JS/d.ts output
-    // was disabled. Diagnostics therefore exit 2 unless an actual emit block
-    // was reported (the `--listFilesOnly` path exits separately above).
-    _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
+    // Preserve the actual ordinary-output result for the diagnostic status.
+    // The reference exits 1 when no JS/d.ts output is generated, including
+    // --noEmit, and 2 when diagnostics accompany generated output.
+    const emit_skipped = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
 
     // §4.A.12 — write `.tsbuildinfo` when `compilerOptions.incremental: true`.
     if (loaded_cfg) |cfg_ptr| {
@@ -4739,7 +4802,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         const status = if (reported_command_line_errors)
             ts_cli.ExitCode.config_error
         else
-            ts_cli.diagnosticsExitCode(output_collision_count != 0);
+            ts_cli.diagnosticsExitCode(emit_skipped);
         std.process.exit(@backingInt(status));
     }
 }
@@ -4751,6 +4814,8 @@ fn renderDeclarationOutput(gpa: std.mem.Allocator, compilation: *const ts_driver
     return emitter.toOwnedSlice();
 }
 
+/// Return whether any eligible output was skipped, independently of whether
+/// another output was written. A program with no selected outputs skips none.
 fn emitProgramOutputs(
     gpa: std.mem.Allocator,
     program: *const ts_program.Program,
@@ -4763,11 +4828,14 @@ fn emitProgramOutputs(
     emit_decl_map: bool,
     blocked_outputs: []const []const u8,
 ) !bool {
-    var outputs_generated = false;
+    var emit_skipped = false;
     for (program.files.items) |f| {
         if (!sourceFileMayBeEmittedByProject(f) or f.redirect_target != null) continue;
         const c = f.compilation orelse continue;
-        if (compile_opts.no_emit) continue;
+        if (compile_opts.no_emit) {
+            emit_skipped = emit_skipped or emit_js or emit_dts;
+            continue;
+        }
         if (emit_js) {
             const out_path = try computeOutPath(gpa, f.path, out_dir, ".js");
             defer gpa.free(out_path);
@@ -4813,12 +4881,13 @@ fn emitProgramOutputs(
 
                 const js_bytes: []const u8 = sm_owned_js orelse c.js;
                 writeOrDie(gpa, out_path, js_bytes);
-                outputs_generated = true;
                 if (emit_source_map) {
                     const map_bytes: []const u8 = sm_owned_map orelse "{}";
                     const map_path = sm_map_path_owned.?;
                     writeOrDie(gpa, map_path, map_bytes);
                 }
+            } else {
+                emit_skipped = true;
             }
         }
         if (emit_dts) {
@@ -4829,9 +4898,11 @@ fn emitProgramOutputs(
             defer gpa.free(dts_bytes);
             const dts_path = try computeOutPath(gpa, f.path, declaration_dir, ".d.ts");
             defer gpa.free(dts_path);
-            if (pathInList(blocked_outputs, dts_path)) continue;
+            if (pathInList(blocked_outputs, dts_path)) {
+                emit_skipped = true;
+                continue;
+            }
             writeOrDie(gpa, dts_path, dts_bytes);
-            outputs_generated = true;
 
             // §4.A.x — when `declarationMap` is on, write a parallel
             // `.d.ts.map` next to the `.d.ts`. v0 emits Source Map V3
@@ -4859,7 +4930,7 @@ fn emitProgramOutputs(
         }
     }
 
-    return outputs_generated;
+    return emit_skipped;
 }
 
 fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
@@ -7865,17 +7936,21 @@ test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {
 }
 
 test "tsc_main: TS1261 reports input files that differ only by casing" {
-    const exact = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/foo.ts" };
-    try std.testing.expect(findCaseOnlyInputFileMismatch(&exact) == null);
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer fs.deinit();
+    try fs.addFile("/repo/src/foo.ts", "export {};");
+    try fs.addFile("/repo/src/Foo.ts", "export {};");
+    var exact = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/foo.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &exact)) == null);
 
-    const mismatch = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/Foo.ts" };
-    const found = findCaseOnlyInputFileMismatch(&mismatch) orelse return error.TestExpectedSome;
+    var mismatch = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/Foo.ts" };
+    const found = (try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &mismatch)) orelse return error.TestExpectedSome;
     try std.testing.expectEqualStrings("/repo/src/Foo.ts", found.file_name);
     try std.testing.expectEqualStrings("/repo/src/foo.ts", found.existing_file_name);
     try std.testing.expectEqual(@as(usize, 1), found.file_index);
     try std.testing.expectEqual(@as(usize, 0), found.existing_file_index);
 
-    const msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, found, &.{}, &.{});
+    const msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, found, &.{}, &.{}, .{});
     defer std.testing.allocator.free(msg);
     try std.testing.expectEqualStrings(
         "error TS1261: Already included file name '/repo/src/Foo.ts' differs from file name '/repo/src/foo.ts' only in casing.",
@@ -7920,11 +7995,17 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
         .config_source = config_source,
         .specs = &files,
     }, &chain_top_buf, &chain_child_buf, &owned_chain_child_message);
-    const files_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related);
+    const files_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related, .{ .pretty = true });
     defer std.testing.allocator.free(files_msg);
     try std.testing.expect(std.mem.indexOf(u8, files_msg, "\n  The file is in the program because:\n    Part of 'files' list in tsconfig.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,13): File is matched by 'files' list specified here.") != null);
     try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,27): File is matched by 'files' list specified here.") != null);
+
+    const plain_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related, .{});
+    defer std.testing.allocator.free(plain_msg);
+    try std.testing.expect(std.mem.indexOf(u8, plain_msg, "Part of 'files' list in tsconfig.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain_msg, "/repo/tsconfig.json(2,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain_msg, "File is matched by 'files' list specified here.") == null);
 
     const include = [_][]const u8{"src/**/*"};
     var include_related_buf: [2]ts_diagnostics.Related = undefined;
@@ -9499,4 +9580,119 @@ test "tsc_main: resolver JSON policy preserves configured false and resolution d
         cfg.compiler_options.resolve_json_module = false;
         try std.testing.expect(!resolverConfigFromConfig(arena.allocator(), cfg, null).resolve_json);
     }
+}
+
+fn testCaseOnlyRootAliasAllocations(allocator: std.mem.Allocator) !void {
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer fs.deinit();
+    try fs.addFile("/repo/src/Foo.ts", "export const value = 1;");
+    try fs.addFile("/repo/src/FOO.ts", "export const value = 1;");
+    try fs.addRealPath("/repo/src/Foo.ts", "/repo/src/foo.ts");
+    try fs.addRealPath("/repo/src/FOO.ts", "/repo/src/foo.ts");
+    var roots = [_][]const u8{ "/repo/src/Foo.ts", "/repo/src/FOO.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(allocator, fs.fs(), &roots)) == null);
+    try std.testing.expectEqualStrings("/repo/src/FOO.ts", roots[0]);
+    try std.testing.expectEqualStrings(roots[0], roots[1]);
+}
+
+test "tsc_main: case-only root aliases use filesystem identity before casing diagnostics" {
+    try testCaseOnlyRootAliasAllocations(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testCaseOnlyRootAliasAllocations, .{});
+}
+
+test "tsc_main: missing case-only roots retain ordinary root diagnostics" {
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer fs.deinit();
+    try fs.addFile("/repo/src/foo.ts", "export {};");
+    var roots = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/Foo.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &roots)) == null);
+    try std.testing.expectEqualStrings("/repo/src/Foo.ts", roots[1]);
+}
+
+fn caseRootGroupFileSystem() !ts_resolver.VirtualFs {
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    errdefer fs.deinit();
+    for ([_][]const u8{ "/repo/Foo.ts", "/repo/FOO.ts", "/repo/foo.ts", "/shared/actual.ts" }) |path| {
+        try fs.addFile(path, "export const value = 1;");
+    }
+    try fs.addRealPath("/repo/Foo.ts", "/shared/actual.ts");
+    try fs.addRealPath("/repo/FOO.ts", "/shared/actual.ts");
+    return fs;
+}
+
+fn testThreeCaseRootAliasAllocations(allocator: std.mem.Allocator) !void {
+    var fs = try caseRootGroupFileSystem();
+    defer fs.deinit();
+    try fs.addRealPath("/repo/foo.ts", "/shared/actual.ts");
+    var roots = [_][]const u8{ "/repo/Foo.ts", "/repo/FOO.ts", "/repo/foo.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(allocator, fs.fs(), &roots)) == null);
+    for (roots) |path| try std.testing.expectEqualStrings("/repo/foo.ts", path);
+}
+
+test "tsc_main: three case aliases retain one authored input across every allocation failure" {
+    try testThreeCaseRootAliasAllocations(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testThreeCaseRootAliasAllocations, .{});
+}
+
+test "tsc_main: case alias groups retain distinct authored roots in either order" {
+    var fs = try caseRootGroupFileSystem();
+    defer fs.deinit();
+    for ([_][3][]const u8{
+        .{ "/repo/Foo.ts", "/repo/FOO.ts", "/repo/foo.ts" },
+        .{ "/repo/foo.ts", "/repo/Foo.ts", "/repo/FOO.ts" },
+    }, 0..) |seed, order| {
+        var roots = seed;
+        const mismatch = (try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &roots)) orelse return error.TestExpectedSome;
+        const expected_index: usize = if (order == 0) 2 else 1;
+        try std.testing.expectEqual(expected_index, mismatch.file_index);
+        try std.testing.expectEqual(@as(usize, 0), mismatch.existing_file_index);
+        try std.testing.expectEqualStrings(seed[expected_index], mismatch.file_name);
+        try std.testing.expectEqualStrings(seed[0], mismatch.existing_file_name);
+        for (roots, seed) |normalized, authored| {
+            try std.testing.expectEqualStrings(if (std.mem.eql(u8, authored, "/repo/foo.ts")) authored else "/repo/FOO.ts", normalized);
+        }
+    }
+}
+
+test "tsc_main: exact duplicates after case alias normalization reuse retained input" {
+    var fs = try caseRootGroupFileSystem();
+    defer fs.deinit();
+    var roots = [_][]const u8{ "/repo/Foo.ts", "/repo/FOO.ts", "/repo/Foo.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &roots)) == null);
+    for (roots) |path| try std.testing.expectEqualStrings("/repo/Foo.ts", path);
+}
+
+test "tsc_main: case aliases retain authored import context instead of symlink target" {
+    var fs = try caseRootGroupFileSystem();
+    defer fs.deinit();
+    var roots = [_][]const u8{ "/repo/Foo.ts", "/repo/FOO.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &roots)) == null);
+    try std.testing.expectEqualStrings("/repo", std.fs.path.dirname(roots[0]).?);
+    try std.testing.expectEqualStrings("/repo/FOO.ts", roots[0]);
+    try std.testing.expectEqualStrings(roots[0], roots[1]);
+}
+
+test "tsc_main: duplicate case roots retain the latest authored spelling in either order" {
+    var fs = try caseRootGroupFileSystem();
+    defer fs.deinit();
+    for ([_][2][]const u8{
+        .{ "/repo/Foo.ts", "/repo/FOO.ts" },
+        .{ "/repo/FOO.ts", "/repo/Foo.ts" },
+    }) |seed| {
+        var roots = seed;
+        try std.testing.expect((try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &roots)) == null);
+        for (roots) |path| try std.testing.expectEqualStrings(seed[1], path);
+    }
+}
+
+test "tsc_main: output directories retain project and command-line path origins" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("/repo/project/out", (try resolveOutputDirectory(a, "/repo/project/tsconfig.json", "out", null)).?);
+    try std.testing.expectEqualStrings("/repo/types", (try resolveOutputDirectory(a, "/repo/project/tsconfig.json", "../types", null)).?);
+    try std.testing.expectEqualStrings("/shared/output", (try resolveOutputDirectory(a, "/repo/project/tsconfig.json", "/shared/output", null)).?);
+    try std.testing.expectEqualStrings("caller-output", (try resolveOutputDirectory(a, "/repo/project/tsconfig.json", "out", "caller-output")).?);
+    try std.testing.expectEqualStrings("project/out", (try resolveOutputDirectory(a, "project/tsconfig.json", "out", null)).?);
+    try std.testing.expect((try resolveOutputDirectory(a, "/repo/project/tsconfig.json", null, null)) == null);
 }

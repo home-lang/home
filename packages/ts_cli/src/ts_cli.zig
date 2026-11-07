@@ -76,10 +76,10 @@ pub const ExitCode = enum(u8) {
     internal_error = 3,
 };
 
-/// Match the reference emit-skipped result, rather than counting written
-/// files. `--listFilesOnly` and blocked emit use status 1 for program errors;
-/// whole-program `--noEmit` normally reports `emitSkipped = false` and uses
-/// status 2. Configuration failures are classified separately by their caller.
+/// Match the reference emit-skipped result: program diagnostics use status 1
+/// when output is skipped and 2 when ordinary output is generated. Callers
+/// carry the emission result, including --noEmit and blocked output, rather
+/// than guessing from the presence of diagnostics alone.
 pub fn diagnosticsExitCode(emit_skipped: bool) ExitCode {
     return if (emit_skipped) .type_errors else .config_error;
 }
@@ -327,6 +327,7 @@ pub const ParseError = error{
 /// omitted (canonical tsc name, no leading dashes); it is only
 /// meaningful when `parseArgs` returns the corresponding parse error.
 pub const ParseContext = struct {
+    unknown_option: []const u8 = "",
     missing_value_option: []const u8 = "",
     config_only_option: []const u8 = "",
     enum_option: []const u8 = "",
@@ -559,13 +560,20 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
         } else if (watchOptionFromFlag(a)) |watch| {
             try parseWatchOptionArg(args, &i, watch, ctx);
         } else if (a.len > 0 and a[0] == '-') {
-            // Unknown flag — silently accept for forward-compat per
-            // TS_PARITY_PLAN. A future cycle promotes selected
-            // unknown flags to errors.
-            // Skip a value if `--flag value` style.
-            if (i + 1 < args.len and args[i + 1].len > 0 and args[i + 1][0] != '-') {
-                // Heuristic: assume it consumes the next arg.
-                // Real impl will use a flag-arity table.
+            const name = if (std.mem.startsWith(u8, a, "--")) a[2..] else a[1..];
+            const declaration = compilerOptionDeclaration(name) orelse {
+                ctx.unknown_option = a;
+                return error.UnknownFlag;
+            };
+            // Options not yet represented by typed fields retain their
+            // existing behavior, but the registry owns their argument arity.
+            if (std.mem.eql(u8, declaration.kind, "boolean")) {
+                _ = parseOptionalBooleanArg(args, &i);
+            } else {
+                if (i + 1 >= args.len) {
+                    ctx.missing_value_option = declaration.name;
+                    return error.MissingValue;
+                }
                 i += 1;
             }
         } else {
@@ -985,6 +993,19 @@ fn valueCandidateLabelCode(opt: options_table.OptionDecl) ?u32 {
         return one_of_label_code;
     }
     return null;
+}
+
+fn compilerOptionDeclaration(name: []const u8) ?*const options_table.OptionDecl {
+    for (&all_options) |*option| {
+        if (std.ascii.eqlIgnoreCase(option.name, name) or
+            (option.short.len != 0 and std.ascii.eqlIgnoreCase(option.short, name))) return option;
+    }
+    return null;
+}
+
+/// TS5023 uses the authored flag, including its leading dashes.
+pub fn unknownCompilerOptionDiagnostic(gpa: std.mem.Allocator, option: []const u8) ![]u8 {
+    return std.fmt.allocPrint(gpa, "error TS5023: Unknown compiler option '{s}'.", .{option});
 }
 
 /// TS6044: a non-boolean compiler flag was given on the command line
@@ -2712,4 +2733,40 @@ test "CLI: JSON resolution boolean aliases override config and direct options" {
             try T.expectEqual(enabled, ts_driver.effectiveResolveJsonModule(direct));
         }
     }
+}
+
+test "parseArgsCtx: unknown options fail before consuming an input file" {
+    var ctx: ParseContext = .{};
+    const result = parseArgsCtx(T.allocator, &.{ "--invalidRootControlOption", "main.ts" }, &ctx) catch |err| {
+        try T.expectEqual(error.UnknownFlag, err);
+        try T.expectEqualStrings("--invalidRootControlOption", ctx.unknown_option);
+        return;
+    };
+    defer T.allocator.free(result.files);
+    return error.TestExpectedUnknownFlag;
+}
+
+test "parseArgs: known boolean metadata does not consume a positional file" {
+    for ([_][]const []const u8{
+        &.{ "--extendedDiagnostics", "main.ts" },
+        &.{ "--extendedDiagnostics", "false", "main.ts" },
+        &.{ "--locale", "en", "main.ts" },
+    }) |args| {
+        const result = try parseArgs(T.allocator, args);
+        defer T.allocator.free(result.files);
+        try T.expectEqual(@as(usize, 1), result.files.len);
+        try T.expectEqualStrings("main.ts", result.files[0]);
+    }
+}
+
+test "parseArgsCtx: unknown flag after positional files releases partial argument storage" {
+    var ctx: ParseContext = .{};
+    try T.expectError(error.UnknownFlag, parseArgsCtx(T.allocator, &.{ "main.ts", "--invalidRootControlOption" }, &ctx));
+    try T.expectEqualStrings("--invalidRootControlOption", ctx.unknown_option);
+}
+
+test "unknownCompilerOptionDiagnostic: TS5023 retains authored option spelling" {
+    const message = try unknownCompilerOptionDiagnostic(T.allocator, "--invalidRootControlOption");
+    defer T.allocator.free(message);
+    try T.expectEqualStrings("error TS5023: Unknown compiler option '--invalidRootControlOption'.", message);
 }
