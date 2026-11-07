@@ -61,10 +61,10 @@ fn isDirectory(path: []const u8) bool {
 }
 
 fn resolvedFile(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
-    const resolved = std.fs.path.resolve(allocator, &.{path}) catch return null;
-    if (isFile(resolved)) return resolved;
-    allocator.free(resolved);
-    return null;
+    if (!isFile(path)) return null;
+    const canonical = std.Io.Dir.cwd().realPathFileAlloc(g_io, path, allocator) catch return null;
+    defer allocator.free(canonical);
+    return allocator.dupe(u8, canonical) catch null;
 }
 
 fn tryWithExtensions(allocator: std.mem.Allocator, base: []const u8) ?[]u8 {
@@ -166,21 +166,36 @@ fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_pat
     return null;
 }
 
-fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8) ?[]u8 {
+fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8, meta_binding: *?[]u8) ?[]u8 {
+    meta_binding.* = null;
     if (std.mem.eql(u8, std.fs.path.extension(path), ".json"))
         return allocator.dupe(u8, source) catch null;
     const is_tsx = std.mem.endsWith(u8, path, ".tsx");
-    var compilation = ts_driver.compileSource(allocator, source, .{
+    var options: ts_driver.CompileOptions = .{
         .continue_on_error = false,
         .is_tsx = is_tsx,
         .jsx_option_present = is_tsx,
         .importer_path = path,
         .emit = .{ .module_kind = .commonjs },
-    }) catch return null;
+    };
+    var compilation = ts_driver.prepareSource(allocator, source, options) catch return null;
     defer {
         compilation.deinit();
         allocator.destroy(compilation);
     }
+    // Choose from parsed identifiers, including escaped and nested bindings, so
+    // host metadata remains lexical even when a function shadows `module`.
+    var buffer: [80]u8 = undefined;
+    var suffix: usize = 0;
+    while (true) : (suffix += 1) {
+        const name = std.fmt.bufPrint(&buffer, "__home_import_meta_{d}", .{suffix}) catch return null;
+        if (compilation.interner.lookup(name) == null) {
+            meta_binding.* = allocator.dupe(u8, name) catch return null;
+            break;
+        }
+    }
+    options.emit.import_meta_binding = meta_binding.*;
+    ts_driver.checkPreparedSource(compilation, options) catch return null;
     return allocator.dupe(u8, compilation.js) catch null;
 }
 
@@ -208,12 +223,15 @@ fn resolveModuleNative(
     const source = std.Io.Dir.cwd().readFileAlloc(g_io, path, allocator, std.Io.Limit.unlimited) catch
         return extern_fns.JSValueMakeNull(c);
     defer allocator.free(source);
-    const emitted = emitModule(allocator, source, path) orelse return extern_fns.JSValueMakeNull(c);
+    var meta_binding: ?[]u8 = null;
+    defer if (meta_binding) |name| allocator.free(name);
+    const emitted = emitModule(allocator, source, path, &meta_binding) orelse return extern_fns.JSValueMakeNull(c);
     defer allocator.free(emitted);
 
     const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
     setProperty(c, object, "path", stringValue(c, path));
     setProperty(c, object, "source", stringValue(c, emitted));
+    if (meta_binding) |name| setProperty(c, object, "metaBinding", stringValue(c, name));
     setProperty(c, object, "format", stringValue(c, if (std.mem.eql(u8, std.fs.path.extension(path), ".json")) "json" else "commonjs"));
     return @ptrCast(object);
 }
@@ -223,6 +241,7 @@ const install_glue =
     \\  var resolveNative = globalThis.__home_tool_resolve_module;
     \\  var cache = Object.create(null);
     \\  var mainModule = null;
+    \\  function fileURL(path) { return "file://" + path.split("/").map(encodeURIComponent).join("/"); }
     \\  function load(specifier, parentPath, asMain) {
     \\    var payload = resolveNative(String(specifier), String(parentPath || ""));
     \\    if (payload === null) throw new Error("cannot resolve module " + specifier + (parentPath ? " from " + parentPath : ""));
@@ -246,7 +265,21 @@ const install_glue =
     \\    localRequire.cache = cache;
     \\    Object.defineProperty(localRequire, "main", { get: function() { return mainModule; } });
     \\    module.require = localRequire;
-    \\    var wrapper = (0, eval)("(function(exports, require, module, __filename, __dirname) {\n" + payload.source + "\n})");
+    // ECMA-262 import.meta Evaluation creates one extensible, null-prototype
+    // object per module. The host supplies real file metadata and main identity.
+    \\    var metadata = Object.create(null);
+    \\    metadata.url = fileURL(payload.path);
+    \\    metadata.path = payload.path;
+    \\    metadata.dir = directory;
+    \\    metadata.file = payload.path.slice(slash + 1);
+    \\    metadata.dirname = directory;
+    \\    metadata.filename = payload.path;
+    \\    metadata.env = process.env;
+    \\    metadata.main = !!asMain;
+    \\    metadata.require = localRequire;
+    // Capture metadata outside the CommonJS wrapper so its five arguments keep
+    // the same observable shape as modules without import.meta.
+    \\    var wrapper = (0, eval)("(function(" + payload.metaBinding + ") { return function(exports, require, module, __filename, __dirname) {\n" + payload.source + "\n}; })")(metadata);
     \\    wrapper(module.exports, localRequire, module, payload.path, directory);
     \\    module.loaded = true;
     \\    return module.exports;
