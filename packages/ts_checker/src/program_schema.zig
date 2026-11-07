@@ -4,7 +4,7 @@ const std = @import("std");
 const types = @import("types.zig");
 pub const Primitive = types.Primitive;
 /// Source projectors decode raw parser text before creating semantic strings.
-pub const appendCookedStringText = @import("string_literal.zig").appendCookedStringText;
+pub const appendCookedStringText = @import("ts_lexer").appendCookedStringText;
 
 pub const Parameter = struct {
     name: []const u8,
@@ -144,6 +144,7 @@ pub const Expression = union(enum) {
     builtin_reference: BuiltinReference,
     parameter: *const Parameter,
     string: []const u8,
+    template_literal: struct { texts: []const []const u8, types: []const *const Expression },
     number: f64,
     boolean: bool,
     /// Canonical source-qualified identity of a unique symbol. This is
@@ -337,6 +338,7 @@ pub const Schema = struct {
                 .unsupported => if (!allow_opaque) return false,
                 .opaque_leaf => if (!allow_opaque) return false,
                 .primitive, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol, .polymorphic_this => {},
+                .template_literal => |template| try pending.appendSlice(gpa, template.types),
                 .builtin_reference => |reference| try pending.appendSlice(gpa, reference.arguments),
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {

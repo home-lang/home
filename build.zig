@@ -4009,6 +4009,16 @@ pub fn build(b: *std.Build) void {
     const run_ts_lexer_tests = b.addRunArtifact(ts_lexer_tests);
     dependOnTest(test_step, &run_ts_lexer_tests.step, test_filter, "ts_lexer");
 
+    const ts_source_edit_pkg = createPackage(b, "packages/ts_parser/src/source_edit.zig", target, optimize, zig_test_framework);
+    ts_source_edit_pkg.addImport("ts_lexer", ts_lexer_pkg);
+    ts_source_edit_pkg.addImport("hir", hir_pkg);
+    ts_source_edit_pkg.addImport("string_interner", string_interner_pkg);
+    const ts_source_edit_tests = b.addTest(.{ .root_module = ts_source_edit_pkg, .filters = &.{"source edit:"} });
+    const ts_source_edit_step = b.step("test:ts-source-edit", "Preserve authored TypeScript config bytes during property edits");
+    const run_ts_source_edit_tests = b.addRunArtifact(ts_source_edit_tests);
+    ts_source_edit_step.dependOn(&run_ts_source_edit_tests.step);
+    dependOnTest(test_step, &run_ts_source_edit_tests.step, test_filter, "ts_parser_source_edit");
+
     const ts_parser_tests = b.addTest(.{ .root_module = ts_parser_pkg });
     const run_ts_parser_tests = b.addRunArtifact(ts_parser_tests);
     dependOnTest(test_step, &run_ts_parser_tests.step, test_filter, "ts_parser");

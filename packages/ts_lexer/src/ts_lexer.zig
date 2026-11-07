@@ -6,6 +6,10 @@ const scanner = @import("scanner.zig");
 const tk = @import("token.zig");
 const keywords_mod = @import("keywords.zig");
 
+pub const diagnostics = @import("diagnostics.zig");
+pub const string_literal = @import("string_literal.zig");
+pub const appendCookedStringText = string_literal.appendCookedStringText;
+
 pub const Scanner = scanner.Scanner;
 pub const ScanError = scanner.ScanError;
 pub const Diagnostic = scanner.Diagnostic;
@@ -16,6 +20,8 @@ pub const Span = tk.Span;
 pub const lookupKeyword = keywords_mod.lookup;
 
 test {
+    _ = diagnostics;
+    _ = string_literal;
     _ = scanner;
     _ = tk;
     _ = keywords_mod;

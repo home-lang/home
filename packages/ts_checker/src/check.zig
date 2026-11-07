@@ -34,7 +34,7 @@ const lower = @import("lower.zig");
 const lib = @import("lib.zig");
 const unicode_case = @import("unicode_case.zig");
 const source_markers_mod = @import("source_markers.zig");
-const string_literal_text = @import("string_literal.zig");
+const string_literal_text = @import("ts_lexer").string_literal;
 const string_interner = @import("string_interner");
 const binder_mod = @import("binder");
 
@@ -3349,6 +3349,7 @@ const PatternIndexSignature = struct {
     key_type: TypeId,
     value_type: TypeId,
     decl_node: NodeId,
+    is_readonly: bool = false,
 };
 
 const IndexSignatureDuplicateState = struct {
@@ -3390,9 +3391,10 @@ const ReadonlyIndexDomains = struct {
     string: bool = true,
     number: bool = true,
     symbol: bool = true,
+    pattern: bool = false,
 
     fn any(self: @This()) bool {
-        return self.string or self.number or self.symbol;
+        return self.string or self.number or self.symbol or self.pattern;
     }
 };
 
@@ -6746,6 +6748,16 @@ pub const Checker = struct {
             var readonly_indexes = source.readonly_index_types.iterator();
             while (readonly_indexes.next()) |entry| {
                 try self.readonly_index_types.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            var pattern_indexes = source.pattern_index_signatures.iterator();
+            while (pattern_indexes.next()) |entry| {
+                if (self.pattern_index_signatures.contains(entry.key_ptr.*)) continue;
+                try self.registerPatternIndexSignatures(entry.key_ptr.*, entry.value_ptr.*);
+                // Relocated type identities are valid in this checker, while
+                // declaration nodes still belong to the exporting source HIR.
+                for (self.pattern_index_signatures.get(entry.key_ptr.*).?) |*pattern| {
+                    pattern.decl_node = hir_mod.none_node_id;
+                }
             }
             inline for (.{ "polymorphic_this_boundaries", "generic_polymorphic_this_types", "implicit_index_excluded_types", "tuple_origin_types", "array_origin_types", "normalized_object_literal_unions", "infer_type_parameters" }) |name| {
                 var entries = @field(source, name).iterator();
@@ -51818,10 +51830,10 @@ pub const Checker = struct {
         }
         var obj_t = self.hir.typeOf(obj_node);
         if (obj_t == types.Primitive.none) return;
-        if (!self.typeHasReadonlyIndexSignatureForTarget(obj_t, target) and self.hir.kindOf(obj_node) == .identifier) {
+        if (!(try self.typeHasReadonlyIndexSignatureForTarget(obj_t, target)) and self.hir.kindOf(obj_node) == .identifier) {
             obj_t = self.typeOfIdentifierDeclared(obj_node);
         }
-        if (!self.typeHasReadonlyIndexSignatureForTarget(obj_t, target)) return;
+        if (!(try self.typeHasReadonlyIndexSignatureForTarget(obj_t, target))) return;
         // A concrete property takes precedence over an index signature for
         // both dot access and a literal string key. Its own readonly bit is
         // checked separately; an index-only key still gets TS2542.
@@ -51830,7 +51842,7 @@ pub const Checker = struct {
             .element_access => blk: {
                 const index = hir_mod.elementOf(self.hir, target).index;
                 if (self.hir.kindOf(index) == .literal_string)
-                    break :blk hir_mod.literalStringOf(self.hir, index).value;
+                    break :blk try self.literalStringCookedId(index);
                 break :blk null;
             },
             else => null,
@@ -51911,8 +51923,9 @@ pub const Checker = struct {
     /// strings do not. A number falls back to a string index if no number
     /// index exists. This is separate from the broad "has any readonly
     /// index" query used by type relations and inheritance.
-    fn typeHasReadonlyIndexSignatureForTarget(self: *Checker, t: TypeId, target: NodeId) bool {
+    fn typeHasReadonlyIndexSignatureForTarget(self: *Checker, t: TypeId, target: NodeId) CheckError!bool {
         if (t >= self.interner.pool.typeCount()) return false;
+        if (try self.patternIndexReadonlyForTarget(t, target)) |is_readonly| return is_readonly;
         if (self.readonly_index_types.get(t)) |domains| {
             if (self.hir.kindOf(target) == .member_access) {
                 return self.indexReadonlyForName(t, hir_mod.memberOf(self.hir, target).name);
@@ -51942,13 +51955,13 @@ pub const Checker = struct {
         if (self.typeIsMappedPayloadType(t) and self.interner.mappedPayload(t).readonly == .add) return true;
         if (flags.is_union) {
             for (self.interner.unionMembers(t)) |member| {
-                if (self.typeHasReadonlyIndexSignatureForTarget(member, target)) return true;
+                if (try self.typeHasReadonlyIndexSignatureForTarget(member, target)) return true;
             }
         }
         if (flags.is_intersection) {
             if (self.interner.pool.payloadOf(t) >= self.interner.pool.intersection_payloads.items.len) return false;
             for (self.interner.intersectionMembers(t)) |member| {
-                if (self.typeHasReadonlyIndexSignatureForTarget(member, target)) return true;
+                if (try self.typeHasReadonlyIndexSignatureForTarget(member, target)) return true;
             }
         }
         return false;
@@ -57679,6 +57692,12 @@ pub const Checker = struct {
                 if (self.typeContainsSubstitutionKey(member.type, subs, depth + 1)) return true;
                 if (member.write_type) |write_type| if (self.typeContainsSubstitutionKey(write_type, subs, depth + 1)) return true;
             }
+            if (self.pattern_index_signatures.get(t)) |patterns| {
+                for (patterns) |pattern| {
+                    if (self.typeContainsSubstitutionKey(pattern.key_type, subs, depth + 1) or
+                        self.typeContainsSubstitutionKey(pattern.value_type, subs, depth + 1)) return true;
+                }
+            }
             const indexes = [_]TypeId{
                 self.interner.objectStringIndex(t),
                 self.interner.objectNumberIndex(t),
@@ -57794,6 +57813,7 @@ pub const Checker = struct {
             if (self.readonly_index_types.get(t)) |domains| {
                 try self.readonly_index_types.put(self.gpa, new_obj, domains);
             }
+            try self.substitutePatternIndexSignatures(new_obj, t, subs, visited);
             if (self.array_origin_types.contains(t)) {
                 try self.array_origin_types.put(self.gpa, new_obj, {});
             }
@@ -69084,6 +69104,7 @@ pub const Checker = struct {
                         .key_type = key_t,
                         .value_type = value_t,
                         .decl_node = m,
+                        .is_readonly = ix.is_readonly,
                     });
                 }
                 continue;
@@ -69275,9 +69296,20 @@ pub const Checker = struct {
             const own_string_idx = string_idx;
             const own_number_idx = number_idx;
             const own_symbol_idx = symbol_idx;
+            const own_pattern_count = pattern_indexes.items.len;
             try self.mergeInterfaceExtends(extends, iface_name_for_extends, &iface_members, &string_idx, &number_idx, &symbol_idx);
             for (extends) |extends_node| {
-                const parent_t = self.lowererLowerWithTypeParams(extends_node) catch continue;
+                const parent_t = try self.resolveGenericType(try self.lowererLowerWithTypeParams(extends_node));
+                if (self.pattern_index_signatures.get(parent_t)) |inherited| {
+                    inherited_patterns: for (inherited) |pattern| {
+                        // An explicitly redeclared domain owns its permissions.
+                        // Other inherited domains keep their declaration flags.
+                        for (pattern_indexes.items[0..own_pattern_count]) |own| {
+                            if (own.key_type == pattern.key_type) continue :inherited_patterns;
+                        }
+                        try pattern_indexes.append(self.gpa, pattern);
+                    }
+                }
                 const parent_domains = self.readonly_index_types.get(parent_t) orelse
                     if (self.typeHasReadonlyIndexSignature(parent_t)) ReadonlyIndexDomains{} else continue;
                 if (own_string_idx == types.Primitive.none and self.interner.objectStringIndex(parent_t) != types.Primitive.none)
@@ -75755,8 +75787,7 @@ pub const Checker = struct {
             if (alias_name) |an| try self.alias_lower_in_progress.put(self.gpa, an, {});
             const recursive_placeholder = if (alias_name) |an| blk: {
                 const placeholder = self.type_names.get(an) orelse break :blk types.Primitive.none;
-                if (!self.interner.isDirectTypeParameter(placeholder))
-                {
+                if (!self.interner.isDirectTypeParameter(placeholder)) {
                     break :blk types.Primitive.none;
                 }
                 break :blk placeholder;
@@ -77740,8 +77771,7 @@ pub const Checker = struct {
         var index = start;
         while (index < params.len) : (index += 1) {
             const param = params[index];
-            if (!self.interner.isDirectTypeParameter(param))
-            {
+            if (!self.interner.isDirectTypeParameter(param)) {
                 continue;
             }
             const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param)];
@@ -77858,8 +77888,7 @@ pub const Checker = struct {
         for (params, 0..) |p, i| {
             if (i != 0) try buf.appendSlice(self.gpa, ", ");
             var wrote = false;
-            if (self.interner.isDirectTypeParameter(p))
-            {
+            if (self.interner.isDirectTypeParameter(p)) {
                 const payload_idx = self.interner.pool.payloadOf(p);
                 if (payload_idx < tp_table_len) {
                     const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
@@ -80290,43 +80319,45 @@ pub const Checker = struct {
         const type_parts = hir_mod.templateLiteralTypeTypes(self.hir, type_node);
         if (text_parts.len == 0) return types.Primitive.string_t;
 
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer buf.deinit(self.gpa);
         var text_ids: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer text_ids.deinit(self.gpa);
         var lowered_parts: std.ArrayListUnmanaged(TypeId) = .empty;
         defer lowered_parts.deinit(self.gpa);
-        var all_literal_parts = true;
         for (text_parts, 0..) |text_node, i| {
             if (text_node != hir_mod.none_node_id and self.hir.kindOf(text_node) == .literal_string) {
                 const text_id = try self.literalStringCookedId(text_node);
                 try text_ids.append(self.gpa, text_id);
-                try buf.appendSlice(self.gpa, self.string_interner.get(text_id));
             } else {
                 return types.Primitive.string_t;
             }
             if (i < type_parts.len) {
                 const sub_t = try self.lowererLowerWithTypeParams(type_parts[i]);
                 try lowered_parts.append(self.gpa, sub_t);
-                if (self.stringLiteralValueFromType(sub_t)) |sid| {
-                    try buf.appendSlice(self.gpa, self.string_interner.get(sid));
-                } else {
-                    all_literal_parts = false;
-                }
             }
         }
         if (self.templateLiteralUnionCrossProductTooLarge(lowered_parts.items)) {
             try self.reportOnce(type_node, TsCodes.expression_union_too_complex, "Expression produces a union type that is too complex to represent.");
             return self.recordUnmodeledAny(type_node);
         }
-        if (all_literal_parts) {
-            var canonical: std.ArrayListUnmanaged(u8) = .empty;
-            defer canonical.deinit(self.gpa);
-            try self.appendCanonicalJsStringBytes(buf.items, &canonical);
-            const sid = self.string_interner.intern(canonical.items) catch return error.OutOfMemory;
-            return self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
+        return self.internTemplateLiteralParts(text_ids.items, lowered_parts.items);
+    }
+
+    fn internTemplateLiteralParts(self: *Checker, texts: []const hir_mod.StringId, parts: []const TypeId) CheckError!TypeId {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(self.gpa);
+        for (texts, 0..) |text, index| {
+            try buf.appendSlice(self.gpa, self.string_interner.get(text));
+            if (index < parts.len) {
+                const literal = self.stringLiteralValueFromType(parts[index]) orelse
+                    return self.interner.internTemplateLiteral(texts, parts) catch return error.OutOfMemory;
+                try buf.appendSlice(self.gpa, self.string_interner.get(literal));
+            }
         }
-        return self.interner.internTemplateLiteral(text_ids.items, lowered_parts.items) catch return error.OutOfMemory;
+        var canonical: std.ArrayListUnmanaged(u8) = .empty;
+        defer canonical.deinit(self.gpa);
+        try self.appendCanonicalJsStringBytes(buf.items, &canonical);
+        const sid = self.string_interner.intern(canonical.items) catch return error.OutOfMemory;
+        return self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
     }
 
     /// Lower a type annotation while consulting the current
@@ -80916,6 +80947,7 @@ pub const Checker = struct {
                                 .key_type = key_t,
                                 .value_type = value_t,
                                 .decl_node = m,
+                                .is_readonly = ix.is_readonly,
                             });
                         }
                         continue;
@@ -99185,8 +99217,7 @@ pub const Checker = struct {
 
     fn sourceAssignableToDeferredConditionalBranch(self: *Checker, source_t: TypeId, branch_t: TypeId) CheckError!bool {
         if (source_t == branch_t) return true;
-        if (self.interner.isDirectTypeParameter(branch_t))
-        {
+        if (self.interner.isDirectTypeParameter(branch_t)) {
             return self.interner.isDirectTypeParameter(source_t) and
                 self.sameTypeParameterName(source_t, branch_t);
         }
@@ -117530,6 +117561,17 @@ pub const Checker = struct {
                 );
                 return fresh;
             },
+            .template_literal => |template| {
+                if (template.texts.len != template.types.len + 1) return error.UnsupportedProgramType;
+                const texts = try self.gpa.alloc(hir_mod.StringId, template.texts.len);
+                defer self.gpa.free(texts);
+                for (template.texts, texts) |text, *id| id.* = self.string_interner.intern(text) catch return error.OutOfMemory;
+                const parts = try self.gpa.alloc(TypeId, template.types.len);
+                defer self.gpa.free(parts);
+                for (template.types, parts) |typ, *part| part.* = try self.lowerProgramExpression(typ, declaration, args);
+                if (self.templateLiteralUnionCrossProductTooLarge(parts)) return error.UnsupportedProgramType;
+                return self.internTemplateLiteralParts(texts, parts);
+            },
             .indexed_object => |object| {
                 const members = try self.programExpressionMembers(object.members, declaration, args);
                 defer self.gpa.free(members);
@@ -117538,6 +117580,8 @@ pub const Checker = struct {
                 var symbol_index = types.Primitive.none;
                 var readonly_domains: ReadonlyIndexDomains = .{ .string = false, .number = false, .symbol = false };
                 var index_names: IndexParamNames = .{};
+                var patterns: std.ArrayListUnmanaged(PatternIndexSignature) = .empty;
+                defer patterns.deinit(self.gpa);
                 for (object.indices) |index| {
                     const key = try self.lowerProgramExpression(index.key, declaration, args);
                     const value = try self.lowerProgramExpression(index.value, declaration, args);
@@ -117553,6 +117597,8 @@ pub const Checker = struct {
                         symbol_index = value;
                         readonly_domains.symbol = index.readonly;
                         if (index.name.len > 0) index_names.symbol = self.string_interner.intern(index.name) catch return error.OutOfMemory;
+                    } else if (try self.indexSignatureParameterTypeIsValid(key)) {
+                        try patterns.append(self.gpa, .{ .key_type = key, .value_type = value, .decl_node = hir_mod.none_node_id, .is_readonly = index.readonly });
                     } else {
                         return error.UnsupportedProgramType;
                     }
@@ -117560,6 +117606,7 @@ pub const Checker = struct {
                 const result = try self.interner.internObjectTypeWithIndexAndSymbol(members, string_index, number_index, symbol_index);
                 if (readonly_domains.any()) try self.readonly_index_types.put(self.gpa, result, readonly_domains);
                 try self.registerIndexParamNames(result, index_names);
+                try self.registerPatternIndexSignatures(result, patterns.items);
                 return result;
             },
             .record => |record| {
@@ -130226,8 +130273,7 @@ pub const Checker = struct {
         const defaults_t = try self.lookupObjectMember(static_t, defaults_name);
         if (prop_types_t == null and defaults_t == null) return raw_props_t;
 
-        const effective_raw_props_t = if (self.interner.isDirectTypeParameter(raw_props_t))
-        blk: {
+        const effective_raw_props_t = if (self.interner.isDirectTypeParameter(raw_props_t)) blk: {
             const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(raw_props_t)];
             break :blk if (payload.default != types.Primitive.none) payload.default else raw_props_t;
         } else raw_props_t;
@@ -173504,6 +173550,9 @@ pub const Checker = struct {
                     if (self.member_predicates.get(.{ .receiver_type = current, .member_name = member.name })) |predicate| try pending.append(self.gpa, predicate.target_type);
                 }
                 try pending.appendSlice(self.gpa, &.{ self.interner.objectStringIndex(current), self.interner.objectNumberIndex(current), self.interner.objectSymbolIndex(current) });
+                if (self.pattern_index_signatures.get(current)) |patterns| {
+                    for (patterns) |pattern| try pending.appendSlice(self.gpa, &.{ pattern.key_type, pattern.value_type });
+                }
                 if (self.this_type_markers.get(current)) |marker| try pending.append(self.gpa, marker);
                 if (self.tuple_trailing_rest_types.get(current)) |rest| try pending.append(self.gpa, rest);
                 if (self.tuple_trailing_variadic_types.get(current)) |variadic| try pending.append(self.gpa, variadic);
@@ -173882,6 +173931,7 @@ pub const Checker = struct {
             if (self.readonly_index_types.get(t)) |domains| {
                 try self.readonly_index_types.put(self.gpa, new_obj, domains);
             }
+            try self.substitutePatternIndexSignatures(new_obj, t, subs, null);
             if (self.array_origin_types.contains(t)) {
                 try self.array_origin_types.put(self.gpa, new_obj, {});
             }
@@ -185028,8 +185078,7 @@ pub const Checker = struct {
         const fallbacks = try self.gpa.alloc(TypeId, type_params.len);
         defer self.gpa.free(fallbacks);
         for (type_params, 0..) |param_t, i| {
-            const fallback = if (self.interner.isDirectTypeParameter(param_t))
-            blk: {
+            const fallback = if (self.interner.isDirectTypeParameter(param_t)) blk: {
                 const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
                 break :blk if (payload.default != types.Primitive.none)
                     payload.default
@@ -201856,7 +201905,64 @@ pub const Checker = struct {
         if (self.pattern_index_signatures.contains(t)) return;
         const owned = try self.gpa.dupe(PatternIndexSignature, patterns);
         errdefer self.gpa.free(owned);
-        try self.pattern_index_signatures.put(self.gpa, t, owned);
+        var domains = self.readonly_index_types.get(t) orelse ReadonlyIndexDomains{ .string = false, .number = false, .symbol = false };
+        for (patterns) |pattern| domains.pattern = domains.pattern or pattern.is_readonly;
+        // Reserve both destination tables before either adopts the owned slice.
+        // A later allocation failure cannot leave a freed array published.
+        if (domains.pattern) try self.readonly_index_types.ensureUnusedCapacity(self.gpa, 1);
+        try self.pattern_index_signatures.ensureUnusedCapacity(self.gpa, 1);
+        self.pattern_index_signatures.putAssumeCapacity(t, owned);
+        if (domains.pattern) self.readonly_index_types.putAssumeCapacity(t, domains);
+    }
+
+    /// Pattern signatures only freeze keys within their own declared domain.
+    /// General string/number/symbol permissions remain independent, and the
+    /// declaration's explicit readonly bit survives checked-graph transfer.
+    fn patternIndexReadonlyForTarget(self: *Checker, object_t: TypeId, target: NodeId) CheckError!?bool {
+        const patterns = self.pattern_index_signatures.get(object_t) orelse return null;
+        var readonly: ?bool = null;
+        for (patterns) |pattern| {
+            const matches = if (self.hir.kindOf(target) == .member_access)
+                try self.stringLiteralAssignableToType(hir_mod.memberOf(self.hir, target).name, pattern.key_type)
+            else if (self.hir.kindOf(target) == .element_access) blk: {
+                const index = hir_mod.elementOf(self.hir, target).index;
+                if (self.hir.kindOf(index) == .literal_string) {
+                    break :blk try self.stringLiteralAssignableToType(try self.literalStringCookedId(index), pattern.key_type);
+                }
+                const index_t = self.hir.typeOf(index);
+                break :blk index_t != types.Primitive.none and index_t < self.interner.pool.typeCount() and
+                    try self.checkerAssignableTo(index_t, pattern.key_type);
+            } else false;
+            // Applicable pattern domains form one index surface. A mutable
+            // matching pattern permits writes, independently of source order.
+            if (matches) readonly = (readonly orelse true) and pattern.is_readonly;
+        }
+        return readonly;
+    }
+
+    fn substitutePatternIndexSignatures(
+        self: *Checker,
+        target: TypeId,
+        source: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+        visited: ?*std.AutoHashMapUnmanaged(TypeId, void),
+    ) CheckError!void {
+        if (target == source or self.pattern_index_signatures.contains(target)) return;
+        const patterns = self.pattern_index_signatures.get(source) orelse return;
+        const substituted = try self.gpa.alloc(PatternIndexSignature, patterns.len);
+        defer self.gpa.free(substituted);
+        for (patterns, substituted) |pattern, *next| {
+            next.* = pattern;
+            next.key_type = if (visited) |active|
+                try self.substituteTypeNoCyclesInner(pattern.key_type, subs, active)
+            else
+                try self.substituteType(pattern.key_type, subs);
+            next.value_type = if (visited) |active|
+                try self.substituteTypeNoCyclesInner(pattern.value_type, subs, active)
+            else
+                try self.substituteType(pattern.value_type, subs);
+        }
+        try self.registerPatternIndexSignatures(target, substituted);
     }
 
     fn patternIndexValueForStringKey(self: *Checker, object_t: TypeId, key: hir_mod.StringId) CheckError!?TypeId {
@@ -246680,13 +246786,22 @@ test "checker: callable union maps alpha-equivalent generic binders" {
     const s = try newSetup("");
     defer destroySetup(s);
     const left_param = try s.ti.internFreshTypeParameterWithVariance(
-        try s.sint.intern("U"), types.Primitive.unknown, types.Primitive.none, .bivariant,
+        try s.sint.intern("U"),
+        types.Primitive.unknown,
+        types.Primitive.none,
+        .bivariant,
     );
     const right_param = try s.ti.internFreshTypeParameterWithVariance(
-        try s.sint.intern("V"), types.Primitive.unknown, types.Primitive.none, .bivariant,
+        try s.sint.intern("V"),
+        types.Primitive.unknown,
+        types.Primitive.none,
+        .bivariant,
     );
     const incompatible_param = try s.ti.internFreshTypeParameterWithVariance(
-        try s.sint.intern("W"), types.Primitive.number_t, types.Primitive.none, .bivariant,
+        try s.sint.intern("W"),
+        types.Primitive.number_t,
+        types.Primitive.none,
+        .bivariant,
     );
     const left = try s.ti.internSignature(&.{left_param}, left_param, false);
     const right = try s.ti.internSignature(&.{right_param}, right_param, false);
@@ -291457,10 +291572,18 @@ test "checker: aggregate type flags never select a type-parameter payload" {
     try T.expectEqual(try s.ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.null_t }), substituted);
     const field = try s.sint.intern("field");
     const required_object = try s.ti.internObjectType(&.{.{
-        .name = field, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false,
+        .name = field,
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
     }});
     const optional_object = try s.ti.internObjectType(&.{.{
-        .name = field, .type = types.Primitive.number_t, .is_optional = true, .is_readonly = false, .is_method = false,
+        .name = field,
+        .type = types.Primitive.number_t,
+        .is_optional = true,
+        .is_readonly = false,
+        .is_method = false,
     }});
     const object_param = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("ObjectParam"), required_object, types.Primitive.none, .bivariant);
     const optional_union = try s.ti.internUnion(&.{ object_param, optional_object });
@@ -291500,7 +291623,10 @@ test "checker: aggregate array union retains iterable members and element types"
     const number_array = try s.ti.internArrayType(&s.sint, types.Primitive.number_t);
     const readonly_string_array = try s.checker.internReadonlyArrayType(types.Primitive.string_t);
     const parameter = try s.ti.internFreshTypeParameterWithVariance(
-        try s.sint.intern("ArrayParam"), number_array, types.Primitive.none, .bivariant,
+        try s.sint.intern("ArrayParam"),
+        number_array,
+        types.Primitive.none,
+        .bivariant,
     );
     const aggregate = try s.ti.internUnion(&.{ parameter, readonly_string_array });
     const element = try s.ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.string_t });
@@ -300626,4 +300752,69 @@ test "checker: JSDoc object members split only at top-level delimiters" {
     try T.expectEqualStrings("inner: { count: number; readonly name: string; flag?: boolean }", members.next().?);
     try T.expectEqualStrings("items: number[]", members.next().?);
     try T.expect(members.next() == null);
+}
+
+fn testPatternIndexRegistrationAllocationFailures(allocator: std.mem.Allocator) !void {
+    const s = try newSetup("");
+    s.checker.gpa = allocator;
+    defer destroySetup(s);
+    const target = try s.ti.internObjectType(&.{});
+    var patterns = [_]PatternIndexSignature{.{
+        .key_type = types.Primitive.string_t,
+        .value_type = types.Primitive.number_t,
+        .decl_node = s.root,
+        .is_readonly = true,
+    }};
+    s.checker.registerPatternIndexSignatures(target, &patterns) catch |err| {
+        try T.expect(!s.checker.pattern_index_signatures.contains(target));
+        try T.expect(!s.checker.readonly_index_types.contains(target));
+        return err;
+    };
+    const registered = s.checker.pattern_index_signatures.get(target).?;
+    try T.expect(registered.ptr != patterns[0..].ptr);
+    patterns[0].is_readonly = false;
+    try T.expect(registered[0].is_readonly);
+    const domains = s.checker.readonly_index_types.get(target).?;
+    try T.expect(domains.pattern);
+    try T.expect(!domains.string and !domains.number and !domains.symbol);
+}
+
+test "checker: readonly pattern registration owns arrays and publishes atomically on every allocation failure" {
+    try T.checkAllAllocationFailures(T.allocator, testPatternIndexRegistrationAllocationFailures, .{});
+}
+
+fn testPatternIndexImportAllocationFailures(allocator: std.mem.Allocator) !void {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const target = try s.ti.internObjectType(&.{});
+    var source: CheckedTypes = .{};
+    defer source.deinit(T.allocator);
+    {
+        const patterns = try T.allocator.dupe(PatternIndexSignature, &.{.{
+            .key_type = types.Primitive.string_t,
+            .value_type = types.Primitive.number_t,
+            .decl_node = 9999,
+            .is_readonly = true,
+        }});
+        errdefer T.allocator.free(patterns);
+        try source.pattern_index_signatures.put(T.allocator, target, patterns);
+    }
+    s.checker.gpa = allocator;
+    s.checker.importProgramTypeMetadata(&.{&source}) catch |err| {
+        try T.expect(!s.checker.pattern_index_signatures.contains(target));
+        try T.expect(!s.checker.readonly_index_types.contains(target));
+        try T.expectEqual(@as(NodeId, 9999), source.pattern_index_signatures.get(target).?[0].decl_node);
+        return err;
+    };
+    const imported = s.checker.pattern_index_signatures.get(target).?;
+    try T.expect(imported.ptr != source.pattern_index_signatures.get(target).?.ptr);
+    source.deinit(T.allocator);
+    try T.expectEqual(hir_mod.none_node_id, imported[0].decl_node);
+    try T.expect(imported[0].is_readonly);
+    try T.expectEqual(types.Primitive.number_t, imported[0].value_type);
+    try T.expect(s.checker.readonly_index_types.get(target).?.pattern);
+}
+
+test "checker: readonly pattern import owns source leaves and clears foreign nodes on every allocation failure" {
+    try T.checkAllAllocationFailures(T.allocator, testPatternIndexImportAllocationFailures, .{});
 }
