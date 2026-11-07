@@ -786,6 +786,15 @@ pub fn build(b: *std.Build) void {
         run_home_tool_meta_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_meta_smoke.addArgs(&.{ "run", "import_meta_entry.ts" });
         home_tool_smoke_step.dependOn(&run_home_tool_meta_smoke.step);
+        const run_home_tool_transpile_smoke = b.addRunArtifact(home_tool_exe);
+        run_home_tool_transpile_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_transpile_smoke.addArgs(&.{ "run", "runtime_transpile_entry.ts" });
+        home_tool_smoke_step.dependOn(&run_home_tool_transpile_smoke.step);
+        const run_home_tool_syntax_smoke = b.addRunArtifact(home_tool_exe);
+        run_home_tool_syntax_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_syntax_smoke.addArgs(&.{ "run", "runtime_invalid_syntax.js" });
+        run_home_tool_syntax_smoke.expectExitCode(1);
+        home_tool_smoke_step.dependOn(&run_home_tool_syntax_smoke.step);
     } else {
         const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);

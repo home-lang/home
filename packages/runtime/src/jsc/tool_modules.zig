@@ -183,6 +183,14 @@ fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8
         compilation.deinit();
         allocator.destroy(compilation);
     }
+    if (compilation.has_syntactic_parse_diagnostics) {
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.is_syntactic) {
+                std.debug.print("{s}:{d}: {s} (TS{d})\n", .{ path, diagnostic.pos, diagnostic.message, diagnostic.code });
+                break;
+            }
+        }
+    }
     // Choose from parsed identifiers, including escaped and nested bindings, so
     // host metadata remains lexical even when a function shadows `module`.
     var buffer: [80]u8 = undefined;
@@ -195,8 +203,7 @@ fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8
         }
     }
     options.emit.import_meta_binding = meta_binding.*;
-    ts_driver.checkPreparedSource(compilation, options) catch return null;
-    return allocator.dupe(u8, compilation.js) catch null;
+    return ts_driver.emitPreparedSource(compilation, options.emit) catch null;
 }
 
 fn resolveModuleNative(

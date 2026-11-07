@@ -154,6 +154,7 @@ pub fn diagnosticIsSyntacticParseError(diagnostic: Diagnostic) bool {
         1264,
         1308,
         1312,
+        1313,
         1325,
         1341,
         1358,

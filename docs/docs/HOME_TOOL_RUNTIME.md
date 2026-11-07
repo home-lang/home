@@ -4,6 +4,8 @@
 Home's own TypeScript frontend and a native JavaScript engine. It does not
 delegate parsing or execution to Node, Bun, or Python.
 
+Execution parses, binds and emits through Home's TypeScript frontend without running semantic typechecking over application code or bundled JavaScript. Syntax errors remain failures. Static validation remains the separate `home-tsc`/compiler path; the runtime's emission path does not replace an explicit typecheck command.
+
 Build it with zig-js (the default when the conventional checkout and archive
 exist):
 

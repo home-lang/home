@@ -2032,6 +2032,25 @@ pub fn compileSource(
     return c;
 }
 
+/// Emit executable code from a prepared source without semantic typechecking.
+/// Runtime hosts need TypeScript erasure, not diagnostics for JavaScript bundles.
+/// Keep syntax recovery out of execution; compileSource/checkPreparedSource remain
+/// the checked compiler path. The caller owns the returned JavaScript bytes.
+pub fn emitPreparedSource(c: *const Compilation, options: ts_emit.Options) CompileError![]u8 {
+    if (c.root == hir_mod.none_node_id) return error.ParseError;
+    for (c.diagnostics.items) |diagnostic| {
+        if (diagnostic.isSyntactic()) return error.ParseError;
+    }
+    var printer = ts_emit.Printer.init(c.gpa, &c.hir, &c.interner, options);
+    defer printer.deinit();
+    printer.setSource(c.source);
+    printer.printSourceFile(c.root) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.EmitError,
+    };
+    return printer.toOwnedSlice() catch return error.OutOfMemory;
+}
+
 /// Parse and bind a source without checking or emitting it. Source bytes
 /// remain caller-owned. Keep the parser-affecting options unchanged when
 /// passing this result to checkPreparedSource; program semantic facts can
@@ -4337,6 +4356,64 @@ fn isDirectiveNameChar(c: u8) bool {
 // =============================================================================
 
 const T = std.testing;
+
+test "driver: runtime emission erases types while checked compilation retains diagnostics" {
+    const source = "const answer: number = 'runtime'; answer;";
+    var prepared = try prepareSource(T.allocator, source, .{});
+    defer {
+        prepared.deinit();
+        T.allocator.destroy(prepared);
+    }
+    const js = try emitPreparedSource(prepared, .{ .module_kind = .commonjs });
+    defer T.allocator.free(js);
+    try T.expect(std.mem.indexOf(u8, js, ": number") == null);
+    try T.expect(std.mem.indexOf(u8, js, "runtime") != null);
+    try T.expect(!prepared.checked_types_ready);
+    var checked = try compileSource(T.allocator, source, .{ .no_emit = true });
+    defer {
+        checked.deinit();
+        T.allocator.destroy(checked);
+    }
+    var saw_type_error = false;
+    for (checked.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2322) saw_type_error = true;
+    }
+    try T.expect(saw_type_error);
+}
+
+test "driver: runtime emission rejects recovered syntax" {
+    for ([_][]const u8{ "const = ;", "const text = 'unterminated" }) |source| {
+        var prepared = try prepareSource(T.allocator, source, .{});
+        defer {
+            prepared.deinit();
+            T.allocator.destroy(prepared);
+        }
+        try T.expectError(error.ParseError, emitPreparedSource(prepared, .{}));
+    }
+}
+
+test "driver: runtime emission preserves empty if bodies and checked grammar diagnostics" {
+    const source = "let value = 0; if (false); else value = 42;";
+    var prepared = try prepareSource(T.allocator, source, .{});
+    defer {
+        prepared.deinit();
+        T.allocator.destroy(prepared);
+    }
+    try T.expect(!prepared.has_syntactic_parse_diagnostics);
+    const js = try emitPreparedSource(prepared, .{});
+    defer T.allocator.free(js);
+    try T.expect(std.mem.indexOf(u8, js, "else") != null);
+    var checked = try compileSource(T.allocator, source, .{ .no_emit = true });
+    defer {
+        checked.deinit();
+        T.allocator.destroy(checked);
+    }
+    var saw_grammar_error = false;
+    for (checked.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1313) saw_grammar_error = true;
+    }
+    try T.expect(saw_grammar_error);
+}
 
 test {
     _ = @import("directive_lines.zig");

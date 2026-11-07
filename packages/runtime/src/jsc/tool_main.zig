@@ -23,7 +23,7 @@ fn isTypeScript(path: []const u8) bool {
 }
 
 fn emitTypeScript(allocator: std.mem.Allocator, source: []const u8, is_tsx: bool) ![]u8 {
-    var compilation = try ts_driver.compileSource(allocator, source, .{
+    var compilation = try ts_driver.prepareSource(allocator, source, .{
         .continue_on_error = false,
         .is_tsx = is_tsx,
         .jsx_option_present = is_tsx,
@@ -33,7 +33,7 @@ fn emitTypeScript(allocator: std.mem.Allocator, source: []const u8, is_tsx: bool
         compilation.deinit();
         allocator.destroy(compilation);
     }
-    return allocator.dupe(u8, compilation.js);
+    return ts_driver.emitPreparedSource(compilation, .{ .module_kind = .commonjs });
 }
 
 fn runSource(
