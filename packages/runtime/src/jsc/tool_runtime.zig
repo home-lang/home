@@ -9,6 +9,7 @@ pub const console = @import("console.zig");
 pub const process = @import("process.zig");
 pub const host = @import("tool_host.zig");
 pub const builtins = @import("tool_builtins.zig");
+pub const yaml = @import("tool_yaml.zig");
 pub const modules = @import("tool_modules.zig");
 pub const evaluate = @import("evaluate.zig");
 pub const extern_fns = @import("extern_fns.zig");

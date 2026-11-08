@@ -49,8 +49,8 @@ The tool module loader exposes the same real filesystem adapter as `fs` and
 and string paths. Reads use native file bytes, preserve embedded NULs and BOMs,
 and replace malformed UTF-8 sequences. The checked-in byte fixture and its
 Node-produced expected JSON cover Unicode boundaries and malformed input.
-Buffer-returning reads, other encodings/flags, URL/Buffer paths, and other Node
-built-ins still require implementations and remain errors. Native read errors
+Buffer-returning reads, other encodings/flags and URL/Buffer paths still require
+implementations and remain errors. Native read errors
 propagate; complete Node filesystem error metadata is not provided yet.
 
 `module`/`node:module` expose `createRequire` for absolute POSIX filenames and
@@ -67,6 +67,17 @@ URL escaping, dot segments, scalar-value conversion and query/fragment handling.
 The Node-produced path/URL fixture retains both successful results and errors.
 Other path methods, Windows path behavior, URL objects and other URL APIs still
 require implementations.
+
+`Bun.YAML.parse`, `require("bun").YAML.parse` and `Home.parseYAML` use Home's
+owned native YAML parser. The tool backend keeps scalar/collection storage in a
+scoped thread-local arena and transfers a reference graph into the selected JS
+engine, preserving shared aliases, non-finite numbers and safe own properties.
+Raw illegal YAML characters fail. The Bun-produced fixture checks 43 targeted
+value/error cases on both backends; property insertion order is not compared.
+This is a bounded YAML parse surface. Cyclic aliases, complex collection keys,
+sources beyond native recursion/graph-depth limits, lone-surrogate input and
+`YAML.stringify` remain unsupported or failing and are retained as capability
+gaps. Other Bun host APIs still require implementations.
 
 `child_process`/`node:child_process` expose synchronous `execFileSync` for an
 absolute POSIX executable with `stdio: "inherit"`. The OS descriptors are
