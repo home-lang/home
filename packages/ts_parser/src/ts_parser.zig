@@ -3314,6 +3314,10 @@ pub const Parser = struct {
                 }
                 self.ambient_depth += 1;
                 defer self.ambient_depth -= 1;
+                // An explicit declaration modifier owns missing-name
+                // recovery; a bare `type = value` is an expression.
+                if (self.peek().kind == .kw_type and self.peekAt(1).kind == .equal)
+                    break :blk try self.parseTypeAlias();
                 break :blk try self.parseStatement();
             },
             .kw_global => blk: {
@@ -3382,15 +3386,15 @@ pub const Parser = struct {
             },
             .kw_type => blk: {
                 // `type X = T;` is a TS type alias. `type` is contextual,
-                // so only treat as a keyword when followed by an identifier
-                // or the blank-name `type = T` recovery shape.
+                // so only treat as a keyword when followed by an identifier.
+                // Keep `type = value` as an assignment in ordinary code,
+                // including bodies reached through export/declare parsing.
                 // Reserved primitive-type keywords (`any`, `string`, …)
                 // ALSO route here so `parseTypeAlias` can emit the
                 // upstream TS2457 ("Type alias name cannot be '...'.").
                 // Mirrors `reservedNamesInAliases.ts`.
                 const next = self.peekAt(1);
                 if ((next.kind == .identifier or
-                    next.kind == .equal or
                     (next.kind.isKeyword() and next.flags.has_escape) or
                     self.tokenAtLexemeIsReservedTypeAliasName(self.cursor + 1)) and
                     (!next.flags.preceded_by_newline or self.ambient_depth > 0))
@@ -10415,7 +10419,11 @@ pub const Parser = struct {
         self.in_export_declaration = true;
         defer self.in_export_declaration = old_in_export_declaration;
         const pending_start = self.pending_statements.items.len;
-        const decl = try self.parseStatement();
+        const decl = if (self.peek().kind == .kw_type and
+            self.peekAt(1).kind == .equal and !self.peekAt(1).flags.preceded_by_newline)
+            try self.parseTypeAlias()
+        else
+            try self.parseStatement();
         const decl_kind = self.hir.kindOf(decl);
         if (decl_kind == .var_decl or decl_kind == .let_decl or decl_kind == .const_decl) {
             // A variable list is represented as sibling declarations. Every
@@ -26982,21 +26990,13 @@ test "parser: TS1438 for interface without a name" {
     try T.expect(found);
 }
 
-test "parser: TS1439 for type alias without a name" {
+test "parser: bare type equals is a value assignment" {
     var s = try newTestSetup("type = string;");
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
-    try T.expectEqual(hir_mod.NodeKind.type_alias_decl, s.hir.kindOf(top));
-
-    var found = false;
-    for (s.parser.diagnostics.items) |d| {
-        if (d.code == 1439) {
-            found = true;
-            try T.expectEqualStrings("Type alias must be given a name.", d.message);
-        }
-    }
-    try T.expect(found);
+    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(top));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: declare type newline reports TS1142 but declares alias" {
@@ -36098,6 +36098,30 @@ test "parser: type alias permits equals on the following line" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(u32, 0), countDiag(s, 1005));
     try T.expectEqual(@as(u32, 0), countDiag(s, 1109));
+}
+
+test "parser: contextual type assignments remain expressions" {
+    for ([_][]const u8{
+        "let type = 0; type = 1;",
+        "{ let type = 0; type = 1; }",
+        "export function update() { let type = 0; type = 1; }",
+        "export const update = () => { let type = 0; type = 1; };",
+        "let type = 0; type\n= 1;",
+    }) |source| {
+        var setup = try newTestSetup(source);
+        defer destroyTestSetup(setup);
+        _ = try setup.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+    }
+}
+
+test "parser: explicit unnamed type declarations retain recovery" {
+    for ([_][]const u8{ "declare type = string;", "export type = string;" }) |source| {
+        var setup = try newTestSetup(source);
+        defer destroyTestSetup(setup);
+        _ = try setup.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 1), countDiag(setup, 1439));
+    }
 }
 
 test "parser: TS1193 fires for a modifier on an export declaration" {

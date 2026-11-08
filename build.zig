@@ -843,6 +843,16 @@ pub fn build(b: *std.Build) void {
         run_decimal_property_keys.addArgs(&.{ "run", "packages/runtime/test/tool_modules/decimal_property_keys.mjs" });
         run_decimal_property_keys.expectStdOutEqual("OK exact decimal string keys and actual Number exponent keys\n");
         home_tool_smoke_step.dependOn(&run_decimal_property_keys.step);
+        inline for (.{
+            .{ "contextual_type_assignment.mjs", "OK actual contextual type assignments across blocks and exported function bodies\n" },
+            .{ "contextual_type_alias.ts", "OK actual type aliases erase without consuming contextual assignments\n" },
+        }) |case| {
+            const run_contextual_type = b.addRunArtifact(home_tool_exe);
+            run_contextual_type.addArg("run");
+            run_contextual_type.addFileArg(b.path("packages/runtime/test/tool_modules/" ++ case[0]));
+            run_contextual_type.expectStdOutEqual(case[1]);
+            home_tool_smoke_step.dependOn(&run_contextual_type.step);
+        }
         const run_async_property_newline = b.addRunArtifact(home_tool_exe);
         run_async_property_newline.addArgs(&.{ "run", "packages/runtime/test/tool_modules/async_property_newline.cjs" });
         run_async_property_newline.expectExitCode(1);

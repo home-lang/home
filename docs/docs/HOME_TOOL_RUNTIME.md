@@ -15,6 +15,12 @@ BigInt property assignments is retained; TypeScript 6.0.3 permits those names
 on methods. Node 26 executes the complete method witness, while Bun 1.4.4
 rejects its BigInt method syntax; that reference failure remains explicit.
 
+At statement starts, `type = value` executes as a contextual identifier
+assignment, including blocks and exported function bodies. Named type aliases
+keep their declaration parsing and runtime erasure. Explicit declare/export
+modifiers retain malformed-declaration recovery without applying it to nested
+value assignments. Required JS and TypeScript witnesses check both behaviors.
+
 Build it with zig-js (the default when the conventional checkout and archive
 exist):
 
