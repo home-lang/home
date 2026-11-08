@@ -195,6 +195,10 @@ pub const Options = struct {
     /// the module's stable metadata object under that name. Normal tsc emission
     /// preserves `import.meta` when this is null.
     import_meta_binding: ?[]const u8 = null,
+    /// Host-only name for generated CommonJS export assignments. It must be
+    /// absent from all source scopes and bound to the real module record by
+    /// the host, so an ES module may declare its own `module` identifier.
+    commonjs_module_binding: ?[]const u8 = null,
     /// `esModuleInterop` — when true and module_kind is commonjs,
     /// inject `__importDefault` / `__importStar` helper calls so
     /// `import x from "y"` works against CJS modules without
@@ -8351,7 +8355,8 @@ pub const Printer = struct {
         // `export = <expr>;` lowers to `module.exports = <expr>;`
         // (CommonJS-style default export) regardless of module kind.
         if (ex.is_export_equals) {
-            try self.write("module.exports = ");
+            try self.write(self.options.commonjs_module_binding orelse "module");
+            try self.write(".exports = ");
             try self.printExpression(ex.decl);
             try self.writeSemi();
             return;
@@ -8426,12 +8431,14 @@ pub const Printer = struct {
                     // Find the inner name to re-export.
                     const decl_name = decoratorBoundName(self.hir, ex.decl);
                     if (decl_name) |n| {
-                        try self.write("module.exports.default = ");
+                        try self.write(self.options.commonjs_module_binding orelse "module");
+                        try self.write(".exports.default = ");
                         try self.write(self.interner.get(n));
                         try self.writeSemi();
                     }
                 } else {
-                    try self.write("module.exports.default = ");
+                    try self.write(self.options.commonjs_module_binding orelse "module");
+                    try self.write(".exports.default = ");
                     try self.printExpression(ex.decl);
                     try self.writeSemi();
                 }
@@ -8443,7 +8450,8 @@ pub const Printer = struct {
             try self.printNonIndentStatement(ex.decl);
             const decl_name = decoratorBoundName(self.hir, ex.decl);
             if (decl_name) |n| {
-                try self.write("module.exports.");
+                try self.write(self.options.commonjs_module_binding orelse "module");
+                try self.write(".exports.");
                 try self.write(self.interner.get(n));
                 try self.write(" = ");
                 try self.write(self.interner.get(n));
@@ -8457,7 +8465,8 @@ pub const Printer = struct {
             const alias = self.interner.get(ex.namespace_alias);
             if (alias.len > 0) {
                 // `export * as ns from "m"` → `module.exports.ns = require("m");`
-                try self.write("module.exports.");
+                try self.write(self.options.commonjs_module_binding orelse "module");
+                try self.write(".exports.");
                 try self.write(alias);
                 try self.write(" = require(\"");
                 try self.write(re_export_module);
@@ -8468,7 +8477,11 @@ pub const Printer = struct {
                 // `default` (mirrors tsc's `__exportStar` semantics).
                 try self.write("Object.keys(require(\"");
                 try self.write(re_export_module);
-                try self.write("\")).forEach(function (k) { if (k !== \"default\" && !Object.prototype.hasOwnProperty.call(module.exports, k)) Object.defineProperty(module.exports, k, { enumerable: true, get: function () { return require(\"");
+                try self.write("\")).forEach(function (k) { if (k !== \"default\" && !Object.prototype.hasOwnProperty.call(");
+                try self.write(self.options.commonjs_module_binding orelse "module");
+                try self.write(".exports, k)) Object.defineProperty(");
+                try self.write(self.options.commonjs_module_binding orelse "module");
+                try self.write(".exports, k, { enumerable: true, get: function () { return require(\"");
                 try self.write(re_export_module);
                 try self.write("\")[k]; } }); })");
                 try self.writeSemi();
@@ -8487,7 +8500,8 @@ pub const Printer = struct {
             for (named) |spec| {
                 if (self.hir.kindOf(spec) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec);
-                try self.write("module.exports.");
+                try self.write(self.options.commonjs_module_binding orelse "module");
+                try self.write(".exports.");
                 try self.write(self.interner.get(sp.local));
                 try self.write(" = require(\"");
                 try self.write(re_export_module);
@@ -8500,7 +8514,8 @@ pub const Printer = struct {
         for (named) |spec| {
             if (self.hir.kindOf(spec) != .import_specifier) continue;
             const sp = hir_mod.importSpecifierOf(self.hir, spec);
-            try self.write("module.exports.");
+            try self.write(self.options.commonjs_module_binding orelse "module");
+            try self.write(".exports.");
             try self.write(self.interner.get(sp.local));
             try self.write(" = ");
             try self.write(self.interner.get(sp.imported));
@@ -15231,6 +15246,30 @@ test "emit: private-field brand check stays native at es2022+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "#f in o") != null);
     try T.expect(std.mem.indexOf(u8, out, ".has(") == null);
+}
+
+test "emit: cjs host module binding preserves source identifiers across export forms" {
+    const out = try emitWithOpts("const module = { value: 42 }; export default module.value; export { module }; export * from \"x\"; export * as ns from \"y\"; export { v as w } from \"z\";", .{
+        .module_kind = .commonjs,
+        .commonjs_module_binding = "__host_module",
+    });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "const module =") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__host_module.exports.default = module.value") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__host_module.exports.module = module") != null);
+    try T.expect(std.mem.indexOf(u8, out, "Object.defineProperty(__host_module.exports, k") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__host_module.exports.ns = require(\"y\")") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__host_module.exports.w = require(\"z\").v") != null);
+}
+
+test "emit: cjs host module binding only changes generated assignments" {
+    const out = try emitWithOpts("module.exports = 17; export = module;", .{
+        .module_kind = .commonjs,
+        .commonjs_module_binding = "__host_module",
+    });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports = 17") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__host_module.exports = module") != null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {

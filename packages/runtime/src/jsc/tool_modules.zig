@@ -213,8 +213,9 @@ fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_pat
     return null;
 }
 
-fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8, meta_binding: *?[]u8, is_esm: *bool) ?[]u8 {
+fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8, meta_binding: *?[]u8, module_binding: *?[]u8, is_esm: *bool) ?[]u8 {
     meta_binding.* = null;
+    module_binding.* = null;
     is_esm.* = false;
     if (std.mem.eql(u8, std.fs.path.extension(path), ".json"))
         return allocator.dupe(u8, source) catch null;
@@ -261,6 +262,17 @@ fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8
         }
     }
     options.emit.import_meta_binding = meta_binding.*;
+    if (is_esm.*) {
+        suffix = 0;
+        while (true) : (suffix += 1) {
+            const name = std.fmt.bufPrint(&buffer, "__home_module_{d}", .{suffix}) catch return null;
+            if (compilation.interner.lookup(name) == null) {
+                module_binding.* = allocator.dupe(u8, name) catch return null;
+                break;
+            }
+        }
+        options.emit.commonjs_module_binding = module_binding.*;
+    }
     return ts_driver.emitPreparedSource(compilation, options.emit) catch null;
 }
 
@@ -289,15 +301,18 @@ fn resolveModuleNative(
         return extern_fns.JSValueMakeNull(c);
     defer allocator.free(source);
     var meta_binding: ?[]u8 = null;
+    var module_binding: ?[]u8 = null;
     var is_esm = false;
     defer if (meta_binding) |name| allocator.free(name);
-    const emitted = emitModule(allocator, source, path, &meta_binding, &is_esm) orelse return extern_fns.JSValueMakeNull(c);
+    defer if (module_binding) |name| allocator.free(name);
+    const emitted = emitModule(allocator, source, path, &meta_binding, &module_binding, &is_esm) orelse return extern_fns.JSValueMakeNull(c);
     defer allocator.free(emitted);
 
     const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
     setProperty(c, object, "path", stringValue(c, path));
     setProperty(c, object, "source", stringValue(c, emitted));
     if (meta_binding) |name| setProperty(c, object, "metaBinding", stringValue(c, name));
+    if (module_binding) |name| setProperty(c, object, "moduleBinding", stringValue(c, name));
     setProperty(c, object, "esModule", extern_fns.JSValueMakeBoolean(c, is_esm));
     setProperty(c, object, "format", stringValue(c, if (std.mem.eql(u8, std.fs.path.extension(path), ".json")) "json" else "commonjs"));
     return @ptrCast(object);
@@ -366,7 +381,7 @@ const install_glue =
     \\    metadata.require = localRequire;
     // Capture metadata outside the CommonJS wrapper so its five arguments keep
     // the same observable shape as modules without import.meta.
-    \\    var wrapper = (0, eval)("(function(" + payload.metaBinding + ") { return function(exports, require, module, __filename, __dirname) {\n" + payload.source + "\n}; })")(metadata);
+    \\    var wrapper = (0, eval)("(function(" + payload.metaBinding + ", module) { return function(exports, require, " + (payload.moduleBinding || "module") + ", __filename, __dirname) {\n" + payload.source + "\n}; })")(metadata, module);
     \\    wrapper(module.exports, localRequire, module, payload.path, directory);
     \\    module.loaded = true;
     \\    return module.exports;
