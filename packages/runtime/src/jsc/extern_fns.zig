@@ -103,6 +103,7 @@ pub extern "c" fn JSObjectMakeTypedArray(ctx: ?*JSContextRef, array_type: JSType
 pub extern "c" fn JSObjectGetTypedArrayBytesPtr(ctx: ?*JSContextRef, object: ?*JSObject, exception: ExceptionRef) ?*anyopaque;
 pub extern "c" fn JSObjectGetTypedArrayLength(ctx: ?*JSContextRef, object: ?*JSObject, exception: ExceptionRef) usize;
 pub extern "c" fn JSObjectGetTypedArrayByteLength(ctx: ?*JSContextRef, object: ?*JSObject, exception: ExceptionRef) usize;
+pub extern "c" fn JSObjectGetTypedArrayByteOffset(ctx: ?*JSContextRef, object: ?*JSObject, exception: ExceptionRef) usize;
 pub extern "c" fn JSValueGetTypedArrayType(ctx: ?*JSContextRef, value: ?*JSValue, exception: ExceptionRef) JSTypedArrayType;
 
 // ---- JSString lifecycle ----------------------------------------------

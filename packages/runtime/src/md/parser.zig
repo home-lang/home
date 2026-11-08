@@ -17,7 +17,7 @@ pub const Parser = struct {
     doc_ends_with_newline: bool,
 
     // Mark character map — bitset of characters that need special handling
-    mark_char_map: bun.bit_set.StaticBitSet(256) = bun.bit_set.StaticBitSet(256).initEmpty(),
+    mark_char_map: MarkCharMap = if (@hasDecl(MarkCharMap, "initEmpty")) MarkCharMap.initEmpty() else .empty,
 
     // Dynamic arrays
     marks: std.ArrayListUnmanaged(Mark) = .empty,
@@ -259,7 +259,7 @@ pub fn renderToHtml(text: []const u8, allocator: Allocator, flags: Flags, render
     const input = helpers.skipUtf8Bom(text);
 
     var html_renderer = HtmlRenderer.init(allocator, input, render_opts);
-    errdefer html_renderer.deinit();
+    defer html_renderer.deinit();
 
     var parser = Parser.init(allocator, input, flags, html_renderer.renderer());
     defer parser.deinit();
@@ -311,3 +311,5 @@ const Mark = types.Mark;
 const OFF = types.OFF;
 const Renderer = types.Renderer;
 const VerbatimLine = types.VerbatimLine;
+
+const MarkCharMap = bun.bit_set.StaticBitSet(256);

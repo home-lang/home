@@ -1,0 +1,1626 @@
+[
+  {
+    "bytes": [
+      0
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      1
+    ],
+    "expected": "<p>\u0001</p>\n"
+  },
+  {
+    "bytes": [
+      2
+    ],
+    "expected": "<p>\u0002</p>\n"
+  },
+  {
+    "bytes": [
+      3
+    ],
+    "expected": "<p>\u0003</p>\n"
+  },
+  {
+    "bytes": [
+      4
+    ],
+    "expected": "<p>\u0004</p>\n"
+  },
+  {
+    "bytes": [
+      5
+    ],
+    "expected": "<p>\u0005</p>\n"
+  },
+  {
+    "bytes": [
+      6
+    ],
+    "expected": "<p>\u0006</p>\n"
+  },
+  {
+    "bytes": [
+      7
+    ],
+    "expected": "<p>\u0007</p>\n"
+  },
+  {
+    "bytes": [
+      8
+    ],
+    "expected": "<p>\b</p>\n"
+  },
+  {
+    "bytes": [
+      9
+    ],
+    "expected": ""
+  },
+  {
+    "bytes": [
+      10
+    ],
+    "expected": ""
+  },
+  {
+    "bytes": [
+      11
+    ],
+    "expected": "<p>\u000b</p>\n"
+  },
+  {
+    "bytes": [
+      12
+    ],
+    "expected": "<p>\f</p>\n"
+  },
+  {
+    "bytes": [
+      13
+    ],
+    "expected": ""
+  },
+  {
+    "bytes": [
+      14
+    ],
+    "expected": "<p>\u000e</p>\n"
+  },
+  {
+    "bytes": [
+      15
+    ],
+    "expected": "<p>\u000f</p>\n"
+  },
+  {
+    "bytes": [
+      16
+    ],
+    "expected": "<p>\u0010</p>\n"
+  },
+  {
+    "bytes": [
+      17
+    ],
+    "expected": "<p>\u0011</p>\n"
+  },
+  {
+    "bytes": [
+      18
+    ],
+    "expected": "<p>\u0012</p>\n"
+  },
+  {
+    "bytes": [
+      19
+    ],
+    "expected": "<p>\u0013</p>\n"
+  },
+  {
+    "bytes": [
+      20
+    ],
+    "expected": "<p>\u0014</p>\n"
+  },
+  {
+    "bytes": [
+      21
+    ],
+    "expected": "<p>\u0015</p>\n"
+  },
+  {
+    "bytes": [
+      22
+    ],
+    "expected": "<p>\u0016</p>\n"
+  },
+  {
+    "bytes": [
+      23
+    ],
+    "expected": "<p>\u0017</p>\n"
+  },
+  {
+    "bytes": [
+      24
+    ],
+    "expected": "<p>\u0018</p>\n"
+  },
+  {
+    "bytes": [
+      25
+    ],
+    "expected": "<p>\u0019</p>\n"
+  },
+  {
+    "bytes": [
+      26
+    ],
+    "expected": "<p>\u001a</p>\n"
+  },
+  {
+    "bytes": [
+      27
+    ],
+    "expected": "<p>\u001b</p>\n"
+  },
+  {
+    "bytes": [
+      28
+    ],
+    "expected": "<p>\u001c</p>\n"
+  },
+  {
+    "bytes": [
+      29
+    ],
+    "expected": "<p>\u001d</p>\n"
+  },
+  {
+    "bytes": [
+      30
+    ],
+    "expected": "<p>\u001e</p>\n"
+  },
+  {
+    "bytes": [
+      31
+    ],
+    "expected": "<p>\u001f</p>\n"
+  },
+  {
+    "bytes": [
+      32
+    ],
+    "expected": ""
+  },
+  {
+    "bytes": [
+      33
+    ],
+    "expected": "<p>!</p>\n"
+  },
+  {
+    "bytes": [
+      34
+    ],
+    "expected": "<p>&quot;</p>\n"
+  },
+  {
+    "bytes": [
+      35
+    ],
+    "expected": "<h1></h1>\n"
+  },
+  {
+    "bytes": [
+      36
+    ],
+    "expected": "<p>$</p>\n"
+  },
+  {
+    "bytes": [
+      37
+    ],
+    "expected": "<p>%</p>\n"
+  },
+  {
+    "bytes": [
+      38
+    ],
+    "expected": "<p>&amp;</p>\n"
+  },
+  {
+    "bytes": [
+      39
+    ],
+    "expected": "<p>'</p>\n"
+  },
+  {
+    "bytes": [
+      40
+    ],
+    "expected": "<p>(</p>\n"
+  },
+  {
+    "bytes": [
+      41
+    ],
+    "expected": "<p>)</p>\n"
+  },
+  {
+    "bytes": [
+      42
+    ],
+    "expected": "<ul>\n<li></li>\n</ul>\n"
+  },
+  {
+    "bytes": [
+      43
+    ],
+    "expected": "<ul>\n<li></li>\n</ul>\n"
+  },
+  {
+    "bytes": [
+      44
+    ],
+    "expected": "<p>,</p>\n"
+  },
+  {
+    "bytes": [
+      45
+    ],
+    "expected": "<ul>\n<li></li>\n</ul>\n"
+  },
+  {
+    "bytes": [
+      46
+    ],
+    "expected": "<p>.</p>\n"
+  },
+  {
+    "bytes": [
+      47
+    ],
+    "expected": "<p>/</p>\n"
+  },
+  {
+    "bytes": [
+      48
+    ],
+    "expected": "<p>0</p>\n"
+  },
+  {
+    "bytes": [
+      49
+    ],
+    "expected": "<p>1</p>\n"
+  },
+  {
+    "bytes": [
+      50
+    ],
+    "expected": "<p>2</p>\n"
+  },
+  {
+    "bytes": [
+      51
+    ],
+    "expected": "<p>3</p>\n"
+  },
+  {
+    "bytes": [
+      52
+    ],
+    "expected": "<p>4</p>\n"
+  },
+  {
+    "bytes": [
+      53
+    ],
+    "expected": "<p>5</p>\n"
+  },
+  {
+    "bytes": [
+      54
+    ],
+    "expected": "<p>6</p>\n"
+  },
+  {
+    "bytes": [
+      55
+    ],
+    "expected": "<p>7</p>\n"
+  },
+  {
+    "bytes": [
+      56
+    ],
+    "expected": "<p>8</p>\n"
+  },
+  {
+    "bytes": [
+      57
+    ],
+    "expected": "<p>9</p>\n"
+  },
+  {
+    "bytes": [
+      58
+    ],
+    "expected": "<p>:</p>\n"
+  },
+  {
+    "bytes": [
+      59
+    ],
+    "expected": "<p>;</p>\n"
+  },
+  {
+    "bytes": [
+      60
+    ],
+    "expected": "<p>&lt;</p>\n"
+  },
+  {
+    "bytes": [
+      61
+    ],
+    "expected": "<p>=</p>\n"
+  },
+  {
+    "bytes": [
+      62
+    ],
+    "expected": "<blockquote>\n</blockquote>\n"
+  },
+  {
+    "bytes": [
+      63
+    ],
+    "expected": "<p>?</p>\n"
+  },
+  {
+    "bytes": [
+      64
+    ],
+    "expected": "<p>@</p>\n"
+  },
+  {
+    "bytes": [
+      65
+    ],
+    "expected": "<p>A</p>\n"
+  },
+  {
+    "bytes": [
+      66
+    ],
+    "expected": "<p>B</p>\n"
+  },
+  {
+    "bytes": [
+      67
+    ],
+    "expected": "<p>C</p>\n"
+  },
+  {
+    "bytes": [
+      68
+    ],
+    "expected": "<p>D</p>\n"
+  },
+  {
+    "bytes": [
+      69
+    ],
+    "expected": "<p>E</p>\n"
+  },
+  {
+    "bytes": [
+      70
+    ],
+    "expected": "<p>F</p>\n"
+  },
+  {
+    "bytes": [
+      71
+    ],
+    "expected": "<p>G</p>\n"
+  },
+  {
+    "bytes": [
+      72
+    ],
+    "expected": "<p>H</p>\n"
+  },
+  {
+    "bytes": [
+      73
+    ],
+    "expected": "<p>I</p>\n"
+  },
+  {
+    "bytes": [
+      74
+    ],
+    "expected": "<p>J</p>\n"
+  },
+  {
+    "bytes": [
+      75
+    ],
+    "expected": "<p>K</p>\n"
+  },
+  {
+    "bytes": [
+      76
+    ],
+    "expected": "<p>L</p>\n"
+  },
+  {
+    "bytes": [
+      77
+    ],
+    "expected": "<p>M</p>\n"
+  },
+  {
+    "bytes": [
+      78
+    ],
+    "expected": "<p>N</p>\n"
+  },
+  {
+    "bytes": [
+      79
+    ],
+    "expected": "<p>O</p>\n"
+  },
+  {
+    "bytes": [
+      80
+    ],
+    "expected": "<p>P</p>\n"
+  },
+  {
+    "bytes": [
+      81
+    ],
+    "expected": "<p>Q</p>\n"
+  },
+  {
+    "bytes": [
+      82
+    ],
+    "expected": "<p>R</p>\n"
+  },
+  {
+    "bytes": [
+      83
+    ],
+    "expected": "<p>S</p>\n"
+  },
+  {
+    "bytes": [
+      84
+    ],
+    "expected": "<p>T</p>\n"
+  },
+  {
+    "bytes": [
+      85
+    ],
+    "expected": "<p>U</p>\n"
+  },
+  {
+    "bytes": [
+      86
+    ],
+    "expected": "<p>V</p>\n"
+  },
+  {
+    "bytes": [
+      87
+    ],
+    "expected": "<p>W</p>\n"
+  },
+  {
+    "bytes": [
+      88
+    ],
+    "expected": "<p>X</p>\n"
+  },
+  {
+    "bytes": [
+      89
+    ],
+    "expected": "<p>Y</p>\n"
+  },
+  {
+    "bytes": [
+      90
+    ],
+    "expected": "<p>Z</p>\n"
+  },
+  {
+    "bytes": [
+      91
+    ],
+    "expected": "<p>[</p>\n"
+  },
+  {
+    "bytes": [
+      92
+    ],
+    "expected": "<p>\\</p>\n"
+  },
+  {
+    "bytes": [
+      93
+    ],
+    "expected": "<p>]</p>\n"
+  },
+  {
+    "bytes": [
+      94
+    ],
+    "expected": "<p>^</p>\n"
+  },
+  {
+    "bytes": [
+      95
+    ],
+    "expected": "<p>_</p>\n"
+  },
+  {
+    "bytes": [
+      96
+    ],
+    "expected": "<p>`</p>\n"
+  },
+  {
+    "bytes": [
+      97
+    ],
+    "expected": "<p>a</p>\n"
+  },
+  {
+    "bytes": [
+      98
+    ],
+    "expected": "<p>b</p>\n"
+  },
+  {
+    "bytes": [
+      99
+    ],
+    "expected": "<p>c</p>\n"
+  },
+  {
+    "bytes": [
+      100
+    ],
+    "expected": "<p>d</p>\n"
+  },
+  {
+    "bytes": [
+      101
+    ],
+    "expected": "<p>e</p>\n"
+  },
+  {
+    "bytes": [
+      102
+    ],
+    "expected": "<p>f</p>\n"
+  },
+  {
+    "bytes": [
+      103
+    ],
+    "expected": "<p>g</p>\n"
+  },
+  {
+    "bytes": [
+      104
+    ],
+    "expected": "<p>h</p>\n"
+  },
+  {
+    "bytes": [
+      105
+    ],
+    "expected": "<p>i</p>\n"
+  },
+  {
+    "bytes": [
+      106
+    ],
+    "expected": "<p>j</p>\n"
+  },
+  {
+    "bytes": [
+      107
+    ],
+    "expected": "<p>k</p>\n"
+  },
+  {
+    "bytes": [
+      108
+    ],
+    "expected": "<p>l</p>\n"
+  },
+  {
+    "bytes": [
+      109
+    ],
+    "expected": "<p>m</p>\n"
+  },
+  {
+    "bytes": [
+      110
+    ],
+    "expected": "<p>n</p>\n"
+  },
+  {
+    "bytes": [
+      111
+    ],
+    "expected": "<p>o</p>\n"
+  },
+  {
+    "bytes": [
+      112
+    ],
+    "expected": "<p>p</p>\n"
+  },
+  {
+    "bytes": [
+      113
+    ],
+    "expected": "<p>q</p>\n"
+  },
+  {
+    "bytes": [
+      114
+    ],
+    "expected": "<p>r</p>\n"
+  },
+  {
+    "bytes": [
+      115
+    ],
+    "expected": "<p>s</p>\n"
+  },
+  {
+    "bytes": [
+      116
+    ],
+    "expected": "<p>t</p>\n"
+  },
+  {
+    "bytes": [
+      117
+    ],
+    "expected": "<p>u</p>\n"
+  },
+  {
+    "bytes": [
+      118
+    ],
+    "expected": "<p>v</p>\n"
+  },
+  {
+    "bytes": [
+      119
+    ],
+    "expected": "<p>w</p>\n"
+  },
+  {
+    "bytes": [
+      120
+    ],
+    "expected": "<p>x</p>\n"
+  },
+  {
+    "bytes": [
+      121
+    ],
+    "expected": "<p>y</p>\n"
+  },
+  {
+    "bytes": [
+      122
+    ],
+    "expected": "<p>z</p>\n"
+  },
+  {
+    "bytes": [
+      123
+    ],
+    "expected": "<p>{</p>\n"
+  },
+  {
+    "bytes": [
+      124
+    ],
+    "expected": "<p>|</p>\n"
+  },
+  {
+    "bytes": [
+      125
+    ],
+    "expected": "<p>}</p>\n"
+  },
+  {
+    "bytes": [
+      126
+    ],
+    "expected": "<p>~</p>\n"
+  },
+  {
+    "bytes": [
+      127
+    ],
+    "expected": "<p></p>\n"
+  },
+  {
+    "bytes": [
+      128
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      129
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      130
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      131
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      132
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      133
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      134
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      135
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      136
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      137
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      138
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      139
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      140
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      141
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      142
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      143
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      144
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      145
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      146
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      147
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      148
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      149
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      150
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      151
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      152
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      153
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      154
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      155
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      156
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      157
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      158
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      159
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      160
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      161
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      162
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      163
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      164
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      165
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      166
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      167
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      168
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      169
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      170
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      171
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      172
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      173
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      174
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      175
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      176
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      177
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      178
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      179
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      180
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      181
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      182
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      183
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      184
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      185
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      186
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      187
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      188
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      189
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      190
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      191
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      192
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      193
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      194
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      195
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      196
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      197
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      198
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      199
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      200
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      201
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      202
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      203
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      204
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      205
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      206
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      207
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      208
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      209
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      210
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      211
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      212
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      213
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      214
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      215
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      216
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      217
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      218
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      219
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      220
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      221
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      222
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      223
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      224
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      225
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      226
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      227
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      228
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      229
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      230
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      231
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      232
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      233
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      234
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      235
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      236
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      237
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      238
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      239
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      240
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      241
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      242
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      243
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      244
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      245
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      246
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      247
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      248
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      249
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      250
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      251
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      252
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      253
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      254
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      255
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      225,
+      128,
+      255
+    ],
+    "expected": "<p>��</p>\n"
+  },
+  {
+    "bytes": [
+      192,
+      175
+    ],
+    "expected": "<p>��</p>\n"
+  },
+  {
+    "bytes": [
+      237,
+      160,
+      128
+    ],
+    "expected": "<p>���</p>\n"
+  },
+  {
+    "bytes": [
+      240,
+      159,
+      152,
+      128
+    ],
+    "expected": "<p>😀</p>\n"
+  },
+  {
+    "bytes": [
+      226,
+      130
+    ],
+    "expected": "<p>�</p>\n"
+  },
+  {
+    "bytes": [
+      240,
+      159,
+      65
+    ],
+    "expected": "<p>�A</p>\n"
+  },
+  {
+    "bytes": [
+      239,
+      187,
+      191,
+      35,
+      32,
+      66,
+      79,
+      77
+    ],
+    "expected": "<h1>BOM</h1>\n"
+  },
+  {
+    "bytes": [
+      35,
+      32,
+      255,
+      10
+    ],
+    "expected": "<h1>�</h1>\n"
+  },
+  {
+    "bytes": [
+      60,
+      115,
+      112,
+      97,
+      110,
+      62,
+      255,
+      60,
+      47,
+      115,
+      112,
+      97,
+      110,
+      62
+    ],
+    "expected": "<p><span>�</span></p>\n"
+  }
+]

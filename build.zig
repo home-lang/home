@@ -759,9 +759,12 @@ pub fn build(b: *std.Build) void {
         tool_glob_support_pkg.addImport("bun", tool_glob_support_pkg);
         const tool_glob_matcher_pkg = createPackage(b, "packages/runtime/src/glob/matcher.zig", target, optimize, zig_test_framework);
         tool_glob_matcher_pkg.addImport("home", tool_glob_support_pkg);
+        const tool_markdown_parser_pkg = createPackage(b, "packages/runtime/src/tool_markdown_parser.zig", target, optimize, zig_test_framework);
+        tool_markdown_parser_pkg.addImport("bun", tool_compat_pkg);
         const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
         tool_runtime_pkg.addImport("bun", tool_compat_pkg);
         tool_runtime_pkg.addImport("tool_glob_matcher", tool_glob_matcher_pkg);
+        tool_runtime_pkg.addImport("tool_markdown_parser", tool_markdown_parser_pkg);
         tool_runtime_pkg.addImport("build_options", tool_build_options_module);
         tool_runtime_pkg.addImport("ts_driver", ts_driver_pkg);
         tool_runtime_pkg.addImport("hir", hir_pkg);
@@ -839,6 +842,26 @@ pub fn build(b: *std.Build) void {
         run_home_tool_file_buffer.addArgs(&.{ "run", "bun_file_buffer_independent.mjs" });
         run_home_tool_file_buffer.expectStdOutEqual("OK file reads independent of public Buffer methods\n");
         home_tool_smoke_step.dependOn(&run_home_tool_file_buffer.step);
+        const markdown_tests = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/runtime/test/tool_markdown.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "tool_markdown_parser", .module = tool_markdown_parser_pkg }},
+        }) });
+        const run_markdown_tests = b.addRunArtifact(markdown_tests);
+        home_tool_smoke_step.dependOn(&run_markdown_tests.step);
+        const markdown_test_step = b.step("home-tool-markdown-test", "Test the owned native HTML renderer and allocation ownership");
+        markdown_test_step.dependOn(&run_markdown_tests.step);
+        const run_markdown = b.addRunArtifact(home_tool_exe);
+        run_markdown.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_markdown.addArgs(&.{ "run", "bun_markdown.mjs" });
+        run_markdown.expectStdOutEqual("OK actual Markdown HTML 217 text/options + 265 binary cases and input contracts\n");
+        home_tool_smoke_step.dependOn(&run_markdown.step);
+        const run_markdown_limits = b.addRunArtifact(home_tool_exe);
+        run_markdown_limits.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_markdown_limits.addArgs(&.{ "run", "bun_markdown_buffer_limits.mjs" });
+        run_markdown_limits.expectStdOutEqual("OK Markdown reentrant buffer detachment is explicitly refused\n");
+        home_tool_smoke_step.dependOn(&run_markdown_limits.step);
         const run_contextual_identifiers = b.addRunArtifact(home_tool_exe);
         run_contextual_identifiers.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_contextual_identifiers.addArgs(&.{ "run", "contextual_identifiers.mjs" });

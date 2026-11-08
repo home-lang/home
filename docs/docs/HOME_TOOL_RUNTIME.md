@@ -45,6 +45,22 @@ Tools receive `console`, `process`, and a deliberately small `Home` host API:
 - `Home.spawnSync(argv)` resolves the executable through `PATH` and returns
   `{ exitCode, stdout, stderr }`.
 
+`Bun.markdown.html` and the `markdown` export from `bun` render through Home's
+owned native CommonMark/GFM parser on either engine backend. Strings, boxed
+strings, Buffer/typed-array byte ranges, ArrayBuffer and DataView inputs use
+actual bytes; malformed UTF-8 is replaced on HTML string conversion. The HTML
+bridge preserves NUL and supplementary characters with a length-bearing public
+C string constructor. Tables, task lists, strikethrough, autolinks, heading IDs
+and heading links, plus the parser's boolean extension flags, follow the same
+native option handling (including camelCase/snake_case aliases). Invalid inputs
+and throwing option getters remain failures. Parser stack/allocation failures
+are surfaced, and shared heading-tracker allocations are released after render.
+An option getter that detaches or changes the binary view's byte length is
+refused with ERR_HOME_MARKDOWN_BUFFER_CHANGED. Full Bun native buffer-pinning
+parity is not provided; an already-detached raw ArrayBuffer is refused too.
+This exposes the HTML method; ANSI, custom callback and React methods are not
+part of this tool adapter. It does not add a test scheduler or timer event loop.
+
 The `events`/`node:events` adapter exports a real synchronous EventEmitter
 constructor. Listener registration, prepend/once behavior, dispatch snapshots,
 one-at-a-time removal, meta-events, symbols, error monitoring/propagation and

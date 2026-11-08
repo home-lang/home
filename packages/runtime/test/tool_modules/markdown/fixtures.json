@@ -1,0 +1,1751 @@
+[
+  {
+    "name": "base-0",
+    "input": "",
+    "expected": ""
+  },
+  {
+    "name": "base-1",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "base-2",
+    "input": "> quote\n>\n> - first\n> - second\n",
+    "expected": "<blockquote>\n<p>quote</p>\n<ul>\n<li>first</li>\n<li>second</li>\n</ul>\n</blockquote>\n"
+  },
+  {
+    "name": "base-3",
+    "input": "5. first\n6. second\n\n    code\n",
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "base-4",
+    "input": "```js extra\nconst x = \"<&>\";\n```\n",
+    "expected": "<pre><code class=\"language-js\">const x = &quot;&lt;&amp;&gt;&quot;;\n</code></pre>\n"
+  },
+  {
+    "name": "base-5",
+    "input": "[link](https://example.com/a?x=1&y=2 \"title\") ![alt & text](pic.png \"q\")\n",
+    "expected": "<p><a href=\"https://example.com/a?x=1&amp;y=2\" title=\"title\">link</a> <img src=\"pic.png\" alt=\"alt &amp; text\" title=\"q\" /></p>\n"
+  },
+  {
+    "name": "base-6",
+    "input": "[ref][id]\n\n[id]: /actual \"Title\"\n",
+    "expected": "<p><a href=\"/actual\" title=\"Title\">ref</a></p>\n"
+  },
+  {
+    "name": "base-7",
+    "input": "---\n\nA  \nB\n",
+    "expected": "<hr />\n<p>A<br />\nB</p>\n"
+  },
+  {
+    "name": "base-8",
+    "input": "😀 café &amp; &#x1F600; &#0;\n",
+    "expected": "<p>😀 café &amp; 😀 �</p>\n"
+  },
+  {
+    "name": "base-9",
+    "input": "﻿# BOM\n\na\u0000b\n",
+    "expected": "<h1>BOM</h1>\n<p>a�b</p>\n"
+  },
+  {
+    "name": "base-10",
+    "input": "Lone \ud800 and \udfff\n",
+    "expected": "<p>Lone � and �</p>\n"
+  },
+  {
+    "name": "base-11",
+    "input": "A | B\n:- | -:\none | two\n",
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "base-12",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "base-13",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "base-14",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "base-15",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "base-16",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-17",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "tables": false
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-18",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "tables": false
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-19",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "tables": false
+    },
+    "expected": "<p>A | B\n:- | -:\none | two</p>\n"
+  },
+  {
+    "name": "options-20",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "tables": false
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-21",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "tables": false
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-22",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "tables": false
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-23",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "tables": false
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-24",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "tables": false
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-25",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "strikethrough": false
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-26",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "strikethrough": false
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-27",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "strikethrough": false
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-28",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "strikethrough": false
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p>~~strike~~</p>\n"
+  },
+  {
+    "name": "options-29",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "strikethrough": false
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-30",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "strikethrough": false
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-31",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "strikethrough": false
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-32",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "strikethrough": false
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-33",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "tasklists": false
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-34",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "tasklists": false
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-35",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "tasklists": false
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-36",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "tasklists": false
+    },
+    "expected": "<ul>\n<li>[x] done</li>\n<li>[ ] pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-37",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "tasklists": false
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-38",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "tasklists": false
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-39",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "tasklists": false
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-40",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "tasklists": false
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-41",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "autolinks": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-42",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "autolinks": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-43",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "autolinks": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-44",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "autolinks": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-45",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "autolinks": true
+    },
+    "expected": "<p><a href=\"http://www.example.com\">www.example.com</a> <a href=\"mailto:a@example.com\">a@example.com</a> <a href=\"https://example.com\">https://example.com</a></p>\n"
+  },
+  {
+    "name": "options-46",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "autolinks": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-47",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "autolinks": true
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-48",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "autolinks": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-49",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "autolinks": {
+        "url": true
+      }
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-50",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "autolinks": {
+        "url": true
+      }
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-51",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "autolinks": {
+        "url": true
+      }
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-52",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "autolinks": {
+        "url": true
+      }
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-53",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "autolinks": {
+        "url": true
+      }
+    },
+    "expected": "<p>www.example.com a@example.com <a href=\"https://example.com\">https://example.com</a></p>\n"
+  },
+  {
+    "name": "options-54",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "autolinks": {
+        "url": true
+      }
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-55",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "autolinks": {
+        "url": true
+      }
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-56",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "autolinks": {
+        "url": true
+      }
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-57",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "autolinks": {
+        "www": true
+      }
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-58",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "autolinks": {
+        "www": true
+      }
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-59",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "autolinks": {
+        "www": true
+      }
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-60",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "autolinks": {
+        "www": true
+      }
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-61",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "autolinks": {
+        "www": true
+      }
+    },
+    "expected": "<p><a href=\"http://www.example.com\">www.example.com</a> a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-62",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "autolinks": {
+        "www": true
+      }
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-63",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "autolinks": {
+        "www": true
+      }
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-64",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "autolinks": {
+        "www": true
+      }
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-65",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "autolinks": {
+        "email": true
+      }
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-66",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "autolinks": {
+        "email": true
+      }
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-67",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "autolinks": {
+        "email": true
+      }
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-68",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "autolinks": {
+        "email": true
+      }
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-69",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "autolinks": {
+        "email": true
+      }
+    },
+    "expected": "<p>www.example.com <a href=\"mailto:a@example.com\">a@example.com</a> https://example.com</p>\n"
+  },
+  {
+    "name": "options-70",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "autolinks": {
+        "email": true
+      }
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-71",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "autolinks": {
+        "email": true
+      }
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-72",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "autolinks": {
+        "email": true
+      }
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-73",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "headings": true
+    },
+    "expected": "<h1 id=\"header\"><a href=\"#header\">Header</a></h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-74",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "headings": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-75",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "headings": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-76",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "headings": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-77",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "headings": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-78",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "headings": true
+    },
+    "expected": "<h1 id=\"same\"><a href=\"#same\">Same</a></h1>\n<h1 id=\"same-1\"><a href=\"#same-1\">Same</a></h1>\n<h2 id=\"caf\"><a href=\"#caf\">Café 😀</a></h2>\n"
+  },
+  {
+    "name": "options-79",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "headings": true
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-80",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "headings": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-81",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "headings": {
+        "ids": true
+      }
+    },
+    "expected": "<h1 id=\"header\">Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-82",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "headings": {
+        "ids": true
+      }
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-83",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "headings": {
+        "ids": true
+      }
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-84",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "headings": {
+        "ids": true
+      }
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-85",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "headings": {
+        "ids": true
+      }
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-86",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "headings": {
+        "ids": true
+      }
+    },
+    "expected": "<h1 id=\"same\">Same</h1>\n<h1 id=\"same-1\">Same</h1>\n<h2 id=\"caf\">Café 😀</h2>\n"
+  },
+  {
+    "name": "options-87",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "headings": {
+        "ids": true
+      }
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-88",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "headings": {
+        "ids": true
+      }
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-89",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "headings": {
+        "autolink": true
+      }
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-90",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "headings": {
+        "autolink": true
+      }
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-91",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "headings": {
+        "autolink": true
+      }
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-92",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "headings": {
+        "autolink": true
+      }
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-93",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "headings": {
+        "autolink": true
+      }
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-94",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "headings": {
+        "autolink": true
+      }
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-95",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "headings": {
+        "autolink": true
+      }
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-96",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "headings": {
+        "autolink": true
+      }
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-97",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "hardSoftBreaks": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-98",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "hardSoftBreaks": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-99",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "hardSoftBreaks": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-100",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "hardSoftBreaks": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-101",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "hardSoftBreaks": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-102",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "hardSoftBreaks": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-103",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "hardSoftBreaks": true
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-104",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "hardSoftBreaks": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-105",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "wikiLinks": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-106",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "wikiLinks": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-107",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "wikiLinks": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-108",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "wikiLinks": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-109",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "wikiLinks": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-110",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "wikiLinks": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-111",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "wikiLinks": true
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-112",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "wikiLinks": true
+    },
+    "expected": "<p><x-wikilink data-target=\"wiki\">label</x-wikilink> <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-113",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "underline": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-114",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "underline": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-115",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "underline": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-116",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "underline": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-117",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "underline": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-118",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "underline": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-119",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "underline": true
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-120",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "underline": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-121",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "latexMath": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-122",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "latexMath": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-123",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "latexMath": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-124",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "latexMath": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-125",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "latexMath": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-126",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "latexMath": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-127",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "latexMath": true
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-128",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "latexMath": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-129",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "collapseWhitespace": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-130",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "collapseWhitespace": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-131",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "collapseWhitespace": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-132",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "collapseWhitespace": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-133",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "collapseWhitespace": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-134",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "collapseWhitespace": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-135",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "collapseWhitespace": true
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-136",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "collapseWhitespace": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-137",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "permissiveAtxHeaders": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-138",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "permissiveAtxHeaders": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-139",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "permissiveAtxHeaders": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-140",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "permissiveAtxHeaders": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-141",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "permissiveAtxHeaders": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-142",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "permissiveAtxHeaders": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-143",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "permissiveAtxHeaders": true
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-144",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "permissiveAtxHeaders": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-145",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "noIndentedCodeBlocks": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-146",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "noIndentedCodeBlocks": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-147",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "noIndentedCodeBlocks": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-148",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "noIndentedCodeBlocks": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-149",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "noIndentedCodeBlocks": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-150",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "noIndentedCodeBlocks": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-151",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "noIndentedCodeBlocks": true
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-152",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "noIndentedCodeBlocks": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-153",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "noHtmlBlocks": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-154",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "noHtmlBlocks": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-155",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "noHtmlBlocks": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-156",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "noHtmlBlocks": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-157",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "noHtmlBlocks": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-158",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "noHtmlBlocks": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-159",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "noHtmlBlocks": true
+    },
+    "expected": "<p><script>alert(1)</script></p>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-160",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "noHtmlBlocks": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-161",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "noHtmlSpans": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-162",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "noHtmlSpans": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-163",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "noHtmlSpans": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-164",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "noHtmlSpans": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-165",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "noHtmlSpans": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-166",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "noHtmlSpans": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-167",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "noHtmlSpans": true
+    },
+    "expected": "<script>alert(1)</script>\n<p>&lt;span&gt;inline&lt;/span&gt;</p>\n"
+  },
+  {
+    "name": "options-168",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "noHtmlSpans": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-169",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "tagFilter": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-170",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "tagFilter": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-171",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "tagFilter": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-172",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "tagFilter": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-173",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "tagFilter": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-174",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "tagFilter": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-175",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "tagFilter": true
+    },
+    "expected": "&lt;script>alert(1)&lt;/script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-176",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "tagFilter": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-177",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "no_html_blocks": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-178",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "no_html_blocks": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-179",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "no_html_blocks": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-180",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "no_html_blocks": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-181",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "no_html_blocks": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-182",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "no_html_blocks": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-183",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "no_html_blocks": true
+    },
+    "expected": "<p><script>alert(1)</script></p>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-184",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "no_html_blocks": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-185",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "hard_soft_breaks": true
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-186",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "hard_soft_breaks": true
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-187",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "hard_soft_breaks": true
+    },
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-188",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "hard_soft_breaks": true
+    },
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-189",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "hard_soft_breaks": true
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-190",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "hard_soft_breaks": true
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-191",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "hard_soft_breaks": true
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-192",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "hard_soft_breaks": true
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-193",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": {
+      "tables": 0,
+      "strikethrough": null,
+      "tasklists": ""
+    },
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-194",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": {
+      "tables": 0,
+      "strikethrough": null,
+      "tasklists": ""
+    },
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-195",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": {
+      "tables": 0,
+      "strikethrough": null,
+      "tasklists": ""
+    },
+    "expected": "<p>A | B\n:- | -:\none | two</p>\n"
+  },
+  {
+    "name": "options-196",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": {
+      "tables": 0,
+      "strikethrough": null,
+      "tasklists": ""
+    },
+    "expected": "<ul>\n<li>[x] done</li>\n<li>[ ] pending</li>\n</ul>\n<p>~~strike~~</p>\n"
+  },
+  {
+    "name": "options-197",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": {
+      "tables": 0,
+      "strikethrough": null,
+      "tasklists": ""
+    },
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-198",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": {
+      "tables": 0,
+      "strikethrough": null,
+      "tasklists": ""
+    },
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-199",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": {
+      "tables": 0,
+      "strikethrough": null,
+      "tasklists": ""
+    },
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-200",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": {
+      "tables": 0,
+      "strikethrough": null,
+      "tasklists": ""
+    },
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-201",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": null,
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-202",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": null,
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-203",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": null,
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-204",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": null,
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-205",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": null,
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-206",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": null,
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-207",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": null,
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-208",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": null,
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  },
+  {
+    "name": "options-209",
+    "input": "# Header\n\ntext *em* **strong** `code`\n",
+    "options": 123,
+    "expected": "<h1>Header</h1>\n<p>text <em>em</em> <strong>strong</strong> <code>code</code></p>\n"
+  },
+  {
+    "name": "options-210",
+    "input": "5. first\n6. second\n\n    code\n",
+    "options": 123,
+    "expected": "<ol start=\"5\">\n<li>\n<p>first</p>\n</li>\n<li>\n<p>second</p>\n<p>code</p>\n</li>\n</ol>\n"
+  },
+  {
+    "name": "options-211",
+    "input": "A | B\n:- | -:\none | two\n",
+    "options": 123,
+    "expected": "<table>\n<thead>\n<tr><th align=\"left\">A</th><th align=\"right\">B</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">one</td><td align=\"right\">two</td></tr>\n</tbody>\n</table>\n"
+  },
+  {
+    "name": "options-212",
+    "input": "- [x] done\n- [ ] pending\n\n~~strike~~\n",
+    "options": 123,
+    "expected": "<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>done</li>\n<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled>pending</li>\n</ul>\n<p><del>strike</del></p>\n"
+  },
+  {
+    "name": "options-213",
+    "input": "www.example.com a@example.com https://example.com\n",
+    "options": 123,
+    "expected": "<p>www.example.com a@example.com https://example.com</p>\n"
+  },
+  {
+    "name": "options-214",
+    "input": "# Same\n\n# Same\n\n## Café 😀\n",
+    "options": 123,
+    "expected": "<h1>Same</h1>\n<h1>Same</h1>\n<h2>Café 😀</h2>\n"
+  },
+  {
+    "name": "options-215",
+    "input": "<script>alert(1)</script>\n\n<span>inline</span>\n",
+    "options": 123,
+    "expected": "<script>alert(1)</script>\n<p><span>inline</span></p>\n"
+  },
+  {
+    "name": "options-216",
+    "input": "[[wiki|label]] __under__ $math$\n",
+    "options": 123,
+    "expected": "<p>[[wiki|label]] <strong>under</strong> $math$</p>\n"
+  }
+]

@@ -29,3 +29,10 @@ pub fn dupeZ(allocator: std.mem.Allocator, comptime T: type, value: []const T) s
     @memcpy(copy, value);
     return copy;
 }
+
+const markdown_support = @import("tool_markdown_support.zig");
+pub const JSError = markdown_support.JSError;
+pub const StackOverflow = markdown_support.StackOverflow;
+pub const StringHashMapUnmanaged = markdown_support.StringHashMapUnmanaged;
+pub const bit_set = markdown_support.bit_set;
+pub const strings = markdown_support.strings;
