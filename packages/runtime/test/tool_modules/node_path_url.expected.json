@@ -1,0 +1,813 @@
+{
+  "producer": "v26.10.0",
+  "cases": [
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        ""
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "/"
+      ],
+      "value": "/"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "//"
+      ],
+      "value": "/"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "///"
+      ],
+      "value": "/"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "/a"
+      ],
+      "value": "/a"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "//a"
+      ],
+      "value": "/a"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "//a/"
+      ],
+      "value": "/a/"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "a/"
+      ],
+      "value": "a/"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "./"
+      ],
+      "value": "./"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "../"
+      ],
+      "value": "../"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "/a//b/.."
+      ],
+      "value": "/a"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "a/../../b"
+      ],
+      "value": "../b"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        ".hidden"
+      ],
+      "value": ".hidden"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "."
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        ".."
+      ],
+      "value": ".."
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "/a/./b/"
+      ],
+      "value": "/a/b/"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        "/a\u0000b"
+      ],
+      "value": "/a\u0000b"
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        null
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "module": "path",
+      "method": "normalize",
+      "args": [
+        23
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        ""
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "/"
+      ],
+      "value": "/"
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "//"
+      ],
+      "value": "/"
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "///"
+      ],
+      "value": "/"
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "/a"
+      ],
+      "value": "/"
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "//a"
+      ],
+      "value": "//"
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "//a/"
+      ],
+      "value": "//"
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "a/"
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "./"
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "../"
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "/a//b/.."
+      ],
+      "value": "/a//b"
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "a/../../b"
+      ],
+      "value": "a/../.."
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        ".hidden"
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "."
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        ".."
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "/a/./b/"
+      ],
+      "value": "/a/."
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        "/a\u0000b"
+      ],
+      "value": "/"
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        null
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "module": "path",
+      "method": "dirname",
+      "args": [
+        23
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        ""
+      ],
+      "value": false
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "/"
+      ],
+      "value": true
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "//"
+      ],
+      "value": true
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "///"
+      ],
+      "value": true
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "/a"
+      ],
+      "value": true
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "//a"
+      ],
+      "value": true
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "//a/"
+      ],
+      "value": true
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "a/"
+      ],
+      "value": false
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "./"
+      ],
+      "value": false
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "../"
+      ],
+      "value": false
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "/a//b/.."
+      ],
+      "value": true
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "a/../../b"
+      ],
+      "value": false
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        ".hidden"
+      ],
+      "value": false
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "."
+      ],
+      "value": false
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        ".."
+      ],
+      "value": false
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "/a/./b/"
+      ],
+      "value": true
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        "/a\u0000b"
+      ],
+      "value": true
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        null
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "module": "path",
+      "method": "isAbsolute",
+      "args": [
+        23
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "module": "path",
+      "method": "join",
+      "args": [],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "join",
+      "args": [
+        ""
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "join",
+      "args": [
+        "",
+        ""
+      ],
+      "value": "."
+    },
+    {
+      "module": "path",
+      "method": "join",
+      "args": [
+        "a",
+        "/b",
+        ".."
+      ],
+      "value": "a"
+    },
+    {
+      "module": "path",
+      "method": "resolve",
+      "args": [
+        "a",
+        "/b",
+        ".."
+      ],
+      "value": "/"
+    },
+    {
+      "module": "path",
+      "method": "join",
+      "args": [
+        "/",
+        "a",
+        "..",
+        "b/"
+      ],
+      "value": "/b/"
+    },
+    {
+      "module": "path",
+      "method": "resolve",
+      "args": [
+        "/",
+        "a",
+        "..",
+        "b/"
+      ],
+      "value": "/b"
+    },
+    {
+      "module": "path",
+      "method": "join",
+      "args": [
+        "a",
+        "../../b"
+      ],
+      "value": "../b"
+    },
+    {
+      "module": "path",
+      "method": "join",
+      "args": [
+        23,
+        "/absolute"
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "module": "path",
+      "method": "resolve",
+      "args": [
+        23,
+        "/absolute"
+      ],
+      "value": "/absolute"
+    },
+    {
+      "module": "path",
+      "method": "join",
+      "args": [
+        "/base",
+        23,
+        "/absolute"
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "module": "path",
+      "method": "resolve",
+      "args": [
+        "/base",
+        23,
+        "/absolute"
+      ],
+      "value": "/absolute"
+    },
+    {
+      "module": "path",
+      "method": "join",
+      "args": [
+        "a",
+        23
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///tmp/a%20b%23%25"
+      ],
+      "value": "/tmp/a b#%"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file://localhost/tmp/a"
+      ],
+      "value": "/tmp/a"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:/tmp/a"
+      ],
+      "value": "/tmp/a"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:tmp/a"
+      ],
+      "value": "/tmp/a"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "FILE:///tmp/a"
+      ],
+      "value": "/tmp/a"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///a/../b"
+      ],
+      "value": "/b"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///a/%2e%2e/b"
+      ],
+      "value": "/b"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///a/%252e/b"
+      ],
+      "value": "/a/%2e/b"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///a//b"
+      ],
+      "value": "/a//b"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///a?ignored#ignored"
+      ],
+      "value": "/a"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///a%3Fb%23c"
+      ],
+      "value": "/a?b#c"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///caf%C3%A9/%F0%9F%98%80"
+      ],
+      "value": "/café/😀"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///tmp/a%2fb"
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_FILE_URL_PATH"
+      }
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file://host/tmp/a"
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_FILE_URL_HOST"
+      }
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file://localhost:80/tmp/a"
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_URL"
+      }
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///%ff"
+      ],
+      "error": {
+        "name": "URIError"
+      }
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "https://example.com/x"
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_URL_SCHEME"
+      }
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "no-url"
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_URL"
+      }
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///a\\b"
+      ],
+      "value": "/a/b"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///\ud800"
+      ],
+      "value": "/�"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///\udc00"
+      ],
+      "value": "/�"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file:///😀"
+      ],
+      "value": "/😀"
+    },
+    {
+      "module": "url",
+      "method": "fileURLToPath",
+      "args": [
+        "file://%ff/tmp/a"
+      ],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_URL"
+      }
+    }
+  ]
+}

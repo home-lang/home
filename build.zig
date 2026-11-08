@@ -844,6 +844,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_create_require.addArgs(&.{ "run", "node_module_entry.cjs" });
         run_home_tool_create_require.expectStdOutEqual("OK home-tool anchored createRequire\n");
         home_tool_smoke_step.dependOn(&run_home_tool_create_require.step);
+        const run_home_tool_path_url = b.addRunArtifact(home_tool_exe);
+        run_home_tool_path_url.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_path_url.addArgs(&.{ "run", "node_path_url_entry.cjs" });
+        run_home_tool_path_url.expectStdOutEqual("OK home-tool POSIX path and file URL operations\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_path_url.step);
     } else {
         const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);

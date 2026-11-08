@@ -60,6 +60,14 @@ referrer need not exist; a trailing slash anchors a directory. `require.resolve`
 does not parse or execute its target. URL objects, Windows referrers, and other
 Module APIs still require implementations.
 
+On POSIX hosts, `path`/`node:path` and `path/posix`/`node:path/posix` share
+`normalize`, `isAbsolute`, `join`, `resolve`, `dirname`, `sep` and `delimiter`.
+`url`/`node:url` provide `fileURLToPath` for local POSIX file URL strings, with
+URL escaping, dot segments, scalar-value conversion and query/fragment handling.
+The Node-produced path/URL fixture retains both successful results and errors.
+Other path methods, Windows path behavior, URL objects and other URL APIs still
+require implementations.
+
 The runner resolves relative and absolute modules plus offline `node_modules`
 packages. TypeScript/JavaScript modules emit to CommonJS, JSON modules load
 directly, package `main`/`module` entries and `index.*` fallbacks are supported,

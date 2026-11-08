@@ -95,21 +95,42 @@
   // POSIX file URL conversion for referrers. Normalize URL dot segments before
   // percent decoding, so %252e remains a literal filename rather than a dot.
   // https://nodejs.org/api/module.html#modulecreaterequirefilename
+  function fileURLError(code) {
+    const error = new TypeError('Invalid POSIX file URL');
+    error.code = code;
+    throw error;
+  }
+
   function fileReferrer(filename) {
-    let text = filename.trim().replace(/[\t\r\n]/g, '').replace(/\\/g, '/');
-    if (!/^file:/i.test(text)) invalidReferrer();
+    let text = filename.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '').replace(/[\t\r\n]/g, '').replace(/\\/g, '/');
+    // URL input is a Unicode scalar-value string; lone UTF-16 surrogates are
+    // replaced, whereas valid surrogate pairs retain their code point.
+    text = Array.from(text, function(character) {
+      const point = character.codePointAt(0);
+      return point >= 0xd800 && point <= 0xdfff ? '\ufffd' : character;
+    }).join('');
+    if (!/^file:/i.test(text)) {
+      fileURLError(/^[a-z][a-z0-9+.-]*:/i.test(text) ? 'ERR_INVALID_URL_SCHEME' : 'ERR_INVALID_URL');
+    }
     text = text.slice(5);
     if (text.startsWith('//')) {
       text = text.slice(2);
       const end = text.search(/[/?#]/);
       const host = end === -1 ? text : text.slice(0, end);
-      const decodedHost = decodeURIComponent(host).toLowerCase();
-      if (decodedHost !== '' && decodedHost !== 'localhost') invalidReferrer();
+      if (/[@:]/.test(host)) fileURLError('ERR_INVALID_URL');
+      let decodedHost;
+      try {
+        decodedHost = decodeURIComponent(host).toLowerCase();
+      }
+      catch {
+        fileURLError('ERR_INVALID_URL');
+      }
+      if (decodedHost !== '' && decodedHost !== 'localhost') fileURLError('ERR_INVALID_FILE_URL_HOST');
       text = end === -1 ? '/' : text.slice(end);
     }
     text = text.split(/[?#]/)[0];
     if (!text.startsWith('/')) text = `/${text}`;
-    if (/%2f/i.test(text)) invalidReferrer();
+    if (/%2f/i.test(text)) fileURLError('ERR_INVALID_FILE_URL_PATH');
     const segments = text.slice(1).split('/');
     const normalized = [];
     for (let index = 0; index < segments.length; index++) {
@@ -146,10 +167,106 @@
       return Home.createRequire(filename);
     },
   };
+
+  function pathString(value) {
+    if (typeof value !== 'string') {
+      const error = new TypeError('Path must be a string');
+      error.code = 'ERR_INVALID_ARG_TYPE';
+      throw error;
+    }
+    return value;
+  }
+
+  function normalizedSegments(path, aboveRoot) {
+    const result = [];
+    for (const segment of path.split('/')) {
+      if (segment === '' || segment === '.') continue;
+      if (segment === '..') {
+        if (result.length && result[result.length - 1] !== '..') result.pop();
+        else if (aboveRoot) result.push('..');
+      }
+      else result.push(segment);
+    }
+    return result.join('/');
+  }
+
+  function normalize(path) {
+    pathString(path);
+    const absolute = path.startsWith('/');
+    let result = normalizedSegments(path, !absolute);
+    if (!absolute && result === '') result = '.';
+    if (result !== '' && path.endsWith('/')) result += '/';
+    return `${absolute ? '/' : ''}${result}`;
+  }
+
+  const posixPath = {
+    sep: '/',
+    delimiter: ':',
+    normalize: normalize,
+    isAbsolute: function(path) {
+      return pathString(path).startsWith('/');
+    },
+    join: function(...paths) {
+      const parts = [];
+      for (const path of paths) {
+        pathString(path);
+        if (path !== '') parts.push(path);
+      }
+      return normalize(parts.join('/'));
+    },
+    resolve: function(...paths) {
+      let result = '';
+      let absolute = false;
+      for (let index = paths.length - 1; index >= -1 && !absolute; index--) {
+        if (index === -1 && process.platform === 'win32') unsupported('Home POSIX resolve cannot derive a POSIX cwd on Windows');
+        const path = pathString(index >= 0 ? paths[index] : process.cwd());
+        if (path === '') continue;
+        result = `${path}/${result}`;
+        absolute = path.startsWith('/');
+      }
+      result = normalizedSegments(result, !absolute);
+      return `${absolute ? '/' : ''}${result}` || '.';
+    },
+    dirname: function(path) {
+      pathString(path);
+      if (path.length === 0) return '.';
+      const root = path.startsWith('/');
+      let end = -1;
+      let trailing = true;
+      for (let index = path.length - 1; index >= 1; index--) {
+        if (path[index] === '/') {
+          if (!trailing) {
+            end = index;
+            break;
+          }
+        }
+        else trailing = false;
+      }
+      if (end === -1) return root ? '/' : '.';
+      if (root && end === 1) return '//';
+      return path.slice(0, end);
+    },
+  };
+  posixPath.posix = posixPath;
+  const urlApi = {
+    fileURLToPath: function(url, options) {
+      if (process.platform === 'win32' || options !== undefined) unsupported('Home fileURLToPath currently supports native POSIX conversion without options');
+      if (typeof url !== 'string') unsupported('Home fileURLToPath currently supports URL strings only');
+      return fileReferrer(url);
+    },
+  };
   const builtins = Object.create(null);
   builtins.fs = fs;
   builtins['node:fs'] = fs;
   builtins.module = moduleApi;
   builtins['node:module'] = moduleApi;
+  if (process.platform !== 'win32') {
+    builtins.path = posixPath;
+    builtins['node:path'] = posixPath;
+  }
+  builtins['path/posix'] = posixPath;
+  builtins['node:path/posix'] = posixPath;
+  builtins.url = urlApi;
+  builtins['node:url'] = urlApi;
   globalThis.__home_tool_builtins = builtins;
 })();
