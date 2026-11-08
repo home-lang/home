@@ -31,6 +31,7 @@
 //!   - Symlink realpath canonicalization for case-sensitive matching
 
 const std = @import("std");
+pub const FileNameContext = @import("filename_case.zig").Context;
 
 /// Module resolution strategy. Maps to the `compilerOptions.moduleResolution`
 /// option. Defaults follow tsc's rules in `getEmitModuleResolutionKind`.
@@ -213,6 +214,9 @@ pub const ResolveError = error{
 /// implementation; tests pass a `VirtualFs` that resolves from an
 /// in-memory map.
 pub const FileSystem = struct {
+    /// Compiler-host filename identity, independent of the data volume's
+    /// physical case sensitivity and realpath/symlink behavior.
+    use_case_sensitive_file_names: bool = true,
     /// Function-pointer interface so the FS can be polymorphic.
     ptr: *anyopaque,
     vtable: *const VTable,

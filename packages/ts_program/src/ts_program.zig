@@ -415,13 +415,14 @@ pub const Program = struct {
     /// registry's append-only identity tables require exclusive mutation.
     owners_mutex: OwnerMutex = .{},
     files: std.ArrayListUnmanaged(*File),
-    by_path: std.StringHashMapUnmanaged(FileId),
+    file_name_context: ts_resolver.FileNameContext,
+    by_path: std.HashMapUnmanaged([]const u8, FileId, ts_resolver.FileNameContext, 80),
     by_package_id: std.StringHashMapUnmanaged(FileId),
     deduplicate_packages: bool,
     no_resolve: bool = false,
     resolver: *ts_resolver.Resolver,
     /// Stored sources keyed by path (we own the dupes).
-    sources: std.StringHashMapUnmanaged([]const u8),
+    sources: std.HashMapUnmanaged([]const u8, []const u8, ts_resolver.FileNameContext, 80),
     /// Installed compiler libraries selected once for the project closure.
     installed_library_path: ?[]const u8 = null,
 
@@ -430,6 +431,7 @@ pub const Program = struct {
             .gpa = gpa,
             .owners = source_owners.Registry.init(gpa),
             .files = .empty,
+            .file_name_context = .{ .case_sensitive = resolver.fs.use_case_sensitive_file_names },
             .by_path = .empty,
             .by_package_id = .empty,
             .deduplicate_packages = true,
@@ -484,7 +486,7 @@ pub const Program = struct {
     }
 
     fn addWithOrigin(self: *Program, path: []const u8, source: []const u8, root_input: bool) ProgramError!FileId {
-        if (self.by_path.get(path)) |id| {
+        if (self.by_path.getContext(path, self.file_name_context)) |id| {
             if (!self.files.items[id].present) {
                 _ = try self.updateSource(path, source);
             }
@@ -519,16 +521,16 @@ pub const Program = struct {
         try self.files.append(self.gpa, file);
 
         const key = try self.gpa.dupe(u8, path);
-        try self.by_path.put(self.gpa, key, id);
+        try self.by_path.putContext(self.gpa, key, id, self.file_name_context);
 
         const skey = try self.gpa.dupe(u8, path);
-        try self.sources.put(self.gpa, skey, owned_source);
+        try self.sources.putContext(self.gpa, skey, owned_source, self.file_name_context);
 
         return id;
     }
 
     fn addRedirectFile(self: *Program, path: []const u8, target_id: FileId) ProgramError!FileId {
-        if (self.by_path.get(path)) |id| {
+        if (self.by_path.getContext(path, self.file_name_context)) |id| {
             const existing = self.files.items[id];
             if (!existing.present) {
                 const affected = try self.gpa.alloc(bool, self.files.items.len);
@@ -570,7 +572,7 @@ pub const Program = struct {
         try self.files.append(self.gpa, file);
 
         const key = try self.gpa.dupe(u8, path);
-        try self.by_path.put(self.gpa, key, id);
+        try self.by_path.putContext(self.gpa, key, id, self.file_name_context);
 
         return id;
     }
@@ -665,7 +667,7 @@ pub const Program = struct {
         }
         var has_new_path = false;
         for (changed_paths) |path| {
-            if (self.by_path.get(path) == null) {
+            if (self.by_path.getContext(path, self.file_name_context) == null) {
                 has_new_path = true;
                 break;
             }
@@ -693,7 +695,7 @@ pub const Program = struct {
                 }
                 if (!affected[importer.id]) {
                     for (changed_paths) |path| {
-                        if (self.by_path.get(path) != null) continue;
+                        if (self.by_path.getContext(path, self.file_name_context) != null) continue;
                         if (!std.mem.eql(u8, resolved.path, path)) continue;
                         affected[importer.id] = true;
                         break;
@@ -720,12 +722,12 @@ pub const Program = struct {
     /// on the revised exports. Allocation completes before any published
     /// source or compilation state changes.
     pub fn updateSource(self: *Program, path: []const u8, new_source: []const u8) ProgramError!?FileId {
-        const id = self.by_path.get(path) orelse return null;
+        const id = self.by_path.getContext(path, self.file_name_context) orelse return null;
         const canonical_id = self.canonicalFileId(id);
         const canonical = self.files.items[canonical_id];
         const was_missing = !self.files.items[id].present;
         const canonical_was_missing = !canonical.present;
-        const source_slot = self.sources.getPtr(canonical.path);
+        const source_slot = self.sources.getPtrContext(canonical.path, self.file_name_context);
         if (!canonical_was_missing and source_slot == null) return error.NotFound;
         if (canonical_was_missing and source_slot != null) return error.NotFound;
         const affected = try self.gpa.alloc(bool, self.files.items.len);
@@ -737,7 +739,7 @@ pub const Program = struct {
         errdefer self.gpa.free(new_dupe);
         const new_key = if (canonical_was_missing) try self.gpa.dupe(u8, canonical.path) else null;
         errdefer if (new_key) |key| self.gpa.free(key);
-        if (canonical_was_missing) try self.sources.ensureUnusedCapacity(self.gpa, 1);
+        if (canonical_was_missing) try self.sources.ensureUnusedCapacityContext(self.gpa, 1, self.file_name_context);
 
         // Everything after preallocation succeeds is allocation-free. Keep
         // the old map entry, source slices, compilations, owners, imports, and
@@ -748,7 +750,7 @@ pub const Program = struct {
             slot.* = new_dupe;
             self.gpa.free(old_source);
         } else {
-            self.sources.putAssumeCapacityNoClobber(new_key.?, new_dupe);
+            self.sources.putAssumeCapacityNoClobberContext(new_key.?, new_dupe, self.file_name_context);
         }
         canonical.present = true;
         canonical.restored_in_revision = canonical.restored_in_revision or was_missing or canonical_was_missing;
@@ -769,7 +771,7 @@ pub const Program = struct {
     /// cleared. Re-adding the path through `updateSource` restores the same
     /// FileId rather than compiling an empty stand-in.
     pub fn removeSource(self: *Program, path: []const u8) ProgramError!?FileId {
-        const id = self.by_path.get(path) orelse return null;
+        const id = self.by_path.getContext(path, self.file_name_context) orelse return null;
         const removed = self.files.items[id];
         if (!removed.present) return id;
 
@@ -790,7 +792,7 @@ pub const Program = struct {
         errdefer if (promoted_source) |source| self.gpa.free(source);
         errdefer if (promoted_key) |key| self.gpa.free(key);
         if (id == canonical_id) {
-            if (!self.sources.contains(removed.path)) return error.NotFound;
+            if (!self.sources.containsContext(removed.path, self.file_name_context)) return error.NotFound;
             // A package-identity redirect is a real physical path. If its
             // former canonical path disappears, promote a surviving path and
             // read that path's own bytes before changing any Program state.
@@ -804,7 +806,7 @@ pub const Program = struct {
                 };
                 promoted_source = source;
                 promoted_key = try self.gpa.dupe(u8, candidate.path);
-                try self.sources.ensureUnusedCapacity(self.gpa, 1);
+                try self.sources.ensureUnusedCapacityContext(self.gpa, 1, self.file_name_context);
                 promoted_id = candidate.id;
                 break;
             }
@@ -818,7 +820,7 @@ pub const Program = struct {
         self.clearIncludeReason(removed);
         if (id != canonical_id) return id;
 
-        const old_source = self.sources.fetchRemove(removed.path).?;
+        const old_source = self.sources.fetchRemoveContext(removed.path, self.file_name_context).?;
         self.gpa.free(old_source.key);
         self.gpa.free(old_source.value);
         for (self.files.items) |file| {
@@ -842,7 +844,7 @@ pub const Program = struct {
             // reappears, it rejoins this package owner instead of creating a
             // second canonical compilation for the same package identity.
             removed.redirect_target = replacement_id;
-            self.sources.putAssumeCapacityNoClobber(promoted_key.?, promoted_source.?);
+            self.sources.putAssumeCapacityNoClobberContext(promoted_key.?, promoted_source.?, self.file_name_context);
             promoted_source = null;
             promoted_key = null;
             var packages = self.by_package_id.iterator();
@@ -869,7 +871,7 @@ pub const Program = struct {
     }
 
     pub fn lookupPath(self: *const Program, path: []const u8) ?FileId {
-        const id = self.by_path.get(path) orelse return null;
+        const id = self.by_path.getContext(path, self.file_name_context) orelse return null;
         return if (self.files.items[id].present) id else null;
     }
 
@@ -4213,7 +4215,7 @@ pub const Program = struct {
         for (values) |value| {
             const declaration = value.declaration orelse continue;
             if (!jsdoc_types.isJavaScriptPath(declaration.path)) continue;
-            const owner_id = self.by_path.get(declaration.path) orelse continue;
+            const owner_id = self.by_path.getContext(declaration.path, self.file_name_context) orelse continue;
             if (owner_id >= imported.len or !imported[owner_id]) continue;
             if (value.kind == .variable or
                 std.mem.indexOf(u8, self.files.items[owner_id].source, "@param") != null) return true;
@@ -4223,7 +4225,7 @@ pub const Program = struct {
         // whenever its exported class actually has instance methods.
         for (classes) |class| {
             if (!jsdoc_types.isJavaScriptPath(class.declaration_path)) continue;
-            const owner_id = self.by_path.get(class.declaration_path) orelse continue;
+            const owner_id = self.by_path.getContext(class.declaration_path, self.file_name_context) orelse continue;
             if (owner_id >= imported.len or !imported[owner_id]) continue;
             for (class.members) |member| if (member.is_method) return true;
             for (class.static_members) |member| if (member.is_method) return true;
@@ -4733,7 +4735,7 @@ pub const Program = struct {
                 // If the resolved file is already in the program,
                 // record the edge. Otherwise the program is partial —
                 // the LSP will pick it up when the file is added.
-                if (self.by_path.get(res.path)) |target_id| {
+                if (self.by_path.getContext(res.path, self.file_name_context)) |target_id| {
                     if (!self.files.items[target_id].present) continue;
                     const seen = try targets.getOrPut(self.gpa, target_id);
                     if (seen.found_existing) continue;
@@ -5020,7 +5022,7 @@ pub const Program = struct {
                                 error.OutOfMemory => return error.OutOfMemory,
                             };
                             defer self.gpa.free(candidate);
-                            if (self.by_path.get(candidate)) |existing_id| {
+                            if (self.by_path.getContext(candidate, self.file_name_context)) |existing_id| {
                                 if (self.files.items[existing_id].present) {
                                     try self.appendIncludeEdge(f, existing_id, .reference_file);
                                     depth_changed_in_round = depth_changed_in_round or
@@ -5072,7 +5074,7 @@ pub const Program = struct {
                                 error.OutOfMemory => return error.OutOfMemory,
                             } orelse continue;
                             defer self.gpa.free(candidate);
-                            if (self.by_path.get(candidate)) |existing_id| {
+                            if (self.by_path.getContext(candidate, self.file_name_context)) |existing_id| {
                                 if (self.files.items[existing_id].present) {
                                     try self.appendIncludeEdge(f, existing_id, .lib_reference);
                                     depth_changed_in_round = depth_changed_in_round or
@@ -5486,7 +5488,7 @@ pub const Program = struct {
             return .{};
         }
 
-        if (self.by_path.get(res.path)) |existing_id| {
+        if (self.by_path.getContext(res.path, self.file_name_context)) |existing_id| {
             if (!self.files.items[existing_id].present) {
                 const restored_id = try self.addResolvedIncludeFileFromResolution(res);
                 return .{ .target_id = restored_id, .added = restored_id != null };
@@ -5761,7 +5763,7 @@ pub const Program = struct {
             if (file.present and file.redirect_target == null and file.compilation == null) affected[file.id] = true;
         }
         for (changed_paths) |path| {
-            const requested_id = self.by_path.get(path) orelse continue;
+            const requested_id = self.by_path.getContext(path, self.file_name_context) orelse continue;
             const canonical_id = self.canonicalFileId(requested_id);
             self.markCanonicalRevision(canonical_id, affected);
         }
@@ -12495,6 +12497,65 @@ const SourceExportResolver = struct {
     }
 };
 
+test "program filename identity follows the filesystem host policy" {
+    const Case = struct { first: []const u8, second: []const u8, alias: bool };
+    for ([_]Case{
+        .{ .first = "/src/Foo.ts", .second = "/src/foo.ts", .alias = true },
+        .{ .first = "/src/ΟΣ.ts", .second = "/src/οσ.ts", .alias = true },
+        .{ .first = "/src/K.ts", .second = "/src/k.ts", .alias = true },
+        .{ .first = "/src/𐐀.ts", .second = "/src/𐐨.ts", .alias = true },
+        .{ .first = "/src/İ.ts", .second = "/src/i.ts", .alias = false },
+        .{ .first = "/src/İ.ts", .second = "/src/i̇.ts", .alias = false },
+        .{ .first = "/src/ß.ts", .second = "/src/ss.ts", .alias = false },
+    }) |case| {
+        for ([_]bool{ true, false }) |case_sensitive| {
+            var virtual = ts_resolver.VirtualFs.init(T.allocator);
+            defer virtual.deinit();
+            var fs = virtual.fs();
+            fs.use_case_sensitive_file_names = case_sensitive;
+            var resolver = ts_resolver.Resolver.init(T.allocator, fs, .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            const first = try program.add(case.first, "export const first = 1;");
+            const second = try program.add(case.second, "export const second = 2;");
+            const same = !case_sensitive and case.alias;
+            try T.expectEqual(same, first == second);
+            try T.expectEqual(@as(usize, if (same) 1 else 2), program.files.items.len);
+            try T.expectEqual(first, program.lookupPath(case.first).?);
+            try T.expectEqual(second, program.lookupPath(case.second).?);
+            try T.expectEqualStrings(case.first, program.fileById(first).path);
+            try T.expectEqualStrings("export const first = 1;", program.fileById(first).source);
+        }
+    }
+}
+
+test "program filename identity survives alias updates removal and restoration" {
+    var virtual = ts_resolver.VirtualFs.init(T.allocator);
+    defer virtual.deinit();
+    var fs = virtual.fs();
+    fs.use_case_sensitive_file_names = false;
+    var resolver = ts_resolver.Resolver.init(T.allocator, fs, .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const id = try program.add("/src/K.ts", "export const value = 1;");
+    try T.expectEqual(id, (try program.updateSource("/src/k.ts", "export const value = 2;")).?);
+    try T.expectEqualStrings("export const value = 2;", program.fileById(id).source);
+    try T.expectEqual(@as(usize, 1), program.sources.count());
+    try T.expectEqual(id, (try program.removeSource("/src/k.ts")).?);
+    try T.expect(program.lookupPath("/src/K.ts") == null);
+    try T.expect(program.lookupPath("/src/k.ts") == null);
+    try T.expectEqual(@as(usize, 0), program.sources.count());
+    try T.expectEqual(id, try program.add("/src/k.ts", "export const value = 3;"));
+    try T.expectEqualStrings("/src/K.ts", program.fileById(id).path);
+    try T.expectEqualStrings("export const value = 3;", program.fileById(id).source);
+    try T.expectEqual(id, program.lookupPath("/src/k.ts").?);
+    try T.expectEqual(id, program.lookupPath("/src/K.ts").?);
+    try T.expectEqual(@as(usize, 1), program.files.items.len);
+    try T.expectEqual(@as(usize, 1), program.sources.count());
+}
+
 test "module export assignment private type query follows object signatures" {
     const source =
         \\interface Private {}
@@ -13004,8 +13065,8 @@ test "Program: duplicate package-id redirect survives source update and recompil
     try T.expect(redirect.redirect_target == null);
     try T.expectEqual(redirect_id, p.by_package_id.get(package_id).?);
     try T.expectEqualStrings("export const value: number;\n", redirect.source);
-    try T.expect(!p.sources.contains(canonical.path));
-    try T.expect(p.sources.contains(redirect.path));
+    try T.expect(!p.sources.containsContext(canonical.path, p.file_name_context));
+    try T.expect(p.sources.containsContext(redirect.path, p.file_name_context));
     _ = try p.recompileChanged(&.{"/app/node_modules/pkg/index.d.ts"}, .{});
     try T.expect(redirect.compilation != null);
     try T.expect(canonical.compilation == null);
@@ -15060,7 +15121,7 @@ test "Program: updateSource publishes source and redirects atomically" {
     try T.expectEqualStrings("let x = 1;", canonical.source);
     try T.expectEqual(source_count, p.sources.count());
     try T.expectEqualSlices(FileId, &.{second_redirect_id}, canonical.imports.items);
-    const preserved_source = p.sources.get("/a.ts") orelse return error.TestUnexpectedResult;
+    const preserved_source = p.sources.getContext("/a.ts", p.file_name_context) orelse return error.TestUnexpectedResult;
     try T.expect(preserved_source.ptr == old_source.ptr);
     try T.expect(first_redirect.source.ptr == old_source.ptr);
     try T.expect(second_redirect.source.ptr == old_source.ptr);
@@ -15074,7 +15135,7 @@ test "Program: updateSource publishes source and redirects atomically" {
     try T.expectEqual(@as(usize, 0), canonical.imports.items.len);
     try T.expectEqual(source_count, p.sources.count());
     try T.expectEqualStrings("let y = 2;", canonical.source);
-    const replaced_source = p.sources.get("/a.ts") orelse return error.TestUnexpectedResult;
+    const replaced_source = p.sources.getContext("/a.ts", p.file_name_context) orelse return error.TestUnexpectedResult;
     try T.expect(replaced_source.ptr == canonical.source.ptr);
     try T.expect(first_redirect.source.ptr == canonical.source.ptr);
     try T.expect(second_redirect.source.ptr == canonical.source.ptr);
@@ -15114,8 +15175,8 @@ test "Program: removal leaves a canonical source and redirect untouched on alloc
             try T.expectEqual(canonical_id, redirect.redirect_target.?);
             try T.expect(canonical.source.ptr == original_source.ptr);
             try T.expect(redirect.source.ptr == original_source.ptr);
-            try T.expect(p.sources.contains("/a.ts"));
-            try T.expect(!p.sources.contains("/redirect.ts"));
+            try T.expect(p.sources.containsContext("/a.ts", p.file_name_context));
+            try T.expect(!p.sources.containsContext("/redirect.ts", p.file_name_context));
         } else {
             try T.expectEqual(canonical_id, (try result).?);
             try T.expect(!canonical.present);
@@ -15958,7 +16019,7 @@ test "Program: removed import invalidates its owner and restores the same FileId
     try T.expectEqual(dep_id, (try p.removeSource("/dep.ts")).?);
     try T.expectEqual(dep_id, (try p.removeSource("/dep.ts")).?);
     try T.expect(p.lookupPath("/dep.ts") == null);
-    try T.expect(!p.sources.contains("/dep.ts"));
+    try T.expect(!p.sources.containsContext("/dep.ts", p.file_name_context));
     try T.expect(p.fileById(dep_id).compilation == null);
     try T.expectEqual(source_owners.OwnerId.none, p.fileById(dep_id).owner);
     _ = try p.recompileChanged(&.{"/dep.ts"}, options);
@@ -15985,7 +16046,7 @@ test "Program: removed import invalidates its owner and restores the same FileId
     _ = try p.recompileChanged(&.{"/main.ts"}, options);
     try T.expect(p.lookupPath("/main.ts") == null);
     try T.expect(p.fileById(main_id).compilation == null);
-    try T.expect(!p.sources.contains("/main.ts"));
+    try T.expect(!p.sources.containsContext("/main.ts", p.file_name_context));
 
     try vfs.addFile("/main.ts", main_source);
     resolver.invalidateCaches();
