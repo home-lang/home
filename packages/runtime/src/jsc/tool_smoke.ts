@@ -22,6 +22,7 @@ declare const Home: {
   };
 };
 declare function require(specifier: string): any;
+declare const __filename: string;
 
 import { expectedEngineMarker } from "./tool_smoke_helper";
 import { packageValue } from "./tool_smoke_package";
@@ -102,7 +103,7 @@ if (!timed.timedOut || timed.exitCode !== null) {
   throw new Error("Home.spawnSync did not enforce its timeout");
 }
 
-if (process.argv[1] !== "packages/runtime/src/jsc/tool_smoke.ts") {
+if (process.argv[1] !== __filename) {
   throw new Error("home-tool did not expose the script path in process.argv");
 }
 if (

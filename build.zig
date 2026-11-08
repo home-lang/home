@@ -794,6 +794,11 @@ pub fn build(b: *std.Build) void {
         const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
         home_tool_smoke_step.dependOn(&run_home_tool_smoke.step);
         home_tool_smoke_step.dependOn(&run_home_tool_package_smoke.step);
+        const run_home_tool_argv = b.addRunArtifact(home_tool_exe);
+        run_home_tool_argv.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_argv.addArgs(&.{ "run", "../tool_modules/./argv_entry.cjs", "first", "second" });
+        run_home_tool_argv.expectStdOutEqual("OK absolute entry guard\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_argv.step);
         const run_home_tool_meta_smoke = b.addRunArtifact(home_tool_exe);
         run_home_tool_meta_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_meta_smoke.addArgs(&.{ "run", "import_meta_entry.ts" });

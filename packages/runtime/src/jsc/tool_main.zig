@@ -124,13 +124,19 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, command, "run")) {
         const path = iterator.next() orelse usage();
+        const cwd = try std.process.currentPathAlloc(g_io, allocator);
+        defer allocator.free(cwd);
+        // Node/Bun expose a lexical absolute entry path, even when invoked
+        // relatively. Entry guards compare argv[1] with the module filename.
+        const entry_path = try std.fs.path.resolve(allocator, &.{ cwd, path });
+        defer allocator.free(entry_path);
         var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         defer argv.deinit(allocator);
         try argv.append(allocator, "home-tool");
-        try argv.append(allocator, path);
+        try argv.append(allocator, entry_path);
         while (iterator.next()) |arg| try argv.append(allocator, arg);
 
-        const code = try runSource(allocator, "Home.startModule(process.argv[1]);", path, argv.items, false, true);
+        const code = try runSource(allocator, "Home.startModule(process.argv[1]);", entry_path, argv.items, false, true);
         if (code != 0) std.process.exit(code);
         return;
     }
