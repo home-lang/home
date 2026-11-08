@@ -834,6 +834,26 @@ pub fn build(b: *std.Build) void {
         run_home_tool_exit_throw.addArgs(&.{ "eval", "process.on('exit', function() { throw new Error('exit listener witness'); });" });
         run_home_tool_exit_throw.expectExitCode(1);
         home_tool_smoke_step.dependOn(&run_home_tool_exit_throw.step);
+        const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
+        run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });
+        run_home_tool_fs.expectStdOutEqual("OK home-tool node:fs UTF-8 reads\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_fs.step);
+        const run_home_tool_create_require = b.addRunArtifact(home_tool_exe);
+        run_home_tool_create_require.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_create_require.addArgs(&.{ "run", "node_module_entry.cjs" });
+        run_home_tool_create_require.expectStdOutEqual("OK home-tool anchored createRequire\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_create_require.step);
+        const run_home_tool_path_url = b.addRunArtifact(home_tool_exe);
+        run_home_tool_path_url.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_path_url.addArgs(&.{ "run", "node_path_url_entry.cjs" });
+        run_home_tool_path_url.expectStdOutEqual("OK home-tool POSIX path and file URL operations\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_path_url.step);
+        const run_home_tool_child = b.addRunArtifact(home_tool_exe);
+        run_home_tool_child.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_child.addArgs(&.{ "run", "node_child_entry.cjs" });
+        run_home_tool_child.expectStdOutEqual("real inherited child output\nOK home-tool inherited child execution\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_child.step);
     } else {
         const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);

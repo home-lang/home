@@ -51,6 +51,7 @@ fn runSource(
     tool_runtime.console.install(allocator, ctx, global);
     tool_runtime.process.install(allocator, ctx, global, argv);
     tool_runtime.host.install(allocator, ctx, global);
+    tool_runtime.builtins.install(allocator, ctx);
     tool_runtime.modules.install(allocator, ctx, global);
 
     const evaluation = try tool_runtime.evaluate.evaluateUtf8Detailed(allocator, ctx, source, source_url, 1);

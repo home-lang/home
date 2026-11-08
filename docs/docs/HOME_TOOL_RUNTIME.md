@@ -44,6 +44,39 @@ Tools receive `console`, `process`, and a deliberately small `Home` host API:
 - `Home.spawnSync(argv)` resolves the executable through `PATH` and returns
   `{ exitCode, stdout, stderr }`.
 
+The tool module loader exposes the same real filesystem adapter as `fs` and
+`node:fs`: `existsSync` and `readFileSync` with explicit `utf8`/`utf-8` encoding
+and string paths. Reads use native file bytes, preserve embedded NULs and BOMs,
+and replace malformed UTF-8 sequences. The checked-in byte fixture and its
+Node-produced expected JSON cover Unicode boundaries and malformed input.
+Buffer-returning reads, other encodings/flags, URL/Buffer paths, and other Node
+built-ins still require implementations and remain errors. Native read errors
+propagate; complete Node filesystem error metadata is not provided yet.
+
+`module`/`node:module` expose `createRequire` for absolute POSIX filenames and
+file URL strings. The returned require resolves relative files, package imports
+and offline packages from that referrer, sharing the real module cache. The
+referrer need not exist; a trailing slash anchors a directory. `require.resolve`
+does not parse or execute its target. URL objects, Windows referrers, and other
+Module APIs still require implementations.
+
+On POSIX hosts, `path`/`node:path` and `path/posix`/`node:path/posix` share
+`normalize`, `isAbsolute`, `join`, `resolve`, `dirname`, `sep` and `delimiter`.
+`url`/`node:url` provide `fileURLToPath` for local POSIX file URL strings, with
+URL escaping, dot segments, scalar-value conversion and query/fragment handling.
+The Node-produced path/URL fixture retains both successful results and errors.
+Other path methods, Windows path behavior, URL objects and other URL APIs still
+require implementations.
+
+`child_process`/`node:child_process` expose synchronous `execFileSync` for an
+absolute POSIX executable with `stdio: "inherit"`. The OS descriptors are
+inherited directly, cwd and environment replacement are applied, and real exit
+status/signal failures are thrown. This is sufficient for native-tool launchers
+such as TypeScript 7. Captured Buffer results, PATH lookup, timeouts, other
+options and asynchronous child APIs still require implementations and fail
+explicitly. `Home.spawnSync` also accepts `stdio: "inherit"`; its default
+captured-output mode is unchanged, and inherited mode does not accept a timeout.
+
 The runner resolves relative and absolute modules plus offline `node_modules`
 packages. TypeScript/JavaScript modules emit to CommonJS, JSON modules load
 directly, package `main`/`module` entries and `index.*` fallbacks are supported,

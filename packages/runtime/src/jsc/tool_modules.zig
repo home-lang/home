@@ -297,6 +297,13 @@ fn resolveModuleNative(
     defer allocator.free(parent_path);
     const path = resolveModule(allocator, specifier, parent_path) orelse return extern_fns.JSValueMakeNull(c);
     defer allocator.free(path);
+    // require.resolve must neither read nor parse/evaluate the target. It can
+    // resolve a file containing invalid JavaScript or non-JavaScript assets.
+    if (argument_count > 2 and arguments[2] != null and extern_fns.JSValueToBoolean(c, arguments[2])) {
+        const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
+        setProperty(c, object, "path", stringValue(c, path));
+        return @ptrCast(object);
+    }
     const source = std.Io.Dir.cwd().readFileAlloc(g_io, path, allocator, std.Io.Limit.unlimited) catch
         return extern_fns.JSValueMakeNull(c);
     defer allocator.free(source);
@@ -321,6 +328,9 @@ fn resolveModuleNative(
 const install_glue =
     \\(function() {
     \\  var resolveNative = globalThis.__home_tool_resolve_module;
+    \\  var builtins = globalThis.__home_tool_builtins || Object.create(null);
+    \\  delete globalThis.__home_tool_builtins;
+    \\  function isBuiltin(request) { return Object.prototype.hasOwnProperty.call(builtins, request); }
     \\  var cache = Object.create(null);
     \\  var mainModule = null;
     // The CommonJS emitter's default contract uses ambient interop helpers.
@@ -343,7 +353,25 @@ const install_glue =
     \\    return namespace;
     \\  };
     \\  function fileURL(path) { return "file://" + path.split("/").map(encodeURIComponent).join("/"); }
+    \\  function makeRequire(parentPath) {
+    \\    function localRequire(request) {
+    \\      if (typeof request !== "string") throw new TypeError("Module id must be a string");
+    \\      return load(request, parentPath, false);
+    \\    }
+    \\    localRequire.resolve = function(request) {
+    \\      if (typeof request !== "string") throw new TypeError("Module id must be a string");
+    \\      if (isBuiltin(request)) return request;
+    \\      var resolved = resolveNative(request, parentPath, true);
+    \\      if (resolved === null) throw new Error("cannot resolve module " + request + " from " + parentPath);
+    \\      return resolved.path;
+    \\    };
+    \\    localRequire.cache = cache;
+    \\    Object.defineProperty(localRequire, "main", { get: function() { return mainModule; } });
+    \\    return localRequire;
+    \\  }
     \\  function load(specifier, parentPath, asMain) {
+    \\    specifier = String(specifier);
+    \\    if (isBuiltin(specifier)) return builtins[specifier];
     \\    var payload = resolveNative(String(specifier), String(parentPath || ""));
     \\    if (payload === null) throw new Error("cannot resolve module " + specifier + (parentPath ? " from " + parentPath : ""));
     \\    if (Object.prototype.hasOwnProperty.call(cache, payload.path)) return cache[payload.path].exports;
@@ -358,14 +386,7 @@ const install_glue =
     \\    }
     \\    var slash = payload.path.lastIndexOf("/");
     \\    var directory = slash < 0 ? "." : payload.path.slice(0, slash);
-    \\    function localRequire(request) { return load(request, payload.path, false); }
-    \\    localRequire.resolve = function(request) {
-    \\      var resolved = resolveNative(String(request), payload.path);
-    \\      if (resolved === null) throw new Error("cannot resolve module " + request + " from " + payload.path);
-    \\      return resolved.path;
-    \\    };
-    \\    localRequire.cache = cache;
-    \\    Object.defineProperty(localRequire, "main", { get: function() { return mainModule; } });
+    \\    var localRequire = makeRequire(payload.path);
     \\    module.require = localRequire;
     // ECMA-262 import.meta Evaluation creates one extensible, null-prototype
     // object per module. The host supplies real file metadata and main identity.
@@ -387,11 +408,18 @@ const install_glue =
     \\    return module.exports;
     \\  }
     \\  Home.resolveModule = function(specifier, parentPath) {
-    \\    var resolved = resolveNative(String(specifier), String(parentPath || ""));
+    \\    specifier = String(specifier);
+    \\    if (isBuiltin(specifier)) return specifier;
+    \\    var resolved = resolveNative(String(specifier), String(parentPath || ""), true);
     \\    if (resolved === null) throw new Error("cannot resolve module " + specifier);
     \\    return resolved.path;
     \\  };
-    \\  Home.require = function(specifier) { return load(specifier, "", false); };
+    \\  Home.createRequire = function(parentPath) {
+    \\    if (typeof parentPath !== "string" || parentPath.charAt(0) !== "/" || parentPath.indexOf("\0") !== -1) throw new TypeError("Home require referrer must be an absolute POSIX filename");
+    \\    if (parentPath.charAt(parentPath.length - 1) === "/") parentPath += "__home_require__.js";
+    \\    return makeRequire(parentPath);
+    \\  };
+    \\  Home.require = makeRequire("");
     \\  Home.runModule = function(specifier) { return load(specifier, "", true); };
     \\  globalThis.require = Home.require;
     \\  delete globalThis.__home_tool_resolve_module;
