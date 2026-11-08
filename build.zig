@@ -792,6 +792,20 @@ pub fn build(b: *std.Build) void {
         run_home_tool_package_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_package_smoke.addArgs(&.{ "run", "main.ts" });
         const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
+        const tool_file_tests = b.addTest(.{
+            .name = "home-tool-file-io-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_fs.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_file_tests).step);
+        const run_home_tool_file = b.addRunArtifact(home_tool_exe);
+        run_home_tool_file.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_file.addArgs(&.{ "run", "bun_file_contract.mjs" });
+        run_home_tool_file.expectStdOutEqual("OK real Bun file reads, bytes, metadata and failures\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_file.step);
         // This capability gate is explicit: requesting it on a backend without
         // an actual rejection checkpoint fails, rather than skipping cases.
         const home_tool_rejections_step = b.step("home-tool-rejections-smoke", "Verify actual unhandled-rejection status and events");

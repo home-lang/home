@@ -140,6 +140,23 @@ and other options are explicitly refused. Asynchronous compression callbacks,
 Gunzip streams, deflate/raw/Brotli/Zstd and compression parameter/reset APIs are
 absent. Passing bounded in-memory gzip does not certify native file/stdio I/O.
 
+The shared Bun/bun namespace also exposes file for string filesystem paths.
+This is a readonly file source, not a Web Blob: exists, text, json, bytes,
+arrayBuffer, size and existing-file lastModified use actual native stat/read
+operations. Byte reads preserve all bytes and return independent managed data;
+text consumes one UTF-8 BOM and replaces invalid UTF-8, and JSON parsing rejects
+invalid data. Missing paths and directory reads retain actual filesystem errors.
+The methods return real promises; their underlying OS operations are synchronous.
+
+Reads are limited to 8 MiB in the native reader, including an exact-limit test
+in the common host gate. Reads of non-regular special files are refused. If previously
+observed metadata changes, the source refuses further operations: mutable-file
+caching/clipped-read behavior is not implemented. Slice/stream/writer/mutation
+methods, MIME/type metadata, missing-file lastModified, URL/descriptor paths and
+nonempty file options are explicitly refused. File sources do not claim Blob
+branding or integration with Response; native file/stdio stream adapters remain
+separate work.
+
 The `crypto`/`node:crypto` adapter exposes synchronous randomBytes with real
 managed Buffer storage. It obtains fresh OS entropy through Zig Io.randomSecure;
 entropy failure throws instead of returning zeros or using a weak seed. Numeric

@@ -5,6 +5,13 @@ const callback = @import("callback.zig");
 const api = @import("extern_fns.zig");
 const types = @import("opaques.zig");
 const io = std.Io.Threaded.global_single_threaded.io();
+const tool_file_max = 8 * 1024 * 1024;
+
+fn readToolFile(dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    // Dir.readFileAlloc uses an exclusive limit, unlike Reader.allocRemaining.
+    // Reserve the EOF probe so an exactly 8 MiB file remains valid.
+    return dir.readFileAlloc(io, path, allocator, .limited(tool_file_max + 1));
+}
 
 fn string(ctx: *types.JSContextRef, value: ?*types.JSValue, allocator: std.mem.Allocator) ?[]u8 {
     const js_string = api.JSValueToStringCopy(ctx, value, null) orelse return null;
@@ -45,6 +52,7 @@ fn failure(ctx: *types.JSContextRef, object: *types.JSObject, err: anyerror) ?*t
         error.NoSpaceLeft => "ENOSPC",
         error.ReadOnlyFileSystem => "EROFS",
         error.FileBusy => "EBUSY",
+        error.StreamTooLong => "ERR_BUFFER_TOO_LARGE",
         error.Unsupported => "ERR_HOME_UNSUPPORTED",
         else => "ERR_HOME_FS",
     };
@@ -100,8 +108,8 @@ fn operation(
     if (std.mem.indexOfScalar(u8, path, 0) != null) return failure(c, object, error.Unsupported);
     const recursive = count > 2 and api.JSValueToBoolean(c, args[2]);
     const force = count > 3 and api.JSValueToBoolean(c, args[3]);
-    if (std.mem.eql(u8, op, "readFile")) {
-        const contents = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| return failure(c, object, err);
+    if (std.mem.eql(u8, op, "readFile") or std.mem.eql(u8, op, "readToolFile")) {
+        const contents = (if (std.mem.eql(u8, op, "readToolFile")) readToolFile(.cwd(), path, allocator) else std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited)) catch |err| return failure(c, object, err);
         defer allocator.free(contents);
         const encoded = allocator.alloc(u8, contents.len * 2) catch return failure(c, object, error.OutOfMemory);
         defer allocator.free(encoded);
@@ -146,4 +154,23 @@ fn operation(
 
 pub fn install(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
     callback.registerCallback(ctx, global, "__home_tool_fs_operation", operation);
+}
+
+test "tool file reads preserve exact bytes at the inclusive limit and refuse larger files" {
+    const allocator = std.testing.allocator;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const contents = try allocator.alloc(u8, tool_file_max + 1);
+    defer allocator.free(contents);
+    @memset(contents, 0xff);
+    contents[0] = 0;
+    try temporary.dir.writeFile(io, .{ .sub_path = "at-limit", .data = contents[0..tool_file_max] });
+    const actual = try readToolFile(temporary.dir, "at-limit", allocator);
+    defer allocator.free(actual);
+    try std.testing.expectEqualSlices(u8, contents[0..tool_file_max], actual);
+    try temporary.dir.writeFile(io, .{ .sub_path = "over-limit", .data = contents });
+    try std.testing.expectError(error.StreamTooLong, readToolFile(temporary.dir, "over-limit", allocator));
+    try std.testing.expectError(error.FileNotFound, readToolFile(temporary.dir, "missing", allocator));
+    try temporary.dir.createDir(io, "directory", .default_dir);
+    try std.testing.expectError(error.IsDir, readToolFile(temporary.dir, "directory", allocator));
 }

@@ -527,7 +527,9 @@
   builtins['node:url'] = urlApi;
   builtins.child_process = childProcess;
   builtins['node:child_process'] = childProcess;
-  const bunApi = { YAML: { parse: Home.parseYAML } };
+  const fileFactory = globalThis.__home_tool_file_factory;
+  delete globalThis.__home_tool_file_factory;
+  const bunApi = { YAML: { parse: Home.parseYAML }, file: fileFactory(fsOperation, bufferApi.Buffer) };
   globalThis.Bun = bunApi;
   builtins.bun = bunApi;
   globalThis.__home_tool_builtins = builtins;
