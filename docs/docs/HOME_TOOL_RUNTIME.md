@@ -4,6 +4,8 @@
 Home's own TypeScript frontend and a native JavaScript engine. It does not
 delegate parsing or execution to Node, Bun, or Python.
 
+Execution parses, binds and emits through Home's TypeScript frontend without running semantic typechecking over application code or bundled JavaScript. Syntax errors remain failures. Static validation remains the separate `home-tsc`/compiler path; the runtime's emission path does not replace an explicit typecheck command.
+
 Build it with zig-js (the default when the conventional checkout and archive
 exist):
 
@@ -46,6 +48,10 @@ The runner resolves relative and absolute modules plus offline `node_modules`
 packages. TypeScript/JavaScript modules emit to CommonJS, JSON modules load
 directly, package `main`/`module` entries and `index.*` fallbacks are supported,
 and the cache is populated before evaluation so CommonJS cycles terminate.
+
+The host supplies the CommonJS emitter's default and namespace import helpers. ES-module exports keep their module identity, while CommonJS objects and primitive exports receive the appropriate default binding. This allows executable entry points to use ordinary TypeScript import interoperability without relying on ambient helpers from Node or Bun.
+
+The tool frontend lowers `import.meta` for its CommonJS wrapper without changing strings, comments or ordinary member names. Each module receives one extensible, null-prototype metadata object with `url`, `path`, `dir`, `file`, `main`, `filename`/`dirname` aliases, `env` and the local `require`. File paths are canonical and file URLs escape reserved characters. Metadata remains lexical inside nested functions and shares module-cache identity across relative and absolute imports. `import.meta.resolve` and `glob` still require separate host implementations.
 
 Use `zig build home-tool-smoke` with either engine selection to verify
 TypeScript emission, module loading, filesystem access, process execution, and

@@ -751,6 +751,7 @@ pub fn build(b: *std.Build) void {
         tool_runtime_pkg.addImport("bun", tool_compat_pkg);
         tool_runtime_pkg.addImport("build_options", tool_build_options_module);
         tool_runtime_pkg.addImport("ts_driver", ts_driver_pkg);
+        tool_runtime_pkg.addImport("hir", hir_pkg);
         tool_runtime_pkg.link_libc = true;
         if (tool_use_zig_js) {
             linkZigJs(b, tool_runtime_pkg, configured_zig_js_root);
@@ -782,6 +783,23 @@ pub fn build(b: *std.Build) void {
         const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
         home_tool_smoke_step.dependOn(&run_home_tool_smoke.step);
         home_tool_smoke_step.dependOn(&run_home_tool_package_smoke.step);
+        const run_home_tool_meta_smoke = b.addRunArtifact(home_tool_exe);
+        run_home_tool_meta_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_meta_smoke.addArgs(&.{ "run", "import_meta_entry.ts" });
+        home_tool_smoke_step.dependOn(&run_home_tool_meta_smoke.step);
+        const run_home_tool_transpile_smoke = b.addRunArtifact(home_tool_exe);
+        run_home_tool_transpile_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_transpile_smoke.addArgs(&.{ "run", "runtime_transpile_entry.ts" });
+        home_tool_smoke_step.dependOn(&run_home_tool_transpile_smoke.step);
+        const run_home_tool_syntax_smoke = b.addRunArtifact(home_tool_exe);
+        run_home_tool_syntax_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_syntax_smoke.addArgs(&.{ "run", "runtime_invalid_syntax.js" });
+        run_home_tool_syntax_smoke.expectExitCode(1);
+        home_tool_smoke_step.dependOn(&run_home_tool_syntax_smoke.step);
+        const run_home_tool_interop_smoke = b.addRunArtifact(home_tool_exe);
+        run_home_tool_interop_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_interop_smoke.addArgs(&.{ "run", "interop_entry.ts" });
+        home_tool_smoke_step.dependOn(&run_home_tool_interop_smoke.step);
     } else {
         const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);

@@ -190,6 +190,11 @@ pub const Options = struct {
     /// Module emit format. `esm` (default) keeps `import`/`export`;
     /// `commonjs` lowers to `require()` + `Object.defineProperty(exports, ...)`.
     module_kind: ModuleKind = .esm,
+    /// Host-only lowering for module metadata in a CommonJS function wrapper.
+    /// The caller must supply a binding absent from every source scope and pass
+    /// the module's stable metadata object under that name. Normal tsc emission
+    /// preserves `import.meta` when this is null.
+    import_meta_binding: ?[]const u8 = null,
     /// `esModuleInterop` — when true and module_kind is commonjs,
     /// inject `__importDefault` / `__importStar` helper calls so
     /// `import x from "y"` works against CJS modules without
@@ -10032,6 +10037,15 @@ pub const Printer = struct {
 
     fn printMember(self: *Printer, node: NodeId) !void {
         const p = hir_mod.memberOf(self.hir, node);
+        if (self.options.import_meta_binding) |binding| {
+            if (!p.optional and self.hir.kindOf(p.object) == .identifier and
+                std.mem.eql(u8, self.interner.get(hir_mod.identifierOf(self.hir, p.object).name), "import") and
+                std.mem.eql(u8, self.interner.get(p.name), "meta"))
+            {
+                try self.write(binding);
+                return;
+            }
+        }
         // §4.A.2 — bare `super.x` reads become `_super.prototype.x`
         // inside the ES5 derived-class IIFE body. Calls of the form
         // `super.x(args)` are handled in `printCall`.
@@ -10694,6 +10708,19 @@ fn compoundOpString(op: hir_mod.BinOp) []const u8 {
 // =============================================================================
 
 const T = std.testing;
+
+test "emit: import.meta host lowering touches syntax and preserves default emission" {
+    const source = "const meta = import.meta; const url = import.meta.url; const text = 'import.meta'; const object = { import: { meta: 42 } }; object.import.meta;";
+    const lowered = try emitWithOpts(source, .{ .module_kind = .commonjs, .import_meta_binding = "__host_meta_0" });
+    defer T.allocator.free(lowered);
+    try T.expect(std.mem.indexOf(u8, lowered, "const meta = __host_meta_0;") != null);
+    try T.expect(std.mem.indexOf(u8, lowered, "const url = __host_meta_0.url;") != null);
+    try T.expect(std.mem.indexOf(u8, lowered, "'import.meta'") != null or std.mem.indexOf(u8, lowered, "\"import.meta\"") != null);
+    try T.expect(std.mem.indexOf(u8, lowered, "object.import.meta;") != null);
+    const normal = try emitWithOpts(source, .{ .module_kind = .esm });
+    defer T.allocator.free(normal);
+    try T.expect(std.mem.indexOf(u8, normal, "const meta = import.meta;") != null);
+}
 const ts_lexer = @import("ts_lexer");
 const ts_parser = @import("ts_parser");
 
