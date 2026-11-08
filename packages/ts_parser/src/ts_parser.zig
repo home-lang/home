@@ -23242,6 +23242,10 @@ fn arrayLiteralElementCanStart(kind: TokenKind) bool {
         .kw_function,
         .plus,
         .minus,
+        // UpdateExpression is a valid AssignmentExpression start, including
+        // object property initializers such as the dtsx cache lastAccess:++h.
+        .plus_plus,
+        .minus_minus,
         .bang,
         .tilde,
         .kw_typeof,
@@ -37343,4 +37347,20 @@ test "parser: physical JSON objects parse as values without source rewriting" {
     try T.expect(setup.hir.kindOf(expressions[0]) == .object_literal);
     try T.expectEqual(@as(u32, 0), setup.hir.spanOf(expressions[0]).start);
     try T.expectEqual(@as(u32, @intCast(source.len)), setup.hir.spanOf(expressions[0]).end);
+}
+
+test "parser: prefix updates can start object property values" {
+    for ([_][]const u8{
+        "let n=0;const o={value:++n,next:--n};",
+        "let n=0;const o={\"value\":++n};",
+        "let n=0;const o={['value']:--n};",
+        "function make(){let n=0;return {value:++n,next:--n};}",
+        "let n:number=0;const o={value:++n as number};",
+        "let h=0;const s=new Map();if(s.set('key',{lastAccess:++h}),s.size>0){}",
+    }) |source| {
+        var setup = try newTestSetup(source);
+        defer destroyTestSetup(setup);
+        _ = try setup.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+    }
 }

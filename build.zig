@@ -877,6 +877,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_comments.addArgs(&.{ "run", "comment_boundary_entry.ts" });
         run_home_tool_comments.expectStdOutEqual("OK bounded leading documentation emission\n");
         home_tool_smoke_step.dependOn(&run_home_tool_comments.step);
+        const run_home_tool_object_prefix = b.addRunArtifact(home_tool_exe);
+        run_home_tool_object_prefix.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_object_prefix.addArgs(&.{ "run", "object_prefix.mjs" });
+        run_home_tool_object_prefix.expectStdOutEqual("OK actual object prefix update values and order\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_object_prefix.step);
         const run_home_tool_basename = b.addRunArtifact(home_tool_exe);
         run_home_tool_basename.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_basename.addArgs(&.{ "run", "path_basename.mjs" });
