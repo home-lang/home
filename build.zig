@@ -661,6 +661,8 @@ pub fn build(b: *std.Build) void {
     const tsconfig_jsonc_pkg = createPackage(b, "packages/tsconfig/src/jsonc.zig", target, optimize, zig_test_framework);
     const tsconfig_pkg = createPackage(b, "packages/tsconfig/src/tsconfig.zig", target, optimize, zig_test_framework);
     tsconfig_pkg.addImport("jsonc", tsconfig_jsonc_pkg);
+    // TS-parity Phase 1.E follow-up — module resolver.
+    const ts_resolver_pkg = createPackage(b, "packages/ts_resolver/src/ts_resolver.zig", target, optimize, zig_test_framework);
 
     // Tier 0 `bun` compat shim — top-level peer of `bundler` so
     // any package that needs to compile against vendored Bun source
@@ -749,11 +751,17 @@ pub fn build(b: *std.Build) void {
         tool_compat_pkg.addImport("build_options", tool_build_options_module);
         const tool_yaml_parser_pkg = createPackage(b, "packages/runtime/src/parsers/yaml.zig", target, optimize, zig_test_framework);
         tool_yaml_parser_pkg.addImport("bun", tool_compat_pkg);
+        const tool_config_graph_pkg = createPackage(b, "packages/ts_program/src/config_graph.zig", target, optimize, zig_test_framework);
+        tool_config_graph_pkg.addImport("tsconfig", tsconfig_pkg);
+        tool_config_graph_pkg.addImport("ts_resolver", ts_resolver_pkg);
         const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
         tool_runtime_pkg.addImport("bun", tool_compat_pkg);
         tool_runtime_pkg.addImport("build_options", tool_build_options_module);
         tool_runtime_pkg.addImport("ts_driver", ts_driver_pkg);
         tool_runtime_pkg.addImport("hir", hir_pkg);
+        tool_runtime_pkg.addImport("tool_config_graph", tool_config_graph_pkg);
+        tool_runtime_pkg.addImport("tsconfig", tsconfig_pkg);
+        tool_runtime_pkg.addImport("ts_resolver", ts_resolver_pkg);
         tool_runtime_pkg.addImport("tool_yaml_parser", tool_yaml_parser_pkg);
         tool_runtime_pkg.link_libc = true;
         if (tool_use_zig_js) {
@@ -847,6 +855,26 @@ pub fn build(b: *std.Build) void {
         run_home_tool_os.addArgs(&.{ "run", "node_os_entry.mjs" });
         run_home_tool_os.expectStdOutEqual("OK home-tool POSIX home directory\n");
         home_tool_smoke_step.dependOn(&run_home_tool_os.step);
+        for ([_][2][]const u8{
+            .{ "entry.mjs", "OK home-tool inherited tsconfig paths\n" },
+            .{ "nested/entry.cjs", "OK home-tool nearest tsconfig paths\n" },
+            .{ "baseurl/entry.mjs", "OK home-tool tsconfig baseUrl anchor\n" },
+            .{ "arrays/entry.mjs", "OK home-tool inherited tsconfig paths\n" },
+        }) |case| {
+            const positive = b.addRunArtifact(home_tool_exe);
+            positive.setCwd(b.path("packages/runtime/test/tool_modules/tsconfig_paths"));
+            positive.addArgs(&.{ "run", case[0] });
+            positive.expectStdOutEqual(case[1]);
+            home_tool_smoke_step.dependOn(&positive.step);
+        }
+        for ([_][]const u8{ "cycle/entry.cjs", "malformed/entry.cjs", "missing/entry.cjs", "declaration/entry.cjs", "invalid-options/entry.cjs" }) |case| {
+            const negative = b.addRunArtifact(home_tool_exe);
+            negative.setCwd(b.path("packages/runtime/test/tool_modules/tsconfig_paths"));
+            negative.addArgs(&.{ "run", case });
+            negative.expectExitCode(1);
+            negative.expectStdOutEqual("");
+            home_tool_smoke_step.dependOn(&negative.step);
+        }
         const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
         run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });
@@ -910,9 +938,6 @@ pub fn build(b: *std.Build) void {
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);
         b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test").dependOn(&unsupported.step);
     }
-
-    // TS-parity Phase 1.E follow-up — module resolver.
-    const ts_resolver_pkg = createPackage(b, "packages/ts_resolver/src/ts_resolver.zig", target, optimize, zig_test_framework);
 
     // TS-parity Phase 4 — tsc-compatible diagnostic formatter.
     const ts_diagnostics_pkg = createPackage(b, "packages/ts_diagnostics/src/ts_diagnostics.zig", target, optimize, zig_test_framework);

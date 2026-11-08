@@ -349,7 +349,13 @@ fn resolveModuleNative(
     defer allocator.free(specifier);
     const parent_path = valueToOwnedUtf8(c, arguments[1].?, allocator) orelse return extern_fns.JSValueMakeNull(c);
     defer allocator.free(parent_path);
-    const path = resolveModule(allocator, specifier, parent_path) orelse return extern_fns.JSValueMakeNull(c);
+    const alias = @import("tool_paths.zig").resolve(allocator, specifier, parent_path, tryPath) catch |err| {
+        const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
+        setProperty(c, object, "error", stringValue(c, @errorName(err)));
+        setProperty(c, object, "code", stringValue(c, "ERR_HOME_TSCONFIG"));
+        return @ptrCast(object);
+    };
+    const path = alias orelse resolveModule(allocator, specifier, parent_path) orelse return extern_fns.JSValueMakeNull(c);
     defer allocator.free(path);
     // require.resolve must neither read nor parse/evaluate the target. It can
     // resolve a file containing invalid JavaScript or non-JavaScript assets.

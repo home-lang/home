@@ -1,0 +1,14 @@
+{ // Paths are relative to this file, not the importing entry.
+ "extends": "./override.json",
+ "compilerOptions": { "paths": {
+  "@extension/*": ["../generic/*.ts"],
+  "@extension/*.js": ["../special/*.ts"],
+  "@app/*": ["../generic/*.ts"],
+  "@app/exact": ["../src/exact.ts"],
+  "@app/special/*": ["../special/*.ts"],
+  "@fallback": ["../missing.ts", "../src/fallback.ts"],
+  "@raw": ["../src/raw.cjs"],
+  "@json": ["../src/value.json"],
+  "@invalid": ["../src/invalid.cjs"]
+ } }
+}

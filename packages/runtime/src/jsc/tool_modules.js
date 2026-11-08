@@ -1,6 +1,11 @@
 // Home-owned module linkage and evaluation for either public-C engine backend.
 (function() {
-  const resolveNative = globalThis.__home_tool_resolve_module;
+  const rawResolve = globalThis.__home_tool_resolve_module;
+  function resolveNative(specifier, parent, lookupOnly) {
+    const result = rawResolve(specifier, parent, lookupOnly);
+    if (result && result.error) throw moduleError(result.code, `Cannot resolve ${specifier} from ${parent}: ${result.error}`);
+    return result;
+  }
   const builtins = globalThis.__home_tool_builtins || Object.create(null);
   delete globalThis.__home_tool_builtins;
   function isBuiltin(request) {

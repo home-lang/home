@@ -1,0 +1,11 @@
+import exact from '@app/exact';
+import special from '@app/special/item';
+import fallback from '@fallback';
+import raw from '@raw';
+import json from '@json';
+import { createRequire } from 'node:module';
+const localRequire = createRequire(import.meta.url);
+if (exact !== 'exact' || special !== 'longest prefix' || fallback !== 'fallback' || raw.value !== 42 || json.value !== 7) throw new Error('tsconfig path result');
+if (localRequire('@raw') !== localRequire('../src/raw.cjs')) throw new Error('alias cache identity');
+if (!localRequire.resolve('@invalid').endsWith('/src/invalid.cjs')) throw new Error('lookup parsed target');
+console.log('OK home-tool inherited tsconfig paths');

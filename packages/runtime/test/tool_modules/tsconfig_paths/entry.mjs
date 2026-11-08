@@ -1,0 +1,14 @@
+import extension from '@extension/item.js';
+import exact from '@app/exact';
+import special from '@app/special/item';
+import fallback from '@fallback';
+import raw from '@raw';
+import json from '@json';
+import { createRequire } from 'node:module';
+const localRequire = createRequire(import.meta.url);
+if (extension !== 'longest prefix') throw new Error('wildcard suffix precedence: ' + extension);
+if (exact !== 'exact' || special !== 'longest prefix' || fallback !== 'fallback' || raw.value !== 42 || json.value !== 7) throw new Error('tsconfig path result');
+if (localRequire('@raw') !== localRequire('./src/raw.cjs')) throw new Error('alias cache identity');
+if (localRequire('home-tool-path-parent')() !== raw || localRequire('home-tool-path-own')().value !== 43) throw new Error('dependency config scope');
+if (!localRequire.resolve('@invalid').endsWith('/src/invalid.cjs')) throw new Error('lookup parsed target');
+console.log('OK home-tool inherited tsconfig paths');

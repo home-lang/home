@@ -118,6 +118,19 @@ packages. TypeScript/JavaScript modules emit to CommonJS, JSON modules load
 directly, package `main`/`module` entries and `index.*` fallbacks are supported,
 and the cache is populated before evaluation so CommonJS cycles terminate.
 
+Runtime `compilerOptions.paths` aliases use the nearest tsconfig.json, Home's
+owned JSONC/config-chain parser, and the config's baseUrl (or the path map's
+original config directory). Relative/string extends and left-to-right extends
+arrays retain their actual origins; exact keys precede the longest-prefix
+wildcard match (longest suffix breaks ties), and target fallbacks run in order. Aliases can apply inside
+node_modules, as Bun does; a dependency's own nearer config takes precedence.
+Canonical module-cache identity and lookup-only require.resolve are preserved.
+Malformed/missing/circular configs fail instead of recovering into runtime
+defaults, and declaration-only targets are refused rather than executed as empty
+modules. Standalone baseUrl bare-name fallback and paths with multiple stars
+remain unsupported. Bun 1.4.4 fails the array-extends witness; Home uses its owned
+TypeScript config-chain behavior and retains that reference difference.
+
 Package-private `#name` imports support exact, unconditional `./file` targets
 from the nearest `package.json`. Missing or null mappings remain errors, and
 lookup stops at package and `node_modules` boundaries. Targets do not use
