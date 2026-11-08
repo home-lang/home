@@ -7998,13 +7998,13 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     const files_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related, .{ .pretty = true });
     defer std.testing.allocator.free(files_msg);
     try std.testing.expect(std.mem.indexOf(u8, files_msg, "\n  The file is in the program because:\n    Part of 'files' list in tsconfig.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,13): File is matched by 'files' list specified here.") != null);
-    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,27): File is matched by 'files' list specified here.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json:2:13 - File is matched by 'files' list specified here.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json:2:27 - File is matched by 'files' list specified here.") != null);
 
     const plain_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related, .{});
     defer std.testing.allocator.free(plain_msg);
     try std.testing.expect(std.mem.indexOf(u8, plain_msg, "Part of 'files' list in tsconfig.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, plain_msg, "/repo/tsconfig.json(2,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain_msg, "/repo/tsconfig.json") == null);
     try std.testing.expect(std.mem.indexOf(u8, plain_msg, "File is matched by 'files' list specified here.") == null);
 
     const include = [_][]const u8{"src/**/*"};
