@@ -885,6 +885,12 @@ pub fn build(b: *std.Build) void {
         run_home_tool_events_esm.addArgs(&.{ "run", "node_events_esm.mjs" });
         run_home_tool_events_esm.expectStdOutEqual("OK home-tool ESM EventEmitter identity\n");
         home_tool_smoke_step.dependOn(&run_home_tool_events_esm.step);
+        const run_home_tool_tty = b.addRunArtifact(home_tool_exe);
+        run_home_tool_tty.setStdIn(.{ .bytes = "" });
+        run_home_tool_tty.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_tty.addArgs(&.{ "run", "node_tty_entry.mjs", "pipe" });
+        run_home_tool_tty.expectStdOutEqual("{\"descriptors\":[false,false,false],\"invalid\":[false,false,false,false,false,false,false,false,false,false,false,false,false]}\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_tty.step);
         const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
         run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });

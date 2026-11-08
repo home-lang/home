@@ -390,7 +390,20 @@
   };
   const eventsApi = globalThis.__home_tool_events;
   delete globalThis.__home_tool_events;
+  const nativeIsatty = globalThis.__home_tool_isatty;
+  delete globalThis.__home_tool_isatty;
+  const ttyApi = {
+    isatty: function(descriptor) {
+      // Node's isatty does not coerce strings, objects, BigInts or symbols.
+      if (typeof descriptor !== 'number' || !Number.isInteger(descriptor) || descriptor < 0 || descriptor > 0x7fffffff) return false;
+      const result = nativeIsatty(descriptor);
+      if (result === null) unsupported('Home native isatty currently requires macOS or Linux');
+      return result;
+    },
+  };
   const builtins = Object.create(null);
+  builtins.tty = ttyApi;
+  builtins['node:tty'] = ttyApi;
   builtins.events = eventsApi;
   builtins['node:events'] = eventsApi;
   builtins.os = osApi;

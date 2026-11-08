@@ -1,0 +1,11 @@
+import tty, { isatty } from 'node:tty';
+import { createRequire } from 'node:module';
+const requireHere = createRequire(import.meta.url);
+if (tty !== requireHere('tty') || tty !== requireHere('node:tty') || isatty !== tty.isatty) throw new Error('tty module identity');
+const descriptors = [0, 1, 2].map(isatty);
+const invalid = [-1, 1.5, NaN, Infinity, 2 ** 31, 2 ** 32, '1', true, null, undefined, 1n, {}, Symbol('fd')].map(isatty);
+if (invalid.some(Boolean)) throw new Error('invalid descriptor accepted');
+const mode = process.argv[2];
+if (mode === 'pipe' && descriptors.some(Boolean)) throw new Error('pipe classified as a terminal');
+if (mode === 'pty' && !descriptors.every(Boolean)) throw new Error('actual PTY classified as a pipe');
+console.log(JSON.stringify({ descriptors, invalid }));

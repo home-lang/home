@@ -7,6 +7,7 @@
 pub const Engine = @import("engine.zig").Engine;
 pub const console = @import("console.zig");
 pub const process = @import("process.zig");
+pub const tty = @import("tool_tty.zig");
 pub const os = @import("tool_os.zig");
 pub const fs = @import("tool_fs.zig");
 pub const host = @import("tool_host.zig");

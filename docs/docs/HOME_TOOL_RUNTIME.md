@@ -61,6 +61,15 @@ or exact diagnostic wording/default stderr behavior. Unhandled non-Error event p
 and context, but message formatting is not a Node inspect implementation. This
 does not supply a Bun/Node test scheduler or a resource event loop.
 
+The `tty`/`node:tty` adapter exposes native `isatty` on macOS/Linux. Valid
+integer descriptors query libc in the actual process; pipes and real PTYs
+produce different results. Invalid/out-of-range/non-number inputs return false
+without coercion, matching Node. Bun 1.4.4 throws for some such values (including
+BigInt), and that reference difference is retained. Other platforms refuse the
+native query. ReadStream, WriteStream, raw mode and the full terminal/process
+stream surface remain unsupported; descriptor classification does not provide
+terminal I/O or an event loop.
+
 The `process` and `node:process` module aliases expose the existing live Home
 `process` object, including its real environment, arguments, current directory,
 next-tick queue and exit handling. They do not manufacture additional Node
