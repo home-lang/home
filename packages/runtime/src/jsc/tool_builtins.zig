@@ -22,6 +22,9 @@ pub fn install(allocator: std.mem.Allocator, ctx: *opaques.JSContextRef) void {
     const async_hooks = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_async_hooks.js"), "home:tool-async-hooks-factory-install", 1) catch return;
     defer async_hooks.deinit(allocator);
     if (async_hooks.exception != null) return;
+    const performance = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_performance.js"), "home:tool-performance-install", 1) catch return;
+    defer performance.deinit(allocator);
+    if (performance.exception != null) return;
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_builtins.js"), "home:tool-builtins-install", 1) catch return;
     result.deinit(allocator);
 }

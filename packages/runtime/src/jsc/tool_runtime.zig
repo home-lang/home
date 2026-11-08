@@ -10,6 +10,7 @@ pub const process = @import("process.zig");
 pub const tty = @import("tool_tty.zig");
 pub const crypto = @import("tool_crypto.zig");
 pub const gzip = @import("tool_gzip.zig");
+pub const performance = @import("tool_performance.zig");
 pub const async_context = @import("tool_async_context.zig");
 pub const os = @import("tool_os.zig");
 pub const fs = @import("tool_fs.zig");

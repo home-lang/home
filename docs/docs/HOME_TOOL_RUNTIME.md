@@ -140,6 +140,13 @@ and other options are explicitly refused. Asynchronous compression callbacks,
 Gunzip streams, deflate/raw/Brotli/Zstd and compression parameter/reset APIs are
 absent. Passing bounded in-memory gzip does not certify native file/stdio I/O.
 
+The performance global and perf_hooks/node:perf_hooks aliases share an actual
+Performance instance with now, timeOrigin and toJSON. now reads the native OS
+monotonic clock relative to this tool realm's initialization; timeOrigin is its
+fixed wall-clock epoch sample. Clock failures throw instead of returning zero.
+Node timing/event-loop telemetry, marks/measures, observers, resource entries
+and timer scheduling are absent. toJSON reports only the supported timeOrigin.
+
 With zig-js's execution-context extensions, async_hooks/node:async_hooks expose
 AsyncLocalStorage run, getStore, enterWith and exit. Immutable per-instance store
 snapshots live in the engine's rooted execution slot; actual Promise/await,

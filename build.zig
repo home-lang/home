@@ -857,6 +857,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_transpile_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_transpile_smoke.addArgs(&.{ "run", "runtime_transpile_entry.ts" });
         home_tool_smoke_step.dependOn(&run_home_tool_transpile_smoke.step);
+        const run_home_tool_performance = b.addRunArtifact(home_tool_exe);
+        run_home_tool_performance.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_performance.addArgs(&.{ "run", "performance_clock.mjs" });
+        run_home_tool_performance.expectStdOutEqual("OK actual native monotonic Performance clock\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_performance.step);
         const run_home_tool_syntax_smoke = b.addRunArtifact(home_tool_exe);
         run_home_tool_syntax_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_syntax_smoke.addArgs(&.{ "run", "runtime_invalid_syntax.js" });
