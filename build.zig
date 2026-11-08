@@ -875,6 +875,16 @@ pub fn build(b: *std.Build) void {
             negative.expectStdOutEqual("");
             home_tool_smoke_step.dependOn(&negative.step);
         }
+        const run_home_tool_events = b.addRunArtifact(home_tool_exe);
+        run_home_tool_events.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_events.addArgs(&.{ "run", "node_events_entry.cjs" });
+        run_home_tool_events.expectStdOutEqual(@embedFile("packages/runtime/test/tool_modules/node_events.expected.json"));
+        home_tool_smoke_step.dependOn(&run_home_tool_events.step);
+        const run_home_tool_events_esm = b.addRunArtifact(home_tool_exe);
+        run_home_tool_events_esm.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_events_esm.addArgs(&.{ "run", "node_events_esm.mjs" });
+        run_home_tool_events_esm.expectStdOutEqual("OK home-tool ESM EventEmitter identity\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_events_esm.step);
         const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
         run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });

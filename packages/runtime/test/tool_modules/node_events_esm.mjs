@@ -1,0 +1,10 @@
+import Events, { EventEmitter, errorMonitor } from 'node:events';
+import { createRequire } from 'node:module';
+const requireHere = createRequire(import.meta.url);
+if (Events !== EventEmitter || EventEmitter !== requireHere('events') || errorMonitor !== EventEmitter.errorMonitor) throw new Error('ESM events identity');
+const target = new EventEmitter();
+let delivered;
+target.once('value', value => { delivered = value; });
+target.emit('value', 42);
+if (delivered !== 42) throw new Error('ESM event delivery');
+console.log('OK home-tool ESM EventEmitter identity');

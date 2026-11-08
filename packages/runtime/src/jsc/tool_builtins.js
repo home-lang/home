@@ -388,7 +388,11 @@
       return directory;
     },
   };
+  const eventsApi = globalThis.__home_tool_events;
+  delete globalThis.__home_tool_events;
   const builtins = Object.create(null);
+  builtins.events = eventsApi;
+  builtins['node:events'] = eventsApi;
   builtins.os = osApi;
   builtins['node:os'] = osApi;
   builtins.process = globalThis.process;

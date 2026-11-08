@@ -1,0 +1,1 @@
+{"order":["once:1","first:1","last:1","first:2","last:2"],"duplicates":1,"mutation":["first","removed still in snapshot"],"inserted":["inserted","original"],"metadata":[["add",true,0],["remove",true,0]],"removeOrder":["two","one"],"symbol":42,"monitor":[true,true],"registrationCalls":[["on",true],["prepend",true]],"warnings":[["MaxListenersExceededWarning","warn",2]]}

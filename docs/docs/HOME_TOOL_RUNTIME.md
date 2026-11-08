@@ -44,6 +44,23 @@ Tools receive `console`, `process`, and a deliberately small `Home` host API:
 - `Home.spawnSync(argv)` resolves the executable through `PATH` and returns
   `{ exitCode, stdout, stderr }`.
 
+The `events`/`node:events` adapter exports a real synchronous EventEmitter
+constructor. Listener registration, prepend/once behavior, dispatch snapshots,
+one-at-a-time removal, meta-events, symbols, error monitoring/propagation and
+maximum-listener state/warnings execute in the selected engine. Legacy call
+constructors and subclasses share that implementation. The tool realm installs
+it on the process object before user listeners exist, preserving the native
+process capabilities and natural exit path. Both module aliases and ESM/CJS
+imports share constructor identity.
+
+This is a bounded synchronous events surface. Promise/async-iterator helpers,
+EventTarget/AbortSignal integration and async-resource APIs remain absent;
+captureRejections=true is explicitly refused. Warnings use Home's existing
+synchronous process.emitWarning delivery and do not claim Node's warning timing
+or exact diagnostic wording/default stderr behavior. Unhandled non-Error event payloads preserve code
+and context, but message formatting is not a Node inspect implementation. This
+does not supply a Bun/Node test scheduler or a resource event loop.
+
 The `process` and `node:process` module aliases expose the existing live Home
 `process` object, including its real environment, arguments, current directory,
 next-tick queue and exit handling. They do not manufacture additional Node
