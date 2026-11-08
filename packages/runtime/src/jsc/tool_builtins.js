@@ -118,6 +118,8 @@
   };
   const nativeFs = globalThis.__home_tool_fs_operation;
   delete globalThis.__home_tool_fs_operation;
+  const nativeFd = globalThis.__home_tool_fd_operation;
+  delete globalThis.__home_tool_fd_operation;
   const fsIsView = ArrayBuffer.isView.bind(ArrayBuffer);
   const fsBytes = Uint8Array;
   const fsDataView = DataView;
@@ -143,7 +145,7 @@
     if (result.error) {
       const error = new Error(`${result.error}: ${operation} '${path}'${result.detail ? ` (${result.detail})` : ''}`);
       error.code = result.error;
-      error.syscall = operation;
+      error.syscall = result.syscall || operation;
       error.path = path;
       throw error;
     }
@@ -220,6 +222,53 @@
     if (mode > 0o7777) unsupported('Home creation mode supports POSIX permission bits only');
     return mode;
   }
+  function fileDescriptor(fd) {
+    if (typeof fd !== 'number') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'file descriptor must be a number');
+    if (!Number.isInteger(fd) || fd < 0 || fd > 0x7fffffff) nodeArgumentError('ERR_OUT_OF_RANGE', 'file descriptor must be a nonnegative int32', true);
+    return fd;
+  }
+  function fdOperation(operation, fd, data) {
+    const result = nativeFd(operation, fileDescriptor(fd), data);
+    if (result === null) throw new Error('Native descriptor operation failed');
+    if (result.error) {
+      const error = new Error(`${result.error}: ${operation} ${fd}`);
+      error.code = result.error;
+      error.syscall = result.syscall || operation;
+      throw error;
+    }
+  }
+  function fileFlag(flag, fallback) {
+    if (flag === undefined) return fallback;
+    if (!['r', 'r+', 'w', 'w+', 'wx', 'wx+', 'a', 'a+', 'ax', 'ax+'].includes(flag)) unsupported('Home filesystem supports r/r+/w/w+/wx/wx+/a/a+/ax/ax+ string flags only');
+    return flag;
+  }
+  fs.openSync = function(path, flag, mode) {
+    return fsOperation('open', path, fileFlag(flag, 'r'), false, creationMode(mode, 0o666)).fd;
+  };
+  fs.closeSync = function(fd) {
+    fdOperation('close', fd);
+  };
+  fs.fsyncSync = function(fd) {
+    fdOperation('fsync', fd);
+  };
+  function writeFile(path, data, options) {
+    if (typeof path === 'number') fileDescriptor(path);
+    else path = stringPath(path);
+    if (typeof data !== 'string' && !fsIsView(data)) {
+      if (data != null && (typeof data[Symbol.iterator] === 'function' || typeof data[Symbol.asyncIterator] === 'function')) unsupported('Home writeFile does not support iterable input');
+      nodeArgumentError('ERR_INVALID_ARG_TYPE', 'writeFile data must be a string or ArrayBuffer view');
+    }
+    options = typeof options === 'string' ? { encoding: options } : fsOptions(options, ['encoding', 'flag', 'mode']);
+    if (options.encoding != null && (typeof options.encoding !== 'string' || !['utf8', 'utf-8'].includes(options.encoding.toLowerCase()))) unsupported('Home writeFile supports UTF-8 encoding only');
+    const flag = fileFlag(options.flag, 'w');
+    const mode = creationMode(options.mode, 0o666);
+    if (data instanceof fsDataView) data = new fsBytes(fsViewBuffer.call(data), fsViewOffset.call(data), fsViewLength.call(data));
+    // An existing descriptor retains its kernel offset and O_APPEND state;
+    // flag/mode options must never reopen or truncate that descriptor's file.
+    if (typeof path === 'number') fdOperation('write', path, data);
+    else fsOperation('writeFile', path, data, flag, mode);
+  }
+  fs.writeFileSync = writeFile;
   const fsPromises = {
     constants: fsConstants,
     access: async function(path, mode) {
@@ -229,17 +278,7 @@
       return readDirectory(path, options);
     },
     writeFile: async function(path, data, options) {
-      path = stringPath(path);
-      if (typeof data !== 'string' && !fsIsView(data)) {
-        if (data != null && (typeof data[Symbol.iterator] === 'function' || typeof data[Symbol.asyncIterator] === 'function')) unsupported('Home writeFile does not support iterable input');
-        nodeArgumentError('ERR_INVALID_ARG_TYPE', 'writeFile data must be a string or ArrayBuffer view');
-      }
-      options = typeof options === 'string' ? { encoding: options } : fsOptions(options, ['encoding', 'flag', 'mode']);
-      if (options.encoding != null && (typeof options.encoding !== 'string' || !['utf8', 'utf-8'].includes(options.encoding.toLowerCase()))) unsupported('Home writeFile supports UTF-8 encoding only');
-      if (options.flag !== undefined && options.flag !== 'w') unsupported('Home writeFile supports the w flag only');
-      const mode = creationMode(options.mode, 0o666);
-      if (data instanceof fsDataView) data = new fsBytes(fsViewBuffer.call(data), fsViewOffset.call(data), fsViewLength.call(data));
-      fsOperation('writeFile', path, data, false, mode);
+      writeFile(stringPath(path), data, options);
     },
     readFile: async function(path, options) {
       utf8ReadOptions(options);

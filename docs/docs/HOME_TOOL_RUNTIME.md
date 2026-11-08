@@ -338,6 +338,25 @@ non-directory errors. Success returns undefined; the Promise facade rejects on
 failure. This is an access-flag subset, not the full Node constants table.
 Access checks do not reserve a path or prevent subsequent filesystem races.
 
+`openSync`, `writeFileSync`, `fsyncSync` and `closeSync` use actual OS file
+handles on macOS/Linux. Supported open/write flags are `r`, `r+`, `w`, `w+`,
+`wx`, `wx+`, `a`, `a+`, `ax` and `ax+`. Numeric flag masks and other flag
+variants remain unsupported. Synchronous writes accept a string path or a real
+numeric descriptor, UTF-8 strings and exact Buffer/typed-array/DataView byte
+ranges. Descriptor writes keep the existing kernel offset and append state;
+write options never reopen a descriptor. Exclusive creation and append are
+kernel operations, not existence checks followed by ordinary writes.
+
+`fsyncSync` calls the native fsync syscall and propagates its errors, including
+invalid descriptor/pipe failures. Short writes and interrupted writes are
+continued; interrupted close is reported without retrying a possibly reused
+descriptor. File descriptors opened by this host are tracked per owner thread
+and context, set close-on-exec, and closed when runSource ends. Explicit close
+removes ownership before reuse. Inherited descriptors perform real operations
+but are not automatically closed by host teardown. This remains a blocking
+profile; callback APIs, FileHandle/read/writeSync/positional I/O, general async
+I/O scheduling and complete Node metadata require separate implementations.
+
 The `fs/promises` and `node:fs/promises` aliases share `fs.promises`. Supported
 operations perform real native I/O: UTF-8 `readFile`, `mkdir`
 (including the first-created-ancestor return for recursive creation), `rm`
@@ -347,13 +366,13 @@ modification and change times; this is a subset of Node's Stats fields.
 `writeFile` writes actual UTF-8 string bytes or the exact byte ranges of
 Buffer/typed-array/DataView inputs, creates or truncates files, and propagates
 native errors through its returned promise. It supports UTF-8 encoding, the
-`w` flag and POSIX creation permissions from `0` through `0o7777`, as numbers
-or octal strings. The default file mode is `0o666`; mkdir defaults to `0o777`
-and applies its mode to each newly created recursive ancestor. The native umask
+same string flags as openSync and POSIX creation permissions from `0` through
+`0o7777`, as numbers or octal strings. The default file mode is `0o666`;
+mkdir defaults to `0o777` and applies its mode to each newly created recursive ancestor. The native umask
 restricts these modes. Existing file and directory permissions remain unchanged.
 String conversion preserves NUL and replaces lone surrogates without losing
-the remaining text. Iterable input, append/exclusive flags and other write
-options are explicitly unsupported; raw ArrayBuffer data is rejected as in Node.
+the remaining text. Iterable input and other write options are explicitly
+unsupported; raw ArrayBuffer data is rejected as in Node.
 The methods return real promises, but native filesystem work currently blocks
 the tool thread. Buffer/URL paths, binary reads, non-permission mode bits, retry,
 bigint, abort and other options are unsupported rather than silently ignored.

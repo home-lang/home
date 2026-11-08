@@ -847,6 +847,12 @@ pub fn build(b: *std.Build) void {
         run_creation_modes.addFileArg(b.path("packages/runtime/test/tool_modules/fs_creation_modes.mjs"));
         run_creation_modes.expectStdOutEqual("OK native file/directory creation modes, umasks, existing nodes and invalid-mode rejection\n");
         home_tool_smoke_step.dependOn(&run_creation_modes.step);
+        const run_descriptors = b.addSystemCommand(&.{"python3"});
+        run_descriptors.addFileArg(b.path("packages/runtime/test/tool_descriptor_fixture.py"));
+        run_descriptors.addArtifactArg(home_tool_exe);
+        run_descriptors.addFileArg(b.path("packages/runtime/test/tool_modules/fs_descriptors.mjs"));
+        run_descriptors.expectStdOutEqual("OK native descriptors, exact bytes, kernel append, inherited handles and syscall errors\n");
+        home_tool_smoke_step.dependOn(&run_descriptors.step);
         const run_async_property_names = b.addRunArtifact(home_tool_exe);
         run_async_property_names.addArgs(&.{ "run", "packages/runtime/test/tool_modules/async_property_names.mjs" });
         run_async_property_names.expectStdOutEqual("OK actual async keyword, literal, computed and generator methods\n");

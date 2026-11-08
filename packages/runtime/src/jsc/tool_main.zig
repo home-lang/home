@@ -66,7 +66,9 @@ fn runSource(
     tool_runtime.async_context.install(ctx, global);
     tool_runtime.performance.install(ctx, global);
     tool_runtime.os.install(ctx, global);
-    tool_runtime.fs.install(ctx, global);
+    var filesystem = tool_runtime.fs.Host.init(allocator, ctx);
+    defer filesystem.deinit();
+    filesystem.install(global);
     tool_runtime.builtins.install(allocator, ctx);
     tool_runtime.modules.installWithConditions(allocator, ctx, global, conditions);
 

@@ -155,6 +155,164 @@ fn readDirectory(allocator: std.mem.Allocator, root: std.Io.Dir, path: []const u
     return entries.toOwnedSlice(allocator);
 }
 
+const OwnedDescriptors = struct {
+    allocator: std.mem.Allocator,
+    entries: std.AutoHashMapUnmanaged(c_int, void) = .empty,
+
+    fn adopt(self: *OwnedDescriptors, fd: c_int) !void {
+        errdefer _ = std.c.close(fd);
+        try self.entries.put(self.allocator, fd, {});
+    }
+
+    fn close(self: *OwnedDescriptors, fd: c_int) ?std.posix.E {
+        _ = self.entries.remove(fd);
+        // Never retry close after EINTR: the descriptor may already have been
+        // released and reused. Report that syscall's failure to the caller.
+        const result = std.c.close(fd);
+        return if (result == 0) null else std.posix.errno(result);
+    }
+
+    fn deinit(self: *OwnedDescriptors) void {
+        var iterator = self.entries.keyIterator();
+        while (iterator.next()) |fd| _ = std.c.close(fd.*);
+        self.entries.deinit(self.allocator);
+    }
+};
+
+// Per owner thread and scoped to runSource, like the timer queue. Callbacks
+// verify their context before accessing descriptor ownership; no shared state.
+threadlocal var active: ?*Host = null;
+
+pub const Host = struct {
+    ctx: *types.JSContextRef,
+    owned: OwnedDescriptors,
+    previous: ?*Host = null,
+
+    pub fn init(allocator: std.mem.Allocator, ctx: *types.JSContextRef) Host {
+        return .{ .ctx = ctx, .owned = .{ .allocator = allocator } };
+    }
+
+    pub fn install(self: *Host, global: *types.JSGlobalObject) void {
+        self.previous = active;
+        active = self;
+        callback.registerCallback(self.ctx, global, "__home_tool_fs_operation", operation);
+        callback.registerCallback(self.ctx, global, "__home_tool_fd_operation", descriptorOperation);
+    }
+
+    pub fn deinit(self: *Host) void {
+        if (active == self) active = self.previous;
+        self.owned.deinit();
+    }
+};
+
+fn nativeFailure(ctx: *types.JSContextRef, object: *types.JSObject, err: std.posix.E, syscall: []const u8) ?*types.JSValue {
+    const allocator = std.heap.smp_allocator;
+    const code = std.fmt.allocPrint(allocator, "E{s}", .{@tagName(err)}) catch return failure(ctx, object, error.OutOfMemory);
+    defer allocator.free(code);
+    set(ctx, object, "error", text(ctx, code));
+    set(ctx, object, "syscall", text(ctx, syscall));
+    return @ptrCast(object);
+}
+
+fn openFlags(flag: []const u8) !std.c.O {
+    var flags: std.c.O = .{ .CLOEXEC = true };
+    if (std.mem.eql(u8, flag, "r") or std.mem.eql(u8, flag, "r+")) {
+        flags.ACCMODE = if (flag.len == 2) .RDWR else .RDONLY;
+    } else if (flag.len >= 1 and (flag[0] == 'w' or flag[0] == 'a')) {
+        const exclusive = std.mem.indexOfScalar(u8, flag, 'x') != null;
+        const plus = std.mem.indexOfScalar(u8, flag, '+') != null;
+        const valid = if (exclusive) (std.mem.eql(u8, flag[1..], "x") or std.mem.eql(u8, flag[1..], "x+")) else (flag.len == 1 or std.mem.eql(u8, flag[1..], "+"));
+        if (!valid) return error.Unsupported;
+        flags.ACCMODE = if (plus) .RDWR else .WRONLY;
+        flags.CREAT = true;
+        flags.EXCL = exclusive;
+        flags.APPEND = flag[0] == 'a';
+        flags.TRUNC = flag[0] == 'w';
+    } else return error.Unsupported;
+    return flags;
+}
+
+fn openNative(path: [:0]const u8, flags: std.c.O, mode: std.posix.mode_t) union(enum) { fd: c_int, err: std.posix.E } {
+    while (true) {
+        const fd = std.c.open(path.ptr, flags, @as(c_uint, mode));
+        if (fd >= 0) return .{ .fd = fd };
+        const err = std.posix.errno(fd);
+        if (err != .INTR) return .{ .err = err };
+    }
+}
+
+fn writeNative(fd: c_int, bytes: []const u8) ?std.posix.E {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        const count = std.c.write(fd, bytes[offset..].ptr, bytes.len - offset);
+        if (count < 0) {
+            const err = std.posix.errno(count);
+            if (err == .INTR) continue;
+            return err;
+        }
+        if (count == 0) return .IO;
+        offset += @intCast(count);
+    }
+    return null;
+}
+
+fn dataBytes(ctx: *types.JSContextRef, value: ?*types.JSValue, allocator: std.mem.Allocator, exception: api.ExceptionRef) ![]u8 {
+    if (api.JSValueIsString(ctx, value)) return string(ctx, value, allocator) orelse error.OutOfMemory;
+    const kind = api.JSValueGetTypedArrayType(ctx, value, exception);
+    if (kind == .kJSTypedArrayTypeNone or kind == .kJSTypedArrayTypeArrayBuffer) return error.Unsupported;
+    const view = api.JSValueToObject(ctx, value, exception) orelse return error.JavaScriptException;
+    const length = api.JSObjectGetTypedArrayByteLength(ctx, view, exception);
+    if (exception) |out| if (out.* != null) return error.JavaScriptException;
+    if (length == 0) return allocator.dupe(u8, "");
+    const offset = api.JSObjectGetTypedArrayByteOffset(ctx, view, exception);
+    const raw = api.JSObjectGetTypedArrayBytesPtr(ctx, view, exception) orelse return error.JavaScriptException;
+    const bytes: [*]const u8 = @ptrCast(raw);
+    return allocator.dupe(u8, bytes[offset..][0..length]);
+}
+
+fn descriptorOperation(
+    ctx: ?*types.JSContextRef,
+    function: ?*types.JSObject,
+    this: ?*types.JSObject,
+    count: usize,
+    args: [*c]const ?*types.JSValue,
+    exception: api.ExceptionRef,
+) callconv(.c) ?*types.JSValue {
+    _ = function;
+    _ = this;
+    const c = ctx orelse return null;
+    const object = api.JSObjectMake(c, null, null) orelse return api.JSValueMakeNull(c);
+    api.JSValueProtect(c, @ptrCast(object));
+    defer api.JSValueUnprotect(c, @ptrCast(object));
+    const host = active orelse return failure(c, object, error.Unsupported);
+    if (host.ctx != c or count < 2 or !api.JSValueIsNumber(c, args[1])) return failure(c, object, error.Unsupported);
+    const number = api.JSValueToNumber(c, args[1], exception);
+    if (!std.math.isFinite(number) or number < 0 or number > std.math.maxInt(c_int) or @trunc(number) != number) return failure(c, object, error.Unsupported);
+    const fd: c_int = @intFromFloat(number);
+    const allocator = std.heap.smp_allocator;
+    const op = string(c, args[0], allocator) orelse return failure(c, object, error.OutOfMemory);
+    defer allocator.free(op);
+    if (std.mem.eql(u8, op, "write")) {
+        if (count < 3) return failure(c, object, error.Unsupported);
+        const bytes = dataBytes(c, args[2], allocator, exception) catch |err| {
+            if (err == error.JavaScriptException) return null;
+            return failure(c, object, err);
+        };
+        defer allocator.free(bytes);
+        if (writeNative(fd, bytes)) |err| return nativeFailure(c, object, err, "write");
+    } else if (std.mem.eql(u8, op, "fsync")) {
+        while (true) {
+            const result = std.c.fsync(fd);
+            if (result == 0) break;
+            const err = std.posix.errno(result);
+            if (err != .INTR) return nativeFailure(c, object, err, "fsync");
+        }
+    } else if (std.mem.eql(u8, op, "close")) {
+        if (host.owned.close(fd)) |err| return nativeFailure(c, object, err, "close");
+    } else return failure(c, object, error.Unsupported);
+    return @ptrCast(object);
+}
+
 fn operation(
     ctx: ?*types.JSContextRef,
     function: ?*types.JSObject,
@@ -178,7 +336,7 @@ fn operation(
     if (std.mem.indexOfScalar(u8, path, 0) != null) return failure(c, object, error.Unsupported);
     const recursive = count > 2 and api.JSValueToBoolean(c, args[2]);
     const force = count > 3 and api.JSValueToBoolean(c, args[3]);
-    const creates_file = std.mem.eql(u8, op, "writeFile");
+    const creates_file = std.mem.eql(u8, op, "writeFile") or std.mem.eql(u8, op, "open");
     const creates_directory = std.mem.eql(u8, op, "mkdir");
     var permissions: std.Io.File.Permissions = if (creates_directory) .default_dir else .default_file;
     if ((creates_file or creates_directory) and count > 4 and !api.JSValueIsUndefined(c, args[4])) {
@@ -194,26 +352,36 @@ fn operation(
         const terminated = bun.dupeZ(allocator, u8, path) catch return failure(c, object, error.OutOfMemory);
         defer allocator.free(terminated);
         accessPath(terminated, @intFromFloat(mode)) catch |err| return failure(c, object, err);
-    } else if (std.mem.eql(u8, op, "writeFile")) {
-        if (count < 3 or args[2] == null) return failure(c, object, error.Unsupported);
-        const contents = if (api.JSValueIsString(c, args[2]))
-            string(c, args[2], allocator) orelse return failure(c, object, error.OutOfMemory)
-        else contents: {
-            const kind = api.JSValueGetTypedArrayType(c, args[2], exception);
-            if (kind == .kJSTypedArrayTypeNone or kind == .kJSTypedArrayTypeArrayBuffer) return failure(c, object, error.Unsupported);
-            const view = api.JSValueToObject(c, args[2], exception) orelse return null;
-            const length = api.JSObjectGetTypedArrayByteLength(c, view, exception);
-            if (exception) |out| if (out.* != null) return null;
-            if (length == 0) break :contents allocator.dupe(u8, "") catch return failure(c, object, error.OutOfMemory);
-            const offset = api.JSObjectGetTypedArrayByteOffset(c, view, exception);
-            const raw = api.JSObjectGetTypedArrayBytesPtr(c, view, exception) orelse return null;
-            const bytes: [*]const u8 = @ptrCast(raw);
-            break :contents allocator.dupe(u8, bytes[offset..][0..length]) catch return failure(c, object, error.OutOfMemory);
+    } else if (std.mem.eql(u8, op, "writeFile") or std.mem.eql(u8, op, "open")) {
+        const host = active orelse return failure(c, object, error.Unsupported);
+        if (host.ctx != c or count < 3) return failure(c, object, error.Unsupported);
+        const opening = std.mem.eql(u8, op, "open");
+        const flag = string(c, if (opening) args[2] else if (count > 3) args[3] else null, allocator) orelse return failure(c, object, error.OutOfMemory);
+        defer allocator.free(flag);
+        const flags = openFlags(flag) catch |err| return failure(c, object, err);
+        const terminated = bun.dupeZ(allocator, u8, path) catch return failure(c, object, error.OutOfMemory);
+        defer allocator.free(terminated);
+        // Copy data before opening/truncating: invalid views must not cause a
+        // filesystem side effect. Array views retain their exact byte offset.
+        const contents = if (opening) null else dataBytes(c, args[2], allocator, exception) catch |err| {
+            if (err == error.JavaScriptException) return null;
+            return failure(c, object, err);
         };
-        defer allocator.free(contents);
-        // Creation permissions are subject to the native umask. Never chmod an
-        // existing file: Node's mode option only applies when open creates it.
-        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = contents, .flags = .{ .permissions = permissions } }) catch |err| return failure(c, object, err);
+        defer if (contents) |bytes| allocator.free(bytes);
+        const fd = switch (openNative(terminated, flags, permissions.toMode())) {
+            .fd => |descriptor| descriptor,
+            .err => |err| return nativeFailure(c, object, err, "open"),
+        };
+        if (opening) {
+            host.owned.adopt(fd) catch |err| return failure(c, object, err);
+            set(c, object, "fd", api.JSValueMakeNumber(c, @floatFromInt(fd)));
+        } else {
+            const write_error = writeNative(fd, contents.?);
+            const close_result = std.c.close(fd);
+            const close_error = if (close_result == 0) null else std.posix.errno(close_result);
+            if (write_error) |err| return nativeFailure(c, object, err, "write");
+            if (close_error) |err| return nativeFailure(c, object, err, "close");
+        }
     } else if (std.mem.eql(u8, op, "readFile") or std.mem.eql(u8, op, "readToolFile") or std.mem.eql(u8, op, "readToolTextFile")) {
         const bounded = !std.mem.eql(u8, op, "readFile");
         const contents = (if (bounded) readToolFile(.cwd(), path, allocator) else std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited)) catch |err| return failure(c, object, err);
@@ -277,10 +445,6 @@ fn operation(
         if (stat.atime) |time| set(c, object, "atimeMs", api.JSValueMakeNumber(c, @as(f64, @floatFromInt(time.nanoseconds)) / 1_000_000));
     } else return failure(c, object, error.Unsupported);
     return @ptrCast(object);
-}
-
-pub fn install(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
-    callback.registerCallback(ctx, global, "__home_tool_fs_operation", operation);
 }
 
 test "native directory names and kinds release partial allocations" {
@@ -351,4 +515,45 @@ test "tool file reads preserve exact bytes at the inclusive limit and refuse lar
     try std.testing.expectError(error.FileNotFound, readToolFile(temporary.dir, "missing", allocator));
     try temporary.dir.createDir(io, "directory", .default_dir);
     try std.testing.expectError(error.IsDir, readToolFile(temporary.dir, "directory", allocator));
+}
+
+test "owned native descriptors close on teardown and allocation failure" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const fd = switch (openNative("/dev/null", .{ .ACCMODE = .WRONLY, .CLOEXEC = true }, 0o600)) {
+                .fd => |descriptor| descriptor,
+                .err => return error.OpenFailed,
+            };
+            var owned: OwnedDescriptors = .{ .allocator = allocator };
+            owned.adopt(fd) catch |err| {
+                owned.deinit();
+                const result = std.c.fcntl(fd, std.c.F.GETFD);
+                try std.testing.expect(result < 0 and std.posix.errno(result) == .BADF);
+                return err;
+            };
+            const flags = std.c.fcntl(fd, std.c.F.GETFD);
+            try std.testing.expect(flags >= 0 and flags & std.c.FD_CLOEXEC != 0);
+            try std.testing.expect(writeNative(fd, "actual") == null);
+            owned.deinit();
+            const result = std.c.fcntl(fd, std.c.F.GETFD);
+            try std.testing.expect(result < 0 and std.posix.errno(result) == .BADF);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{});
+}
+
+test "explicit close removes ownership before descriptor reuse" {
+    const fd = std.c.open("/dev/null", .{ .ACCMODE = .WRONLY, .CLOEXEC = true });
+    try std.testing.expect(fd >= 0);
+    var owned: OwnedDescriptors = .{ .allocator = std.testing.allocator };
+    try owned.adopt(fd);
+    try std.testing.expect(owned.close(fd) == null);
+    const replacement = std.c.open("/dev/null", .{ .ACCMODE = .WRONLY, .CLOEXEC = true });
+    try std.testing.expect(replacement >= 0);
+    defer _ = std.c.close(replacement);
+    owned.deinit();
+    // A borrowed/newly reused descriptor is not owned by the expired host.
+    try std.testing.expect(std.c.fcntl(replacement, std.c.F.GETFD) >= 0);
+    const result = std.c.write(replacement, "actual", 6);
+    try std.testing.expectEqual(@as(isize, 6), result);
 }
