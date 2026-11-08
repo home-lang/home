@@ -70,6 +70,25 @@ native query. ReadStream, WriteStream, raw mode and the full terminal/process
 stream surface remain unsupported; descriptor classification does not provide
 terminal I/O or an event loop.
 
+The `buffer`/`node:buffer` aliases and global Buffer share a bounded Buffer
+implementation backed by real, engine-managed Uint8Array/ArrayBuffer storage.
+from accepts primitive strings, arrays, typed views, raw ArrayBuffers and
+Buffer JSON data, plus shared ArrayBuffers when the engine exposes them. The
+system-JSC reference realm does not expose SharedArrayBuffer. Typed sources copy; views created from raw ArrayBuffers and slice/subarray share
+backing storage, and inherited typed-array map operations preserve Buffer species.
+alloc, concat, byteLength, isBuffer, equals, fill, byte/string search, toJSON and UTF-8/hex toString
+operate on actual bytes. UTF-8 encoding replaces isolated surrogates and decoding
+reuses the owned filesystem decoder, retaining NULs/BOMs and malformed-sequence
+replacement. Hex decoding uses Node's byte-wise character behavior and stops at
+invalid pairs; byteLength measures hex input length independently.
+
+This is not the complete Node Buffer surface. Other codecs (including base64),
+numeric read/write helpers, pooled/unsafe allocation, deprecated constructors,
+general array-like/valueOf coercion, and the full buffer module exports remain
+unsupported. Missing methods stay absent and recognized unsupported codecs fail
+explicitly. No native Bun runtime, external memory stand-in or Node/V8 slab
+allocator supplies these bytes.
+
 The `process` and `node:process` module aliases expose the existing live Home
 `process` object, including its real environment, arguments, current directory,
 next-tick queue and exit handling. They do not manufacture additional Node

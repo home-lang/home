@@ -891,6 +891,16 @@ pub fn build(b: *std.Build) void {
         run_home_tool_tty.addArgs(&.{ "run", "node_tty_entry.mjs", "pipe" });
         run_home_tool_tty.expectStdOutEqual("{\"descriptors\":[false,false,false],\"invalid\":[false,false,false,false,false,false,false,false,false,false,false,false,false]}\n");
         home_tool_smoke_step.dependOn(&run_home_tool_tty.step);
+        const run_home_tool_buffer = b.addRunArtifact(home_tool_exe);
+        run_home_tool_buffer.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_buffer.addArgs(&.{ "run", "node_buffer_entry.cjs" });
+        run_home_tool_buffer.expectStdOutEqual(@embedFile("packages/runtime/test/tool_modules/node_buffer.expected.json"));
+        home_tool_smoke_step.dependOn(&run_home_tool_buffer.step);
+        const run_home_tool_buffer_esm = b.addRunArtifact(home_tool_exe);
+        run_home_tool_buffer_esm.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_buffer_esm.addArgs(&.{ "run", "node_buffer_esm.mjs" });
+        run_home_tool_buffer_esm.expectStdOutEqual("OK home-tool ESM Buffer identity\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_buffer_esm.step);
         const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
         run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });

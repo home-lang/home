@@ -77,6 +77,10 @@
     }
   }
 
+  const bufferFactory = globalThis.__home_tool_buffer_factory;
+  delete globalThis.__home_tool_buffer_factory;
+  const bufferApi = bufferFactory(decodeUtf8);
+  globalThis.Buffer = bufferApi.Buffer;
   const fs = {
     readFileSync: function(path, options) {
       path = stringPath(path);
@@ -402,6 +406,8 @@
     },
   };
   const builtins = Object.create(null);
+  builtins.buffer = bufferApi;
+  builtins['node:buffer'] = bufferApi;
   builtins.tty = ttyApi;
   builtins['node:tty'] = ttyApi;
   builtins.events = eventsApi;
