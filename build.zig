@@ -877,6 +877,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_comments.addArgs(&.{ "run", "comment_boundary_entry.ts" });
         run_home_tool_comments.expectStdOutEqual("OK bounded leading documentation emission\n");
         home_tool_smoke_step.dependOn(&run_home_tool_comments.step);
+        const run_home_tool_declaration_scope = b.addRunArtifact(home_tool_exe);
+        run_home_tool_declaration_scope.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_declaration_scope.addArgs(&.{ "run", "declaration_scope.mjs" });
+        run_home_tool_declaration_scope.expectStdOutEqual("OK actual nested declaration scope and initialization\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_declaration_scope.step);
         const run_home_tool_object_prefix = b.addRunArtifact(home_tool_exe);
         run_home_tool_object_prefix.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_object_prefix.addArgs(&.{ "run", "object_prefix.mjs" });

@@ -11572,6 +11572,16 @@ pub const Parser = struct {
         } else {
             _ = try self.expect(.open_brace, "'{' to start block");
         }
+        // Extra declarators belong to the enclosing statement list. An
+        // initializer can recursively parse a function/method/static block
+        // before its parent variable list is complete; that block must never
+        // drain the parent's already queued siblings (dtsx's rt/hn bindings).
+        const outer_pending = self.pending_statements;
+        self.pending_statements = .empty;
+        defer {
+            self.pending_statements.deinit(self.gpa);
+            self.pending_statements = outer_pending;
+        }
         self.block_depth += 1;
         defer self.block_depth -= 1;
         // A `{}` block under a `case` clause body resets the bare-clause
@@ -37363,4 +37373,46 @@ test "parser: prefix updates can start object property values" {
         _ = try setup.parser.parseSourceFile();
         try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
     }
+}
+
+test "parser: nested initializer blocks cannot consume parent declaration siblings" {
+    for ([_][]const u8{
+        "var first=1,second=2,read=()=>{return second;};",
+        "let first=1,second=2,read=function(){return second;};",
+        "const first=1,second=2,read=()=>{};",
+        "var first=1,second=2,read=async()=>{await 0;return second;};",
+        "const first=1,second=2,read=class{method(){return second;}};",
+        "var first=1,second=2,read=class{static{var inner=3,other=4;}};",
+        "export const first=1,second=2,read=()=>{return second;};",
+    }) |source| {
+        var setup = try newTestSetup(source);
+        defer destroyTestSetup(setup);
+        const root = try setup.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+        const statements = hir_mod.blockStmts(&setup.hir, root);
+        try T.expectEqual(@as(usize, 3), statements.len);
+        for (statements, [_][]const u8{ "first", "second", "read" }) |statement, name| {
+            const declaration = if (setup.hir.kindOf(statement) == .export_decl) hir_mod.exportOf(&setup.hir, statement).decl else statement;
+            const binding = hir_mod.varDeclOf(&setup.hir, declaration).name;
+            try T.expectEqualStrings(name, setup.interner.get(hir_mod.identifierOf(&setup.hir, binding).name));
+        }
+    }
+}
+
+test "parser: pending declarator ownership nests through multiple function bodies" {
+    var setup = try newTestSetup("var first=1,second=2,read=()=>{var inner=3,other=4,last=()=>{};return second+other;};");
+    defer destroyTestSetup(setup);
+    const root = try setup.parser.parseSourceFile();
+    const statements = hir_mod.blockStmts(&setup.hir, root);
+    try T.expectEqual(@as(usize, 3), statements.len);
+    const function = hir_mod.varDeclOf(&setup.hir, statements[2]).init;
+    const body = hir_mod.fnDeclOf(&setup.hir, function).body;
+    const nested = hir_mod.blockStmts(&setup.hir, body);
+    try T.expectEqual(@as(usize, 4), nested.len);
+    for (nested[0..3], [_][]const u8{ "inner", "other", "last" }) |statement, name| {
+        const binding = hir_mod.varDeclOf(&setup.hir, statement).name;
+        try T.expectEqualStrings(name, setup.interner.get(hir_mod.identifierOf(&setup.hir, binding).name));
+    }
+    const last = hir_mod.varDeclOf(&setup.hir, nested[2]).init;
+    try T.expectEqual(@as(usize, 0), hir_mod.blockStmts(&setup.hir, hir_mod.fnDeclOf(&setup.hir, last).body).len);
 }
