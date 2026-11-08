@@ -293,6 +293,46 @@ fn spawnSyncNative(
             inherited.put(key, value) catch return extern_fns.JSValueMakeNull(c);
         }
     }
+    if (argument_count > 6 and arguments[6] != null and extern_fns.JSValueToBoolean(c, arguments[6])) {
+        switch (timeout) {
+            .none => {},
+            else => return extern_fns.JSValueMakeNull(c),
+        }
+        // Inherited streams are actual inherited descriptors, never captured
+        // output replayed after completion. The child remains in our process
+        // group so the ecosystem command deadline can reap the whole tree.
+        var child = std.process.spawn(threaded.io(), .{
+            .argv = argv,
+            .cwd = if (cwd) |path| .{ .path = path } else .inherit,
+            .environ_map = &inherited,
+            .stdin = .inherit,
+            .stdout = .inherit,
+            .stderr = .inherit,
+        }) catch |err| {
+            std.debug.print("home-tool: cannot spawn {s}: {t}\n", .{ argv[0], err });
+            return extern_fns.JSValueMakeNull(c);
+        };
+        defer child.kill(threaded.io());
+        const term = child.wait(threaded.io()) catch return extern_fns.JSValueMakeNull(c);
+        const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
+        setProperty(c, object, "exitCode", switch (term) {
+            .exited => |code| extern_fns.JSValueMakeNumber(c, @floatFromInt(code)),
+            else => extern_fns.JSValueMakeNull(c),
+        });
+        const signal = switch (term) {
+            .signal => |value| if (std.enums.tagName(std.posix.SIG, value)) |name|
+                std.fmt.allocPrint(allocator, "SIG{s}", .{name}) catch null
+            else
+                null,
+            else => null,
+        };
+        defer if (signal) |value| allocator.free(value);
+        setProperty(c, object, "signal", if (signal) |value| stringValue(c, value) else extern_fns.JSValueMakeNull(c));
+        setProperty(c, object, "stdout", extern_fns.JSValueMakeNull(c));
+        setProperty(c, object, "stderr", extern_fns.JSValueMakeNull(c));
+        setProperty(c, object, "timedOut", extern_fns.JSValueMakeBoolean(c, false));
+        return @ptrCast(object);
+    }
     const result = std.process.run(allocator, threaded.io(), .{
         .argv = argv,
         .cwd = if (cwd) |path| .{ .path = path } else .inherit,
@@ -342,10 +382,12 @@ const install_glue =
     \\    cpuCount: function() { return cpuCount(); },
     \\    spawnSync: function(argv, options) {
     \\      options = options || {};
+    \\      if (options.stdio !== undefined && options.stdio !== "inherit") throw new Error("Unsupported Home spawn stdio mode");
+    \\      if (options.stdio === "inherit" && options.timeoutMs != null) throw new Error("Home inherited spawn timeout is unsupported");
     \\      var env = options.env || {};
     \\      var keys = Object.keys(env);
     \\      var values = keys.map(function(key) { return String(env[key]); });
-    \\      var out = spawn(argv, options.cwd == null ? null : String(options.cwd), options.timeoutMs == null ? null : Number(options.timeoutMs), keys, values, options.inheritEnv !== false);
+    \\      var out = spawn(argv, options.cwd == null ? null : String(options.cwd), options.timeoutMs == null ? null : Number(options.timeoutMs), keys, values, options.inheritEnv !== false, options.stdio === "inherit");
     \\      if (out === null) throw new Error("cannot spawn process");
     \\      return out;
     \\    },

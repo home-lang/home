@@ -255,6 +255,48 @@
       return fileReferrer(url);
     },
   };
+  const childProcess = {
+    execFileSync: function(file, args, options) {
+      if (!Array.isArray(args)) {
+        options = args;
+        args = [];
+      }
+      options = options || {};
+      if (typeof file !== 'string' || file.indexOf('\0') !== -1) throw new TypeError('Executable must be a string without NUL bytes');
+      if (process.platform === 'win32' || !file.startsWith('/')) unsupported('Home execFileSync currently requires an absolute POSIX executable path');
+      if (args.some(function(arg) {
+        return typeof arg !== 'string' || arg.indexOf('\0') !== -1;
+      })) throw new TypeError('Arguments must be strings without NUL bytes');
+      if (options.stdio !== 'inherit') unsupported('Home execFileSync currently requires inherited stdio; captured Buffer results are unsupported');
+      for (const key of Object.keys(options)) {
+        if (!['stdio', 'cwd', 'env'].includes(key)) unsupported(`Unsupported Home execFileSync option: ${key}`);
+      }
+      if (options.cwd !== undefined) stringPath(options.cwd);
+      const env = {};
+      const inheritEnv = options.env == null;
+      if (!inheritEnv) {
+        if (typeof options.env !== 'object') throw new TypeError('Environment must be an object');
+        for (const key of Object.keys(options.env)) {
+          if (key.includes('\0') || key.includes('=')) throw new TypeError('Invalid environment key');
+          if (options.env[key] !== undefined) {
+            const value = String(options.env[key]);
+            if (value.includes('\0')) throw new TypeError('Environment values cannot contain NUL bytes');
+            env[key] = value;
+          }
+        }
+      }
+      const result = Home.spawnSync([file, ...args], { stdio: 'inherit', cwd: options.cwd, env: env, inheritEnv: inheritEnv });
+      if (result.exitCode !== 0) {
+        const error = new Error(`Command failed: ${file}`);
+        error.status = result.exitCode;
+        error.signal = result.signal;
+        error.stdout = result.stdout;
+        error.stderr = result.stderr;
+        throw error;
+      }
+      return null;
+    },
+  };
   const builtins = Object.create(null);
   builtins.fs = fs;
   builtins['node:fs'] = fs;
@@ -268,5 +310,7 @@
   builtins['node:path/posix'] = posixPath;
   builtins.url = urlApi;
   builtins['node:url'] = urlApi;
+  builtins.child_process = childProcess;
+  builtins['node:child_process'] = childProcess;
   globalThis.__home_tool_builtins = builtins;
 })();

@@ -68,6 +68,15 @@ The Node-produced path/URL fixture retains both successful results and errors.
 Other path methods, Windows path behavior, URL objects and other URL APIs still
 require implementations.
 
+`child_process`/`node:child_process` expose synchronous `execFileSync` for an
+absolute POSIX executable with `stdio: "inherit"`. The OS descriptors are
+inherited directly, cwd and environment replacement are applied, and real exit
+status/signal failures are thrown. This is sufficient for native-tool launchers
+such as TypeScript 7. Captured Buffer results, PATH lookup, timeouts, other
+options and asynchronous child APIs still require implementations and fail
+explicitly. `Home.spawnSync` also accepts `stdio: "inherit"`; its default
+captured-output mode is unchanged, and inherited mode does not accept a timeout.
+
 The runner resolves relative and absolute modules plus offline `node_modules`
 packages. TypeScript/JavaScript modules emit to CommonJS, JSON modules load
 directly, package `main`/`module` entries and `index.*` fallbacks are supported,
