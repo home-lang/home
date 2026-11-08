@@ -553,7 +553,7 @@ fn printConfigValidationDiagnostics(
     }
 }
 
-fn printResolvedConfig(loaded_cfg: ?tsconfig_mod.TsConfig, input_files: []const []const u8) void {
+fn printResolvedConfig(gpa: std.mem.Allocator, loaded_cfg: ?tsconfig_mod.TsConfig, input_files: []const []const u8) !void {
     printStdout("{{\n", .{});
     printStdout("  \"compileOnSave\": false,\n", .{});
     printStdout("  \"compilerOptions\": {{\n", .{});
@@ -576,7 +576,9 @@ fn printResolvedConfig(loaded_cfg: ?tsconfig_mod.TsConfig, input_files: []const 
         }
         if (co.out_dir) |d| {
             option_index += 1;
-            printStdout("    \"outDir\": \"{s}\"{s}\n", .{ d, if (option_index < option_count) "," else "" });
+            const literal = try jsonStringLiteral(gpa, d);
+            defer gpa.free(literal);
+            printStdout("    \"outDir\": {s}{s}\n", .{ literal, if (option_index < option_count) "," else "" });
         }
         if (co.strict) |s| {
             option_index += 1;
@@ -590,7 +592,9 @@ fn printResolvedConfig(loaded_cfg: ?tsconfig_mod.TsConfig, input_files: []const 
     printStdout("  }},\n", .{});
     printStdout("  \"files\": [\n", .{});
     for (input_files, 0..) |path, i| {
-        printStdout("    \"{s}\"{s}\n", .{ path, if (i + 1 < input_files.len) "," else "" });
+        const literal = try jsonStringLiteral(gpa, path);
+        defer gpa.free(literal);
+        printStdout("    {s}{s}\n", .{ literal, if (i + 1 < input_files.len) "," else "" });
     }
     printStdout("  ]\n", .{});
     printStdout("}}\n", .{});
@@ -1265,15 +1269,36 @@ fn appendBuildInfoJsonStringArray(
     try buf.append(gpa, ']');
 }
 
+/// Go's JSON writer replaces each invalid UTF8 byte, including preserved
+/// WTF8 surrogate bytes, before emitting a valid JSON string. Keep that
+/// output policy at the serialization boundary rather than in the parser.
+fn jsonStringLiteral(gpa: std.mem.Allocator, value: []const u8) ![]u8 {
+    if (std.unicode.utf8ValidateSlice(value)) return std.json.Stringify.valueAlloc(gpa, value, .{});
+    var valid: std.ArrayListUnmanaged(u8) = .empty;
+    defer valid.deinit(gpa);
+    var i: usize = 0;
+    while (i < value.len) {
+        const width: usize = blk: {
+            const len = std.unicode.utf8ByteSequenceLength(value[i]) catch break :blk 0;
+            if (len > value.len - i) break :blk 0;
+            _ = std.unicode.utf8Decode(value[i..][0..len]) catch break :blk 0;
+            break :blk len;
+        };
+        if (width == 0) {
+            try valid.appendSlice(gpa, "\u{fffd}");
+            i += 1;
+        } else {
+            try valid.appendSlice(gpa, value[i..][0..width]);
+            i += width;
+        }
+    }
+    return std.json.Stringify.valueAlloc(gpa, valid.items, .{});
+}
+
 fn appendJsonStringBody(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
-    for (value) |c| switch (c) {
-        '"' => try buf.appendSlice(gpa, "\\\""),
-        '\\' => try buf.appendSlice(gpa, "\\\\"),
-        '\n' => try buf.appendSlice(gpa, "\\n"),
-        '\r' => try buf.appendSlice(gpa, "\\r"),
-        '\t' => try buf.appendSlice(gpa, "\\t"),
-        else => try buf.append(gpa, c),
-    };
+    const literal = try jsonStringLiteral(gpa, value);
+    defer gpa.free(literal);
+    try buf.appendSlice(gpa, literal[1 .. literal.len - 1]);
 }
 
 fn moduleOptionName(value: tsconfig_mod.Module) []const u8 {
@@ -4159,7 +4184,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // created. Program option diagnostics such as TS5108 therefore do not
     // participate, even though file discovery does.
     if (opts.show_config) {
-        printResolvedConfig(loaded_cfg, input_files.items);
+        try printResolvedConfig(gpa, loaded_cfg, input_files.items);
         return;
     }
 
@@ -5709,27 +5734,9 @@ fn appendJsonStringArray(
     try out.append(gpa, '[');
     for (values, 0..) |value, i| {
         if (i > 0) try out.append(gpa, ',');
-        try out.append(gpa, '"');
-        for (value) |ch| {
-            switch (ch) {
-                '"' => try out.appendSlice(gpa, "\\\""),
-                '\\' => try out.appendSlice(gpa, "\\\\"),
-                '\n' => try out.appendSlice(gpa, "\\n"),
-                '\r' => try out.appendSlice(gpa, "\\r"),
-                '\t' => try out.appendSlice(gpa, "\\t"),
-                else => {
-                    if (ch < 0x20) {
-                        const hex = "0123456789abcdef";
-                        try out.appendSlice(gpa, "\\u00");
-                        try out.append(gpa, hex[ch >> 4]);
-                        try out.append(gpa, hex[ch & 0x0f]);
-                    } else {
-                        try out.append(gpa, ch);
-                    }
-                },
-            }
-        }
-        try out.append(gpa, '"');
+        const literal = try jsonStringLiteral(gpa, value);
+        defer gpa.free(literal);
+        try out.appendSlice(gpa, literal);
     }
     try out.append(gpa, ']');
 }
@@ -7932,6 +7939,45 @@ test "tsc_main: wildcard discovery honors TypeScript extension priority" {
         defer std.testing.allocator.free(path);
         try std.testing.expect(!pathInList(selected.items, path));
     }
+}
+
+test "tsc_main: JSON string writers escape controls and replace invalid UTF8" {
+    const values = [_][]const u8{
+        "\x00\x08\x0c\n\r\t\\\"", "\u{10400}", "\xed\xa0\x80", "\xe2\x82",
+        "é",
+    };
+    const expected = [_][]const u8{
+        "\x00\x08\x0c\n\r\t\\\"", "\u{10400}", "\u{fffd}\u{fffd}\u{fffd}", "\u{fffd}\u{fffd}",
+        "é",
+    };
+    for (values, expected) |value, decoded| {
+        var body: std.ArrayListUnmanaged(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try body.append(std.testing.allocator, '"');
+        try appendJsonStringBody(std.testing.allocator, &body, value);
+        try body.append(std.testing.allocator, '"');
+        const parsed = try std.json.parseFromSlice([]const u8, std.testing.allocator, body.items, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings(decoded, parsed.value);
+    }
+    var array: std.ArrayListUnmanaged(u8) = .empty;
+    defer array.deinit(std.testing.allocator);
+    try appendJsonStringArray(&array, std.testing.allocator, &values);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, array.items, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(expected.len, parsed.value.array.items.len);
+    for (parsed.value.array.items, expected) |value, decoded| {
+        try std.testing.expectEqualStrings(decoded, value.string);
+    }
+
+    const AllocationProbe = struct {
+        fn serialize(allocator: std.mem.Allocator) !void {
+            const literal = try jsonStringLiteral(allocator, "\xed\xa0\x80\x00");
+            defer allocator.free(literal);
+            try std.testing.expectEqualStrings("\"\u{fffd}\u{fffd}\u{fffd}\\u0000\"", literal);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, AllocationProbe.serialize, .{});
 }
 
 test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {
