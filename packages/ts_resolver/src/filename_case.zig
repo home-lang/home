@@ -44,6 +44,23 @@ const Points = struct {
     }
 };
 
+/// The native host probes its executable under the opposite simple case.
+/// Unlike filename keys, this uses ordinary simple lowercase for U+0130.
+pub fn swapCaseInto(path: []const u8, buffer: []u8) error{BufferTooSmall}![]const u8 {
+    var points = Points{ .bytes = path };
+    var length: usize = 0;
+    while (points.next()) |point| {
+        const upper = mapped(point, true);
+        const swapped = if (upper == point) mapped(point, false) else upper;
+        var bytes: [4]u8 = undefined;
+        const count = std.unicode.utf8Encode(swapped, &bytes) catch unreachable;
+        if (count > buffer.len - length) return error.BufferTooSmall;
+        @memcpy(buffer[length..][0..count], bytes[0..count]);
+        length += count;
+    }
+    return buffer[0..length];
+}
+
 /// Allocation-free hash/equality for managed filename maps. Stored keys remain
 /// authored paths; only their lookup identity follows the fixed host policy.
 pub const Context = struct {
@@ -96,4 +113,12 @@ test "filename identity uses simple Unicode casing and matching hashes" {
         .{ "/ΟΣ.ts", "/ος.ts" },
         .{ "/é.ts", "/é.ts" },
     }) |pair| try std.testing.expect(!insensitive.eql(pair[0], pair[1]));
+}
+
+test "native executable case swapping uses simple Unicode and bounded storage" {
+    var buffer: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("/REPO/σk𐐨iIßß.TS", try swapCaseInto("/repo/ΣK𐐀İıẞß.ts", &buffer));
+    try std.testing.expectEqualStrings("/���/tOOL", try swapCaseInto("/\xed\xa0\x80/Tool", &buffer));
+    try std.testing.expectError(error.BufferTooSmall, swapCaseInto("abc", buffer[0..2]));
+    try std.testing.expectEqualStrings("", try swapCaseInto("", buffer[0..0]));
 }

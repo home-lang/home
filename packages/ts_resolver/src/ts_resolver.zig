@@ -32,6 +32,7 @@
 
 const std = @import("std");
 pub const FileNameContext = @import("filename_case.zig").Context;
+pub const native_file_names = @import("native_file_names.zig");
 
 /// Module resolution strategy. Maps to the `compilerOptions.moduleResolution`
 /// option. Defaults follow tsc's rules in `getEmitModuleResolutionKind`.

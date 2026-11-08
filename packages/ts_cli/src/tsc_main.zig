@@ -743,7 +743,7 @@ fn buildOneProject(
     force: bool,
     upstream_dependency_built_with_unchanged_dts: bool,
     default_pretty: bool,
-) BuildOneProjectResult {
+) !BuildOneProjectResult {
     const cfg_src = RealFs.read(arena, config_path) catch {
         printStdout("error reading {s}\n", .{config_path});
         return .errors_outputs_skipped;
@@ -847,9 +847,9 @@ fn buildOneProject(
     // TS6358 — `Building project '{0}'...`
     if (verbose) buildStatusMessage(6358, "Building project '{s}'...\n", .{config_path});
 
-    const resolver_config = resolverConfigFromConfig(arena, cfg, null);
+    const resolver_config = try resolverConfigFromConfig(arena, cfg, null);
 
-    var resolver_fs = ResolverRealFs.init(gpa);
+    const resolver_fs = try ResolverRealFs.init(gpa);
     defer resolver_fs.deinit();
     var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), resolver_config);
     defer resolver.deinit();
@@ -1327,7 +1327,7 @@ fn resolverConfigFromConfig(
     arena: std.mem.Allocator,
     cfg: tsconfig_mod.TsConfig,
     cli_out_dir: ?[]const u8,
-) ts_resolver.Config {
+) std.mem.Allocator.Error!ts_resolver.Config {
     const co = cfg.compiler_options;
     var resolver_config: ts_resolver.Config = .{};
     resolver_config.resolve_json = tsconfig_mod.effectiveResolveJsonModule(co);
@@ -1343,11 +1343,11 @@ fn resolverConfigFromConfig(
     }
     if (co.base_url) |base_url| resolver_config.base_url = base_url;
     if (co.paths) |paths| {
-        resolver_config.paths = ts_resolver.Config.pathEntriesFromParallel(
+        resolver_config.paths = try ts_resolver.Config.pathEntriesFromParallel(
             arena,
             paths.patterns,
             paths.substitutions,
-        ) catch &.{};
+        );
     }
     const effective_out_dir = cli_out_dir orelse co.out_dir;
     if (effective_out_dir) |out_dir_value| resolver_config.out_dir = out_dir_value;
@@ -2546,7 +2546,7 @@ pub const LspProject = struct {
     /// Borrowed from the caller for the lifetime of the project.
     config_path: ?[]const u8,
     config: ?tsconfig_mod.TsConfig,
-    fs: ResolverRealFs,
+    fs: *ResolverRealFs,
     resolver: ts_resolver.Resolver,
     program: ts_program.Program,
     adapter: CheckerResolverAdapter,
@@ -2563,7 +2563,13 @@ pub const LspProject = struct {
     /// `config_path` is the tsconfig to load (`home lsp` passes the working
     /// directory's `tsconfig.json`); null or a missing file means defaults.
     pub fn create(gpa: std.mem.Allocator, config_path: ?[]const u8) !*LspProject {
-        const self = try gpa.create(LspProject);
+        const native_fs = try ResolverRealFs.init(gpa);
+        const self = gpa.create(LspProject) catch |err| {
+            native_fs.deinit();
+            return err;
+        };
+        errdefer native_fs.deinit();
+        errdefer gpa.destroy(self);
         self.gpa = gpa;
         self.open_documents = .empty;
         self.pending_diagnostics = .empty;
@@ -2571,38 +2577,61 @@ pub const LspProject = struct {
         self.last_config_root_hash = null;
         self.watch_interest = WatchInterest.init(gpa);
         self.config_arena = std.heap.ArenaAllocator.init(gpa);
+        errdefer self.config_arena.deinit();
         self.config_source = &.{};
         self.config_source_owned = false;
+        errdefer if (self.config_source_owned) gpa.free(self.config_source);
         self.config_path = config_path;
         self.config = null;
         if (config_path) |path| {
             if (RealFs.read(gpa, path)) |source| {
                 self.config_source = source;
                 self.config_source_owned = true;
-                self.config = tsconfig_mod.parseString(gpa, self.config_arena.allocator(), self.config_source) catch null;
+                self.config = tsconfig_mod.parseString(gpa, self.config_arena.allocator(), self.config_source) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => null,
+                };
                 if (self.config) |*c| {
                     c.file_path = path;
                     if (c.extends.len != 0) {
-                        self.config = resolveConfigExtends(gpa, self.config_arena.allocator(), c.*, path) catch null;
+                        self.config = resolveConfigExtends(gpa, self.config_arena.allocator(), c.*, path) catch |err| switch (err) {
+                            error.ConfigExtendsFailed => null,
+                            else => return err,
+                        };
                     }
                 }
-            } else |_| {}
+            } else |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => {},
+            }
         }
-        self.fs = ResolverRealFs.init(gpa);
+        self.fs = native_fs;
         const resolver_config: ts_resolver.Config = if (self.config) |c|
-            resolverConfigFromConfig(self.config_arena.allocator(), c, null)
+            try resolverConfigFromConfig(self.config_arena.allocator(), c, null)
         else
             .{};
         self.resolver = ts_resolver.Resolver.init(gpa, self.fs.fs(), resolver_config);
+        errdefer self.resolver.deinit();
         self.resolver.watch_failed_lookup_capture = true;
         self.program = ts_program.Program.init(gpa, &self.resolver);
+        errdefer self.program.deinit();
+        errdefer self.watch_interest.deinit();
         self.adapter = CheckerResolverAdapter.init(gpa, &self.resolver);
+        errdefer self.adapter.deinit();
         self.service = ts_lsp.Service.init(gpa, &self.program);
+        errdefer self.service.deinit();
         var compile_options: ts_driver.CompileOptions = if (self.config) |*c| ts_driver.optionsFromConfig(c) else .{};
         self.adapter.setProgramSources(&self.program, compile_options);
         compile_options.external_resolver = .{ .ptr = &self.adapter, .vtable = &CheckerResolverAdapter.vtable };
         self.service.compile_options = compile_options;
-        errdefer self.destroy();
+        errdefer {
+            var open_it = self.open_documents.iterator();
+            while (open_it.next()) |entry| gpa.free(entry.key_ptr.*);
+            self.open_documents.deinit(gpa);
+            for (self.pending_diagnostics.items) |body| gpa.free(body);
+            self.pending_diagnostics.deinit(gpa);
+            self.config_root_diagnostics.deinit(gpa);
+        }
         try self.seedExplicitConfigRoots();
         try self.publishConfigRootDiagnostics();
         return self;
@@ -2705,11 +2734,17 @@ pub const LspProject = struct {
         if (RealFs.read(self.gpa, path)) |source| {
             next_source = source;
             next_source_owned = true;
-            next_config = tsconfig_mod.parseString(self.gpa, next_arena.allocator(), source) catch null;
+            next_config = tsconfig_mod.parseString(self.gpa, next_arena.allocator(), source) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => null,
+            };
             if (next_config) |*config| {
                 config.file_path = path;
                 if (config.extends.len != 0) {
-                    next_config = resolveConfigExtends(self.gpa, next_arena.allocator(), config.*, path) catch null;
+                    next_config = resolveConfigExtends(self.gpa, next_arena.allocator(), config.*, path) catch |err| switch (err) {
+                        error.ConfigExtendsFailed => null,
+                        else => return err,
+                    };
                 }
             }
         } else |err| switch (err) {
@@ -2736,6 +2771,11 @@ pub const LspProject = struct {
             };
         }
 
+        const resolver_config: ts_resolver.Config = if (next_config) |config|
+            try resolverConfigFromConfig(next_arena.allocator(), config, null)
+        else
+            .{};
+
         self.service.deinit();
         self.adapter.deinit();
         self.watch_interest.deinit();
@@ -2751,10 +2791,6 @@ pub const LspProject = struct {
         self.config_source_owned = next_source_owned;
         self.config = next_config;
         staged = false;
-        const resolver_config: ts_resolver.Config = if (self.config) |config|
-            resolverConfigFromConfig(self.config_arena.allocator(), config, null)
-        else
-            .{};
         self.resolver = ts_resolver.Resolver.init(self.gpa, self.fs.fs(), resolver_config);
         self.resolver.watch_failed_lookup_capture = true;
         self.program = ts_program.Program.init(self.gpa, &self.resolver);
@@ -2952,15 +2988,18 @@ fn resolveConfigExtends(
     arena: std.mem.Allocator,
     cfg: tsconfig_mod.TsConfig,
     path: []const u8,
-) error{ OutOfMemory, ConfigExtendsFailed }!tsconfig_mod.TsConfig {
+) (error{ OutOfMemory, ConfigExtendsFailed } || ts_resolver.native_file_names.Error)!tsconfig_mod.TsConfig {
+    const fs_impl = try ResolverRealFs.init(gpa);
+    defer fs_impl.deinit();
     const absolute = if (std.fs.path.isAbsolute(path))
         path
     else blk: {
-        const cwd = std.process.currentPathAlloc(std.Options.debug_io, arena) catch return error.ConfigExtendsFailed;
-        break :blk std.fs.path.resolvePosix(arena, &.{ cwd, path }) catch return error.OutOfMemory;
+        const cwd = std.process.currentPathAlloc(fs_impl.threaded.io(), arena) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.ConfigExtendsFailed,
+        };
+        break :blk try std.fs.path.resolvePosix(arena, &.{ cwd, path });
     };
-    var fs_impl = ResolverRealFs.init(gpa);
-    defer fs_impl.deinit();
     const resolution = try ts_program.config_graph.resolve(gpa, arena, fs_impl.fs(), absolute);
     if (resolution.failure) |failure| {
         // tsc: TS6053 for an unresolvable base, TS18000 for a cycle.
@@ -2971,26 +3010,34 @@ fn resolveConfigExtends(
         }
         return error.ConfigExtendsFailed;
     }
-    var resolved = resolution.config orelse return cfg;
-    // Keep the child's own identity: diagnostics, `include` defaults and
-    // relative inputs all anchor at the file the user passed.
-    resolved.file_path = path;
-    return resolved;
+    // The graph retains the normalized child identity. Replacing it with
+    // the authored relative argument would detach roots from their project.
+    return resolution.config orelse cfg;
 }
 
 const ResolverRealFs = struct {
+    gpa: std.mem.Allocator,
     threaded: std.Io.Threaded,
+    case_sensitive_file_names: bool,
 
-    fn init(gpa: std.mem.Allocator) ResolverRealFs {
-        return .{ .threaded = std.Io.Threaded.init(gpa, .{}) };
+    fn init(gpa: std.mem.Allocator) !*ResolverRealFs {
+        const self = try gpa.create(ResolverRealFs);
+        errdefer gpa.destroy(self);
+        self.* = .{ .gpa = gpa, .threaded = std.Io.Threaded.init(gpa, .{}), .case_sensitive_file_names = undefined };
+        errdefer self.threaded.deinit();
+        // Pin the I/O implementation before its first use. The returned
+        // filesystem and its callbacks retain this address until deinit.
+        self.case_sensitive_file_names = try ts_resolver.native_file_names.caseSensitive(self.threaded.io());
+        return self;
     }
 
     fn deinit(self: *ResolverRealFs) void {
         self.threaded.deinit();
+        self.gpa.destroy(self);
     }
 
     pub fn fs(self: *ResolverRealFs) ts_resolver.FileSystem {
-        return .{ .ptr = self, .vtable = &vt };
+        return .{ .ptr = self, .vtable = &vt, .use_case_sensitive_file_names = self.case_sensitive_file_names };
     }
 
     const vt: ts_resolver.FileSystem.VTable = .{
@@ -3830,7 +3877,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 build_had_errors = true;
                 continue;
             }
-            switch (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose, bp.options.force, upstream_dependency_built_with_unchanged_dts, default_pretty)) {
+            switch (try buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose, bp.options.force, upstream_dependency_built_with_unchanged_dts, default_pretty)) {
                 .up_to_date => project_status[pi] = .up_to_date,
                 .built_dts_unchanged => {
                     project_status[pi] = .built_dts_unchanged;
@@ -4091,6 +4138,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                     loaded_cfg = resolveConfigExtends(gpa, cfg_arena.allocator(), c.*, path) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ConfigExtendsFailed => std.process.exit(@backingInt(ts_cli.ExitCode.type_errors)),
+                        else => return err,
                     };
                 }
                 if (loaded_cfg) |*resolved| ts_cli.applyConfigOverrides(resolved, opts);
@@ -4224,10 +4272,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
     }
 
-    var resolver_fs = ResolverRealFs.init(gpa);
+    const resolver_fs = try ResolverRealFs.init(gpa);
     defer resolver_fs.deinit();
     const resolver_config: ts_resolver.Config = if (loaded_cfg) |c|
-        resolverConfigFromConfig(cfg_arena.allocator(), c, opts.out_dir)
+        try resolverConfigFromConfig(cfg_arena.allocator(), c, opts.out_dir)
     else
         .{};
     var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), resolver_config);
@@ -5281,14 +5329,10 @@ fn expandProjectGlobs(
     const WildcardInput = struct { path: []const u8, include_index: usize };
     var wildcard_files: std.ArrayListUnmanaged(WildcardInput) = .empty;
     defer wildcard_files.deinit(gpa);
-    const case_sensitive_file_names = switch (builtin.os.tag) {
-        .windows, .macos => false,
-        else => true,
-    };
-
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
+    const case_sensitive_file_names = try ts_resolver.native_file_names.caseSensitive(io);
     const cwd = std.Io.Dir.cwd();
     var dir = cwd.openDir(io, project_dir, .{ .iterate = true }) catch return;
     defer dir.close(io);
@@ -7880,7 +7924,7 @@ test "tsc_main: resolver realpath returns an ordinary owned slice" {
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
-    var fs = ResolverRealFs.init(std.testing.allocator);
+    const fs = try ResolverRealFs.init(std.testing.allocator);
     defer fs.deinit();
     const canonical = try fs.fs().realpath(std.testing.allocator, root);
     defer std.testing.allocator.free(canonical);
@@ -9618,6 +9662,78 @@ test "LspProject: watched creation admits a previously missing JavaScript import
     try std.testing.expect(project.takePendingDiagnostic() == null);
 }
 
+fn testLspConstructionAllocations(relative: bool, with_paths: bool) !void {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base_source = if (with_paths)
+        "{\"files\":[\"entry.ts\"],\"compilerOptions\":{\"noLib\":true,\"noEmit\":true,\"baseUrl\":\".\",\"paths\":{\"@root\":[\"./entry.ts\"]}}}"
+    else
+        "{\"files\":[\"entry.ts\"],\"compilerOptions\":{\"noLib\":true,\"noEmit\":true}}";
+    for ([_][2][]const u8{
+        .{ "base.json", base_source },
+        .{ "tsconfig.json", "{\"extends\":\"./base.json\"}" },
+        .{ "entry.ts", "export const value = 1;" },
+    }) |fixture| {
+        var file = try tmp.dir.createFile(io, fixture[0], .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, fixture[1]);
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", allocator);
+    defer allocator.free(config_path);
+    const entry_path = try tmp.dir.realPathFileAlloc(io, "entry.ts", allocator);
+    defer allocator.free(entry_path);
+    const Lifecycle = struct {
+        fn run(gpa: std.mem.Allocator, config: []const u8, entry: []const u8, require_paths: bool) !void {
+            const project = try LspProject.create(gpa, config);
+            defer project.destroy();
+            try std.testing.expect(project.config != null);
+            if (require_paths) {
+                try std.testing.expectEqual(@as(usize, 1), project.resolver.config.paths.len);
+                try std.testing.expectEqualStrings("@root", project.resolver.config.paths[0].pattern);
+                try std.testing.expectEqual(@as(usize, 1), project.resolver.config.paths[0].targets.len);
+            }
+            const id = project.program.lookupPath(entry) orelse return error.TestExpectedRoot;
+            try std.testing.expectEqualStrings("export const value = 1;", project.program.fileById(id).source);
+        }
+    };
+    const cwd = try std.process.currentPathAlloc(io, allocator);
+    defer allocator.free(cwd);
+    const relative_config_path = try std.fs.path.relativeAlloc(allocator, cwd, null, cwd, config_path);
+    defer allocator.free(relative_config_path);
+    try std.testing.checkAllAllocationFailures(allocator, Lifecycle.run, .{ if (relative) relative_config_path else config_path, entry_path, with_paths });
+}
+
+test "LspProject: construction retains config and roots across allocation failures" {
+    try testLspConstructionAllocations(false, false);
+}
+
+test "LspProject: construction retains path mappings across allocation failures" {
+    try testLspConstructionAllocations(false, true);
+}
+
+test "LspProject: construction retains relative extends across allocation failures" {
+    try testLspConstructionAllocations(true, false);
+}
+
+test "tsc_main: resolver config preserves path mappings across allocation failures" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), "{\"compilerOptions\":{\"paths\":{\"@root\":[\"./entry.ts\"]}}}");
+    const Lifecycle = struct {
+        fn run(allocator: std.mem.Allocator, parsed: tsconfig_mod.TsConfig) anyerror!void {
+            const resolved = try resolverConfigFromConfig(allocator, parsed, null);
+            defer allocator.free(resolved.paths);
+            try std.testing.expectEqual(@as(usize, 1), resolved.paths.len);
+            try std.testing.expectEqualStrings("@root", resolved.paths[0].pattern);
+            try std.testing.expectEqual(@as(usize, 1), resolved.paths[0].targets.len);
+            try std.testing.expectEqualStrings("./entry.ts", resolved.paths[0].targets[0]);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Lifecycle.run, .{config});
+}
+
 test "LspProject: loads an empty tsconfig as the default config" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -9788,9 +9904,9 @@ test "tsc_main: resolver JSON policy preserves configured false and resolution d
     for ([_]tsconfig_mod.ModuleResolution{ .bundler, .nodenext, .node16 }) |mode| {
         cfg.compiler_options.module_resolution = mode;
         cfg.compiler_options.resolve_json_module = null;
-        try std.testing.expectEqual(mode != .node16, resolverConfigFromConfig(arena.allocator(), cfg, null).resolve_json);
+        try std.testing.expectEqual(mode != .node16, (try resolverConfigFromConfig(arena.allocator(), cfg, null)).resolve_json);
         cfg.compiler_options.resolve_json_module = false;
-        try std.testing.expect(!resolverConfigFromConfig(arena.allocator(), cfg, null).resolve_json);
+        try std.testing.expect(!(try resolverConfigFromConfig(arena.allocator(), cfg, null)).resolve_json);
     }
 }
 
