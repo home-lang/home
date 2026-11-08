@@ -794,8 +794,11 @@ pub const Scanner = struct {
                 if (!self.scanNumberFragment(gpa, isHexDigit, false, &saw_separator)) {
                     self.report(gpa, "Hexadecimal digit expected.");
                 }
+                // NumericLiteral includes the BigInt suffix. Check only the
+                // following identifier after consuming it (ECMA-262 12.9.3).
+                const token = self.numberFinish(start, line, f, saw_separator);
                 try self.checkIdentifierAfterNumericLiteral(gpa, start, line, .none);
-                return self.numberFinish(start, line, f, saw_separator);
+                return token;
             }
             if (c == 'o' or c == 'O') {
                 self.pos += 1;
@@ -804,8 +807,9 @@ pub const Scanner = struct {
                     self.report(gpa, "Octal digit expected.");
                     if (self.pos == digit_start) self.consumeDecimalDigits();
                 }
+                const token = self.numberFinish(start, line, f, saw_separator);
                 try self.checkIdentifierAfterNumericLiteral(gpa, start, line, .none);
-                return self.numberFinish(start, line, f, saw_separator);
+                return token;
             }
             if (c == 'b' or c == 'B') {
                 self.pos += 1;
@@ -814,8 +818,9 @@ pub const Scanner = struct {
                     self.report(gpa, "Binary digit expected.");
                     if (self.pos == digit_start) self.consumeDecimalDigits();
                 }
+                const token = self.numberFinish(start, line, f, saw_separator);
                 try self.checkIdentifierAfterNumericLiteral(gpa, start, line, .none);
-                return self.numberFinish(start, line, f, saw_separator);
+                return token;
             }
         }
 
@@ -1988,6 +1993,30 @@ test "Scanner: numeric literals" {
     try t.expectEqual(TokenKind.bigint_literal, toks.items[10].kind);
     try t.expectEqualStrings("1n", toks.items[10].bytes(s.source));
     try t.expectEqual(TokenKind.bigint_literal, toks.items[11].kind);
+}
+
+test "Scanner: radix BigInt suffix is not an identifier diagnostic" {
+    for ([_][]const u8{ "0x7ffn", "0xfffffffffffffn", "0XCA_FEn", "0o755n", "0O7_55n", "0b1010n", "0B1_010n" }) |source| {
+        var s = Scanner.init(t.allocator, source);
+        defer s.deinit(t.allocator);
+        var toks = try s.tokenize(t.allocator);
+        defer toks.deinit(t.allocator);
+        try t.expectEqual(@as(usize, 0), s.diagnostics.items.len);
+        try t.expectEqual(TokenKind.bigint_literal, toks.items[0].kind);
+        try t.expectEqualStrings(source, toks.items[0].bytes(source));
+        try t.expectEqual(TokenKind.eof, toks.items[1].kind);
+        try t.expectEqual(std.mem.indexOfScalar(u8, source, '_') != null, toks.items[0].flags.has_separator);
+    }
+}
+
+test "Scanner: radix suffix keeps invalid trailing identifiers and digits diagnosed" {
+    for ([_][]const u8{ "0x1nfoo", "0o7nfoo", "0b1nfoo", "0x1foo", "0on", "0bn", "0xn", "0x1_n" }) |source| {
+        var s = Scanner.init(t.allocator, source);
+        defer s.deinit(t.allocator);
+        var toks = try s.tokenize(t.allocator);
+        defer toks.deinit(t.allocator);
+        try t.expect(s.diagnostics.items.len != 0);
+    }
 }
 
 test "Scanner: legacy octal property access keeps the member dot" {
