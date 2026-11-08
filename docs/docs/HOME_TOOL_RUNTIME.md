@@ -6,6 +6,15 @@ delegate parsing or execution to Node, Bun, or Python.
 
 Execution parses, binds and emits through Home's TypeScript frontend without running semantic typechecking over application code or bundled JavaScript. Syntax errors remain failures. Static validation remains the separate `home-tsc`/compiler path; the runtime's emission path does not replace an explicit typecheck command.
 
+Object-literal async methods accept keyword, string, numeric, BigInt and
+computed property names while enforcing the no-line-terminator restriction
+after async. BigInt names preserve their exact decimal property key; emitted
+numeric-looking string keys remain quoted when a Number literal would change
+their spelling or precision. TypeScript's TS1539 diagnostic for ordinary
+BigInt property assignments is retained; TypeScript 6.0.3 permits those names
+on methods. Node 26 executes the complete method witness, while Bun 1.4.4
+rejects its BigInt method syntax; that reference failure remains explicit.
+
 Build it with zig-js (the default when the conventional checkout and archive
 exist):
 

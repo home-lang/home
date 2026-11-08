@@ -1152,6 +1152,30 @@ pub const Parser = struct {
         if (tok.kind == .string_literal) return self.internStringLiteral(tok);
         if (tok.kind == .identifier) return self.internToken(tok);
         const slice = self.source[span_.start..span_.end];
+        if (tok.kind == .bigint_literal) {
+            // ECMA-262 ToPropertyKey(BigInt): use its exact base-ten value,
+            // without the source suffix, separators or a Number round-trip.
+            const buffer = try self.gpa.alloc(u8, slice.len - 1);
+            defer self.gpa.free(buffer);
+            var length: usize = 0;
+            for (slice[0 .. slice.len - 1]) |byte| {
+                if (byte == '_') continue;
+                buffer[length] = byte;
+                length += 1;
+            }
+            const base: u8 = if (length > 2 and buffer[0] == '0') switch (std.ascii.toLower(buffer[1])) {
+                'x' => 16,
+                'o' => 8,
+                'b' => 2,
+                else => 10,
+            } else 10;
+            var integer = try std.math.big.int.Managed.init(self.gpa);
+            defer integer.deinit();
+            integer.setString(base, buffer[if (base == 10) 0 else 2..length]) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.UnexpectedToken;
+            const canonical = try integer.toConst().toStringAlloc(self.gpa, 10, .lower);
+            defer self.gpa.free(canonical);
+            return self.interner.intern(canonical) catch error.OutOfMemory;
+        }
         if (tok.kind != .number_literal) {
             return self.interner.intern(slice) catch error.OutOfMemory;
         }
@@ -22263,12 +22287,15 @@ pub const Parser = struct {
                 }
             }
             var method_is_async = false;
-            if (self.peek().kind == .kw_async) {
+            // ECMA-262 AsyncMethod: async [no LineTerminator here]
+            // PropertyName. IdentifierName includes reserved words, and
+            // literal names are valid too; this is not a binding identifier.
+            if (self.peek().kind == .kw_async and !self.peekAt(1).flags.preceded_by_newline) {
                 const next = self.peekAt(1).kind;
                 const after_next = self.peekAt(2).kind;
                 if (next == .asterisk or
                     next == .open_bracket or
-                    ((next == .identifier or next.isContextualKeyword()) and
+                    (objectLiteralAccessorNameCanStart(next) and
                         (after_next == .open_paren or after_next == .less_than)))
                 {
                     _ = self.advance();
@@ -22571,9 +22598,9 @@ pub const Parser = struct {
                 // TS1539: a `bigint` literal (e.g. `1n`) cannot be used
                 // as a property name. tsc's grammar check fires this at
                 // the literal token for object-literal property
-                // assignments. Mirrors upstream
-                // `checkGrammarObjectLiteralExpression`.
-                if (key_tok.kind == .bigint_literal) {
+                // assignments. TypeScript permits bigint method names; the
+                // grammar check applies to PropertyAssignment, not methods.
+                if (key_tok.kind == .bigint_literal and self.peek().kind != .open_paren and self.peek().kind != .less_than) {
                     try self.reportCodeAtWithSpan(
                         key_span.start,
                         key_tok.line,
@@ -29448,6 +29475,49 @@ test "parser: object literal async computed method" {
     try T.expect(op.is_method);
     try T.expectEqual(hir_mod.NodeKind.fn_expr, s.hir.kindOf(op.value));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: object literal async keyword and literal methods" {
+    for ([_][]const u8{ "delete", "class", "default", "await", "typeof", "'quoted key'", "16", "1n" }) |name| {
+        const source = try std.fmt.allocPrint(T.allocator, "let o = {{ async {s}() {{ return 1; }} }};", .{name});
+        defer T.allocator.free(source);
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const variable = hir_mod.varDeclOf(&s.hir, hir_mod.blockStmts(&s.hir, root)[0]);
+        const properties = hir_mod.objectLiteralProps(&s.hir, variable.init);
+        try T.expectEqual(@as(usize, 1), properties.len);
+        const property = hir_mod.objectPropertyOf(&s.hir, properties[0]);
+        try T.expect(property.is_method);
+        try T.expect(hir_mod.fnDeclOf(&s.hir, property.value).flags.is_async);
+    }
+}
+
+test "parser: object literal async method forbids a line terminator" {
+    var s = try newTestSetup("let o = { async\n run() {} };");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len != 0);
+}
+
+test "parser: bigint method names use exact decimal property keys" {
+    for ([_][2][]const u8{
+        .{ "0x20_0000_0000_0001n", "9007199254740993" },
+        .{ "0b1_001n", "9" },
+        .{ "0o2_7n", "23" },
+        .{ "9999999999999999999999999999999999999999n", "9999999999999999999999999999999999999999" },
+    }) |case| {
+        const source = try std.fmt.allocPrint(T.allocator, "let o = {{ async {s}() {{ return 1; }} }};", .{case[0]});
+        defer T.allocator.free(source);
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const variable = hir_mod.varDeclOf(&s.hir, hir_mod.blockStmts(&s.hir, root)[0]);
+        const property = hir_mod.objectPropertyOf(&s.hir, hir_mod.objectLiteralProps(&s.hir, variable.init)[0]);
+        try T.expectEqualStrings(case[1], s.interner.get(hir_mod.identifierOf(&s.hir, property.key).name));
+    }
 }
 
 test "parser: object type literal" {
@@ -37419,7 +37489,6 @@ test "parser: pending declarator ownership nests through multiple function bodie
     const last = hir_mod.varDeclOf(&setup.hir, nested[2]).init;
     try T.expectEqual(@as(usize, 0), hir_mod.blockStmts(&setup.hir, hir_mod.fnDeclOf(&setup.hir, last).body).len);
 }
-
 
 test "parser: contextual identifier references start object values and array elements" {
     inline for (.{ "as", "satisfies", "using", "accessor", "override", "readonly", "asserts", "infer", "keyof", "unique", "is", "abstract" }) |name| {

@@ -67,36 +67,36 @@ pub const EsTarget = enum {
     esnext,
 
     pub fn supportsNullishAndOptional(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2020);
+        return @backingInt(self) >= @backingInt(EsTarget.es2020);
     }
 
     /// Numeric separators (`1_000_000`) are an ES2021 feature. Below
     /// that we strip the underscores from the literal text on emit.
     pub fn supportsLogicalAssignment(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2021);
+        return @backingInt(self) >= @backingInt(EsTarget.es2021);
     }
 
     pub fn supportsNumericSeparators(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2021);
+        return @backingInt(self) >= @backingInt(EsTarget.es2021);
     }
 
     /// The exponentiation operator (`a ** b`, `a **= b`) is an ES2016
     /// feature. Below that tsc lowers it to `Math.pow(a, b)`.
     pub fn supportsExponentiation(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2016);
+        return @backingInt(self) >= @backingInt(EsTarget.es2016);
     }
 
     /// Object spread `{ ...a }` is an ES2018 feature. Below that tsc lowers
     /// it to a left-folded `__assign(...)` chain.
     pub fn supportsObjectSpread(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2018);
+        return @backingInt(self) >= @backingInt(EsTarget.es2018);
     }
 
     /// Native `async`/`await` is an ES2017 feature. Below that we
     /// downlevel async functions to a `__awaiter`-wrapped generator
     /// and rewrite `await E` inside the body to `yield E`.
     pub fn supportsNativeAsync(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2017);
+        return @backingInt(self) >= @backingInt(EsTarget.es2017);
     }
 
     /// Native `#private` class fields land in ES2022. Below that we
@@ -104,7 +104,7 @@ pub const EsTarget = enum {
     /// `this.#x` reads/writes routed through `_Class_x.get(this)` /
     /// `_Class_x.set(this, v)`.
     pub fn supportsNativePrivateFields(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2022);
+        return @backingInt(self) >= @backingInt(EsTarget.es2022);
     }
 
     /// Native public class fields (`class C { x = 1; }`) are an ES2022
@@ -112,14 +112,14 @@ pub const EsTarget = enum {
     /// (synthesized, if needed) constructor as `this.x = 1;`, matching
     /// tsc's downlevel shape.
     pub fn supportsNativeClassFields(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2022);
+        return @backingInt(self) >= @backingInt(EsTarget.es2022);
     }
 
     /// Native `123n` BigInt literal syntax landed in ES2020. Below
     /// that we lower `123n` to `BigInt("123")`, matching tsc's
     /// downlevel shape.
     pub fn supportsNativeBigInt(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2020);
+        return @backingInt(self) >= @backingInt(EsTarget.es2020);
     }
 
     /// Native `function*` generator syntax is an ES2015 feature. Below
@@ -128,7 +128,7 @@ pub const EsTarget = enum {
     /// state-machine transform is tracked separately (§4.A.4); this
     /// predicate is the gate that future lowering will branch on.
     pub fn supportsNativeGenerators(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2015);
+        return @backingInt(self) >= @backingInt(EsTarget.es2015);
     }
 
     /// Native `async function*` async generators (plus `for await…of`)
@@ -138,7 +138,7 @@ pub const EsTarget = enum {
     /// to the double-yield pattern `return [4, __await(E)]; … return [4];`
     /// matching tsc's downlevel shape.
     pub fn supportsNativeAsyncGenerators(self: EsTarget) bool {
-        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2018);
+        return @backingInt(self) >= @backingInt(EsTarget.es2018);
     }
 };
 
@@ -324,14 +324,21 @@ fn isValidPropertyIdentifier(name: []const u8) bool {
 }
 
 /// Whether `name` is a bare numeric property key (`1`, `2.5`, `1e5`) that can be
-/// emitted unquoted. A numeric key is stored as an identifier holding the source
-/// number text; Home preserves that source form (like its numeric literals), so
-/// `parseFloat`-ability is the test. Excludes signed and `a-b`/`0a`-style keys.
+/// emitted unquoted without changing its exact string key. The HIR also stores
+/// string/BigInt names as identifiers; parseability alone would turn "01" into
+/// a different key or round a large integer. Quote whenever the round-trip is
+/// uncertain, while retaining ordinary numeric-literal formatting.
 fn isNumericPropertyKey(name: []const u8) bool {
     if (name.len == 0) return false;
     if (name[0] == '+' or name[0] == '-') return false;
-    _ = std.fmt.parseFloat(f64, name) catch return false;
-    return true;
+    const value = std.fmt.parseFloat(f64, name) catch return false;
+    if (!std.math.isFinite(value) or value < 0 or value >= 9007199254740992) return false;
+    var buffer: [128]u8 = undefined;
+    const canonical = if (@floor(value) == value)
+        std.fmt.bufPrint(&buffer, "{d}", .{@as(u64, @intFromFloat(value))}) catch return false
+    else
+        std.fmt.bufPrint(&buffer, "{d}", .{value}) catch return false;
+    return std.mem.eql(u8, name, canonical);
 }
 
 pub const Printer = struct {
@@ -8598,7 +8605,7 @@ pub const Printer = struct {
                     // place for that.
                     if (self.fn_depth == 0 and
                         self.options.module_kind == .esm and
-                        @intFromEnum(self.options.es_target) < @intFromEnum(EsTarget.es2022))
+                        @backingInt(self.options.es_target) < @backingInt(EsTarget.es2022))
                     {
                         try self.write("/* TODO: top-level await requires ES2022+ */ ");
                     }
@@ -10593,14 +10600,14 @@ const Level = enum(u8) {
     member,
 
     fn gte(self: Level, other: Level) bool {
-        return @intFromEnum(self) >= @intFromEnum(other);
+        return @backingInt(self) >= @backingInt(other);
     }
 
     /// `level - n`, saturating at `.lowest` so `.lowest.sub(1)` stays
     /// `.lowest` rather than wrapping the unsigned tag.
     fn sub(self: Level, n: u8) Level {
-        const v = @intFromEnum(self);
-        return @enumFromInt(if (v > n) v - n else 0);
+        const v = @backingInt(self);
+        return @fromBackingInt(@intCast(if (v > n) v - n else 0));
     }
 };
 
@@ -10798,6 +10805,12 @@ test "emit: object property key unquotes only valid identifiers" {
         .{ .src = "const o = { \"a-b\": 1 };", .want = "const o = { \"a-b\": 1 };" },
         // A digit-leading non-numeric key can't unquote.
         .{ .src = "const o = { \"0a\": 1 };", .want = "const o = { \"0a\": 1 };" },
+        // Numeric-looking strings retain the exact property key, including
+        // spellings and values a Number literal would normalize or round.
+        .{ .src = "const o = { \"01\": 1 };", .want = "const o = { \"01\": 1 };" },
+        .{ .src = "const o = { \"1.0\": 1 };", .want = "const o = { \"1.0\": 1 };" },
+        .{ .src = "const o = { \"1e5\": 1 };", .want = "const o = { \"1e5\": 1 };" },
+        .{ .src = "const o = { \"9007199254740993\": 1 };", .want = "const o = { \"9007199254740993\": 1 };" },
         // Numeric keys stay unquoted (must not regress to `"1"`).
         .{ .src = "const o = { 1: 1, 2.5: 2 };", .want = "const o = { 1: 1, 2.5: 2 };" },
         .{ .src = "const o = { 0: 1 };", .want = "const o = { 0: 1 };" },
@@ -16701,14 +16714,6 @@ test "emit: object method shorthand lowers to property:function at es5" {
     try T.expect(std.mem.indexOf(u8, out, "foo(") == null);
 }
 
-
-
-
-
-
-
-
-
 test "emit: async generator method binds star to async keyword (async* name)" {
     // Bun's js_printer binds the generator `*` to the `async` keyword for
     // methods: `async* name`, not `async *name`. Plain generators keep
@@ -16731,7 +16736,6 @@ test "emit: async generator method binds star to async keyword (async* name)" {
         try T.expect(std.mem.indexOf(u8, out, "async *") == null);
     }
 }
-
 
 test "emit: for-loop semicolon spacing matches Bun (no space after init ;)" {
     // Bun's js_printer emits `for (init;test; update)`: no space after the
@@ -16766,8 +16770,6 @@ test "emit: empty class body breaks onto its own line (Bun parity)" {
         try T.expectEqualStrings("const x = class extends B {\n};", out);
     }
 }
-
-
 
 test "emit: generator function expression spaces after star (Bun parity)" {
     // Bun's js_printer emits `printSpace()` after the generator `*`, so both

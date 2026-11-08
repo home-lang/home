@@ -835,6 +835,15 @@ pub fn build(b: *std.Build) void {
         run_readdir.addFileArg(b.path("packages/runtime/test/tool_modules/fs_readdir.mjs"));
         run_readdir.expectStdOutEqual("OK actual directory names, seven entry predicates, symlinks, mutations and OS errors\n");
         home_tool_smoke_step.dependOn(&run_readdir.step);
+        const run_async_property_names = b.addRunArtifact(home_tool_exe);
+        run_async_property_names.addArgs(&.{ "run", "packages/runtime/test/tool_modules/async_property_names.mjs" });
+        run_async_property_names.expectStdOutEqual("OK actual async keyword, literal, computed and generator methods\n");
+        home_tool_smoke_step.dependOn(&run_async_property_names.step);
+        const run_async_property_newline = b.addRunArtifact(home_tool_exe);
+        run_async_property_newline.addArgs(&.{ "run", "packages/runtime/test/tool_modules/async_property_newline.cjs" });
+        run_async_property_newline.expectExitCode(1);
+        run_async_property_newline.expectStdOutEqual("");
+        home_tool_smoke_step.dependOn(&run_async_property_newline.step);
         const tool_file_tests = b.addTest(.{
             .name = "home-tool-file-io-tests",
             .root_module = b.createModule(.{
