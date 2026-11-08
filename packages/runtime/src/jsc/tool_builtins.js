@@ -566,7 +566,7 @@
   const nativeGlob = globalThis.__home_tool_glob;
   delete globalThis.__home_tool_glob_factory;
   delete globalThis.__home_tool_glob;
-  const bunApi = { Glob: globFactory(nativeGlob), YAML: { parse: Home.parseYAML }, file: fileFactory(fsOperation, bufferApi.Buffer) };
+  const bunApi = { Glob: globFactory(nativeGlob), YAML: { parse: Home.parseYAML }, file: fileFactory(fsOperation, bufferApi.Buffer, decodeUtf8) };
   Object.defineProperty(bunApi, 'argv', { value: process.argv, writable: true, enumerable: true, configurable: false });
   globalThis.Bun = bunApi;
   builtins.bun = bunApi;

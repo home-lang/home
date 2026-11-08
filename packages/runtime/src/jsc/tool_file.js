@@ -1,8 +1,10 @@
 // A readonly filesystem-backed profile; this does not impersonate a Web Blob.
-globalThis.__home_tool_file_factory = function(fsOperation, Buffer) {
+globalThis.__home_tool_file_factory = function(fsOperation, Buffer, decodeUtf8Hex) {
   'use strict';
   const files = new WeakMap();
   const maxBytes = 8 * 1024 * 1024;
+  const Bytes = Uint8Array;
+  const fromHex = Buffer.from.bind(Buffer);
   function fail(code, message, Type) {
     const error = new (Type || Error)(message);
     error.code = code;
@@ -55,7 +57,7 @@ globalThis.__home_tool_file_factory = function(fsOperation, Buffer) {
     inspect(state);
     if (hex.length / 2 > maxBytes)
       fail('ERR_BUFFER_TOO_LARGE', 'Home file reads are limited to 8 MiB', RangeError);
-    return Buffer.from(hex, 'hex');
+    return hex;
   }
   function FileSource(path) {
     files.set(this, { path, observed: false, metadata: null });
@@ -65,7 +67,9 @@ globalThis.__home_tool_file_factory = function(fsOperation, Buffer) {
     return metadata !== null && metadata.kind === 'file';
   };
   function text(file) {
-    const value = read(file).toString('utf8');
+    // Decode the actual native bytes once. Text reads must not round-trip
+    // through publicly mutable Buffer methods or rebuild their hex string.
+    const value = decodeUtf8Hex(read(file));
     // Blob text decoding consumes one initial UTF-8 BOM. Node readFile keeps
     // it, so the shared Buffer decoder deliberately leaves this to the file.
     return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
@@ -77,10 +81,10 @@ globalThis.__home_tool_file_factory = function(fsOperation, Buffer) {
     return JSON.parse(text(this));
   };
   FileSource.prototype.bytes = async function() {
-    return new Uint8Array(read(this));
+    return new Bytes(fromHex(read(this), 'hex'));
   };
   FileSource.prototype.arrayBuffer = async function() {
-    return new Uint8Array(read(this)).buffer;
+    return new Bytes(fromHex(read(this), 'hex')).buffer;
   };
   Object.defineProperty(FileSource.prototype, 'size', { get: function() {
     const metadata = inspect(stateFor(this));

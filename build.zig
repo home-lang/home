@@ -834,6 +834,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_file.addArgs(&.{ "run", "bun_file_contract.mjs" });
         run_home_tool_file.expectStdOutEqual("OK real Bun file reads, bytes, metadata and failures\n");
         home_tool_smoke_step.dependOn(&run_home_tool_file.step);
+        const run_home_tool_file_buffer = b.addRunArtifact(home_tool_exe);
+        run_home_tool_file_buffer.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_file_buffer.addArgs(&.{ "run", "bun_file_buffer_independent.mjs" });
+        run_home_tool_file_buffer.expectStdOutEqual("OK file reads independent of public Buffer methods\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_file_buffer.step);
         const run_home_tool_bun_argv = b.addRunArtifact(home_tool_exe);
         run_home_tool_bun_argv.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_bun_argv.addArgs(&.{ "run", "bun_argv.mjs", "first", "second space" });
