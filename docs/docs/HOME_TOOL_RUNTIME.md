@@ -44,6 +44,11 @@ Tools receive `console`, `process`, and a deliberately small `Home` host API:
 - `Home.spawnSync(argv)` resolves the executable through `PATH` and returns
   `{ exitCode, stdout, stderr }`.
 
+The `process` and `node:process` module aliases expose the existing live Home
+`process` object, including its real environment, arguments, current directory,
+next-tick queue and exit handling. They do not manufacture additional Node
+process methods; unsupported fields remain absent.
+
 The tool module loader exposes the same real filesystem adapter as `fs` and
 `node:fs`: `existsSync` and `readFileSync` with explicit `utf8`/`utf-8` encoding
 and string paths. Reads use native file bytes, preserve embedded NULs and BOMs,

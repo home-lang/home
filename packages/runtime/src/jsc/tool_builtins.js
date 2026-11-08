@@ -298,6 +298,8 @@
     },
   };
   const builtins = Object.create(null);
+  builtins.process = globalThis.process;
+  builtins['node:process'] = globalThis.process;
   builtins.fs = fs;
   builtins['node:fs'] = fs;
   builtins.module = moduleApi;

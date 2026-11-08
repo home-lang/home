@@ -837,6 +837,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_exit_throw.addArgs(&.{ "eval", "process.on('exit', function() { throw new Error('exit listener witness'); });" });
         run_home_tool_exit_throw.expectExitCode(1);
         home_tool_smoke_step.dependOn(&run_home_tool_exit_throw.step);
+        const run_home_tool_process_module = b.addRunArtifact(home_tool_exe);
+        run_home_tool_process_module.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_process_module.addArgs(&.{ "run", "node_process_entry.mjs" });
+        run_home_tool_process_module.expectStdOutEqual("OK home-tool process module identity\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_process_module.step);
         const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
         run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });
