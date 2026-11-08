@@ -1,0 +1,819 @@
+{
+  "producer": "1.4.4",
+  "comparison": "Values and collection identity; property insertion order is not compared",
+  "cases": [
+    {
+      "source": "",
+      "value": [
+        "null"
+      ]
+    },
+    {
+      "source": "---",
+      "value": [
+        "null"
+      ]
+    },
+    {
+      "source": "null",
+      "value": [
+        "null"
+      ]
+    },
+    {
+      "source": "~",
+      "value": [
+        "null"
+      ]
+    },
+    {
+      "source": "true",
+      "value": [
+        "boolean",
+        true
+      ]
+    },
+    {
+      "source": "false",
+      "value": [
+        "boolean",
+        false
+      ]
+    },
+    {
+      "source": "on",
+      "value": [
+        "string",
+        "on"
+      ]
+    },
+    {
+      "source": "off",
+      "value": [
+        "string",
+        "off"
+      ]
+    },
+    {
+      "source": "YES",
+      "value": [
+        "string",
+        "YES"
+      ]
+    },
+    {
+      "source": "no",
+      "value": [
+        "string",
+        "no"
+      ]
+    },
+    {
+      "source": "0123",
+      "value": [
+        "number",
+        "123"
+      ]
+    },
+    {
+      "source": "0o17",
+      "value": [
+        "number",
+        "15"
+      ]
+    },
+    {
+      "source": "0xFF",
+      "value": [
+        "number",
+        "255"
+      ]
+    },
+    {
+      "source": "1_000",
+      "value": [
+        "string",
+        "1_000"
+      ]
+    },
+    {
+      "source": "1.25e2",
+      "value": [
+        "number",
+        "125"
+      ]
+    },
+    {
+      "source": ".nan",
+      "value": [
+        "number",
+        "NaN"
+      ]
+    },
+    {
+      "source": ".inf",
+      "value": [
+        "number",
+        "Infinity"
+      ]
+    },
+    {
+      "source": "-.inf",
+      "value": [
+        "number",
+        "-Infinity"
+      ]
+    },
+    {
+      "source": "-0.0",
+      "value": [
+        "number",
+        "-0"
+      ]
+    },
+    {
+      "source": "'quoted text'",
+      "value": [
+        "string",
+        "quoted text"
+      ]
+    },
+    {
+      "source": "\"snowman \\u2603\\nline\"",
+      "value": [
+        "string",
+        "snowman ☃\nline"
+      ]
+    },
+    {
+      "source": "\"\\0\"",
+      "value": [
+        "string",
+        "\u0000"
+      ]
+    },
+    {
+      "source": "plain: hello\nsequence: [one, 2, false, null]\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "plain",
+            [
+              "string",
+              "hello"
+            ]
+          ],
+          [
+            "sequence",
+            [
+              "array",
+              1,
+              [
+                [
+                  "string",
+                  "one"
+                ],
+                [
+                  "number",
+                  "2"
+                ],
+                [
+                  "boolean",
+                  false
+                ],
+                [
+                  "null"
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "- one\n- two\n- three\n",
+      "value": [
+        "array",
+        0,
+        [
+          [
+            "string",
+            "one"
+          ],
+          [
+            "string",
+            "two"
+          ],
+          [
+            "string",
+            "three"
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "nested:\n  list:\n    - a: 1\n      b: two\n    - a: 3\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "nested",
+            [
+              "object",
+              1,
+              [
+                [
+                  "list",
+                  [
+                    "array",
+                    2,
+                    [
+                      [
+                        "object",
+                        3,
+                        [
+                          [
+                            "a",
+                            [
+                              "number",
+                              "1"
+                            ]
+                          ],
+                          [
+                            "b",
+                            [
+                              "string",
+                              "two"
+                            ]
+                          ]
+                        ]
+                      ],
+                      [
+                        "object",
+                        4,
+                        [
+                          [
+                            "a",
+                            [
+                              "number",
+                              "3"
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "literal: |\n  line one\n  line two\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "literal",
+            [
+              "string",
+              "line one\nline two\n"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "folded: >\n  line one\n  line two\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "folded",
+            [
+              "string",
+              "line one line two\n"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "keep: |+\n  line\n\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "keep",
+            [
+              "string",
+              "line\n\n"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "base: &base {a: 1, b: 2}\ncopy: *base\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "base",
+            [
+              "object",
+              1,
+              [
+                [
+                  "a",
+                  [
+                    "number",
+                    "1"
+                  ]
+                ],
+                [
+                  "b",
+                  [
+                    "number",
+                    "2"
+                  ]
+                ]
+              ]
+            ]
+          ],
+          [
+            "copy",
+            [
+              "ref",
+              1
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "base: &base {a: 1, b: 2}\nother: {<<: *base, b: 3, c: 4}\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "base",
+            [
+              "object",
+              1,
+              [
+                [
+                  "a",
+                  [
+                    "number",
+                    "1"
+                  ]
+                ],
+                [
+                  "b",
+                  [
+                    "number",
+                    "2"
+                  ]
+                ]
+              ]
+            ]
+          ],
+          [
+            "other",
+            [
+              "object",
+              2,
+              [
+                [
+                  "a",
+                  [
+                    "number",
+                    "1"
+                  ]
+                ],
+                [
+                  "b",
+                  [
+                    "number",
+                    "3"
+                  ]
+                ],
+                [
+                  "c",
+                  [
+                    "number",
+                    "4"
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "a: &a [one, two]\nb: *a\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "a",
+            [
+              "array",
+              1,
+              [
+                [
+                  "string",
+                  "one"
+                ],
+                [
+                  "string",
+                  "two"
+                ]
+              ]
+            ]
+          ],
+          [
+            "b",
+            [
+              "ref",
+              1
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "a: 1\na: 2\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "a",
+            [
+              "number",
+              "2"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "__proto__: { polluted: true }\nconstructor: value\nprototype: plain\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "__proto__",
+            [
+              "object",
+              1,
+              [
+                [
+                  "polluted",
+                  [
+                    "boolean",
+                    true
+                  ]
+                ]
+              ]
+            ]
+          ],
+          [
+            "constructor",
+            [
+              "string",
+              "value"
+            ]
+          ],
+          [
+            "prototype",
+            [
+              "string",
+              "plain"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "---\na: 1\n---\nb: 2\n",
+      "value": [
+        "array",
+        0,
+        [
+          [
+            "object",
+            1,
+            [
+              [
+                "a",
+                [
+                  "number",
+                  "1"
+                ]
+              ]
+            ]
+          ],
+          [
+            "object",
+            2,
+            [
+              [
+                "b",
+                [
+                  "number",
+                  "2"
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "date: 2026-11-07\nemoji: 😀\n",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "date",
+            [
+              "string",
+              "2026-11-07"
+            ]
+          ],
+          [
+            "emoji",
+            [
+              "string",
+              "😀"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "source": "a: [",
+      "error": "SyntaxError"
+    },
+    {
+      "source": "a: {b: 1",
+      "error": "SyntaxError"
+    },
+    {
+      "source": "\ta: 1",
+      "error": "SyntaxError"
+    },
+    {
+      "source": "a: *missing",
+      "error": "SyntaxError"
+    },
+    {
+      "source": "a: \"unterminated",
+      "error": "SyntaxError"
+    },
+    {
+      "source": "\u0000",
+      "error": "SyntaxError"
+    },
+    {
+      "source": "a: 1\u0000b: 2",
+      "error": "SyntaxError"
+    },
+    {
+      "source": "key0: value0\nkey1: value1\nkey2: value2\nkey3: value3\nkey4: value4\nkey5: value5\nkey6: value6\nkey7: value7\nkey8: value8\nkey9: value9\nkey10: value10\nkey11: value11\nkey12: value12\nkey13: value13\nkey14: value14\nkey15: value15\nkey16: value16\nkey17: value17\nkey18: value18\nkey19: value19\nkey20: value20\nkey21: value21\nkey22: value22\nkey23: value23\nkey24: value24\nkey25: value25\nkey26: value26\nkey27: value27\nkey28: value28\nkey29: value29",
+      "value": [
+        "object",
+        0,
+        [
+          [
+            "key0",
+            [
+              "string",
+              "value0"
+            ]
+          ],
+          [
+            "key1",
+            [
+              "string",
+              "value1"
+            ]
+          ],
+          [
+            "key10",
+            [
+              "string",
+              "value10"
+            ]
+          ],
+          [
+            "key11",
+            [
+              "string",
+              "value11"
+            ]
+          ],
+          [
+            "key12",
+            [
+              "string",
+              "value12"
+            ]
+          ],
+          [
+            "key13",
+            [
+              "string",
+              "value13"
+            ]
+          ],
+          [
+            "key14",
+            [
+              "string",
+              "value14"
+            ]
+          ],
+          [
+            "key15",
+            [
+              "string",
+              "value15"
+            ]
+          ],
+          [
+            "key16",
+            [
+              "string",
+              "value16"
+            ]
+          ],
+          [
+            "key17",
+            [
+              "string",
+              "value17"
+            ]
+          ],
+          [
+            "key18",
+            [
+              "string",
+              "value18"
+            ]
+          ],
+          [
+            "key19",
+            [
+              "string",
+              "value19"
+            ]
+          ],
+          [
+            "key2",
+            [
+              "string",
+              "value2"
+            ]
+          ],
+          [
+            "key20",
+            [
+              "string",
+              "value20"
+            ]
+          ],
+          [
+            "key21",
+            [
+              "string",
+              "value21"
+            ]
+          ],
+          [
+            "key22",
+            [
+              "string",
+              "value22"
+            ]
+          ],
+          [
+            "key23",
+            [
+              "string",
+              "value23"
+            ]
+          ],
+          [
+            "key24",
+            [
+              "string",
+              "value24"
+            ]
+          ],
+          [
+            "key25",
+            [
+              "string",
+              "value25"
+            ]
+          ],
+          [
+            "key26",
+            [
+              "string",
+              "value26"
+            ]
+          ],
+          [
+            "key27",
+            [
+              "string",
+              "value27"
+            ]
+          ],
+          [
+            "key28",
+            [
+              "string",
+              "value28"
+            ]
+          ],
+          [
+            "key29",
+            [
+              "string",
+              "value29"
+            ]
+          ],
+          [
+            "key3",
+            [
+              "string",
+              "value3"
+            ]
+          ],
+          [
+            "key4",
+            [
+              "string",
+              "value4"
+            ]
+          ],
+          [
+            "key5",
+            [
+              "string",
+              "value5"
+            ]
+          ],
+          [
+            "key6",
+            [
+              "string",
+              "value6"
+            ]
+          ],
+          [
+            "key7",
+            [
+              "string",
+              "value7"
+            ]
+          ],
+          [
+            "key8",
+            [
+              "string",
+              "value8"
+            ]
+          ],
+          [
+            "key9",
+            [
+              "string",
+              "value9"
+            ]
+          ]
+        ]
+      ]
+    }
+  ]
+}

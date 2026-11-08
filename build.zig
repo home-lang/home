@@ -747,11 +747,14 @@ pub fn build(b: *std.Build) void {
         const tool_build_options_module = tool_build_options.createModule();
         const tool_compat_pkg = createPackage(b, "packages/runtime/src/jsc/tool_compat.zig", target, optimize, zig_test_framework);
         tool_compat_pkg.addImport("build_options", tool_build_options_module);
+        const tool_yaml_parser_pkg = createPackage(b, "packages/runtime/src/parsers/yaml.zig", target, optimize, zig_test_framework);
+        tool_yaml_parser_pkg.addImport("bun", tool_compat_pkg);
         const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
         tool_runtime_pkg.addImport("bun", tool_compat_pkg);
         tool_runtime_pkg.addImport("build_options", tool_build_options_module);
         tool_runtime_pkg.addImport("ts_driver", ts_driver_pkg);
         tool_runtime_pkg.addImport("hir", hir_pkg);
+        tool_runtime_pkg.addImport("tool_yaml_parser", tool_yaml_parser_pkg);
         tool_runtime_pkg.link_libc = true;
         if (tool_use_zig_js) {
             linkZigJs(b, tool_runtime_pkg, configured_zig_js_root);
@@ -854,6 +857,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_child.addArgs(&.{ "run", "node_child_entry.cjs" });
         run_home_tool_child.expectStdOutEqual("real inherited child output\nOK home-tool inherited child execution\n");
         home_tool_smoke_step.dependOn(&run_home_tool_child.step);
+        const run_home_tool_yaml = b.addRunArtifact(home_tool_exe);
+        run_home_tool_yaml.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_yaml.addArgs(&.{ "run", "yaml_entry.cjs" });
+        run_home_tool_yaml.expectStdOutEqual("OK home-tool native YAML parsing\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_yaml.step);
     } else {
         const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);

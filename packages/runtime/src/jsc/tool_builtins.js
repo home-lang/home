@@ -312,5 +312,8 @@
   builtins['node:url'] = urlApi;
   builtins.child_process = childProcess;
   builtins['node:child_process'] = childProcess;
+  const bunApi = { YAML: { parse: Home.parseYAML } };
+  globalThis.Bun = bunApi;
+  builtins.bun = bunApi;
   globalThis.__home_tool_builtins = builtins;
 })();

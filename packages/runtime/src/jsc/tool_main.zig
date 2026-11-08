@@ -51,6 +51,7 @@ fn runSource(
     tool_runtime.console.install(allocator, ctx, global);
     tool_runtime.process.install(allocator, ctx, global, argv);
     tool_runtime.host.install(allocator, ctx, global);
+    tool_runtime.yaml.install(allocator, ctx, global);
     tool_runtime.builtins.install(allocator, ctx);
     tool_runtime.modules.install(allocator, ctx, global);
 
