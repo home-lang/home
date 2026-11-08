@@ -272,7 +272,7 @@
         if (!['stdio', 'cwd', 'env'].includes(key)) unsupported(`Unsupported Home execFileSync option: ${key}`);
       }
       if (options.cwd !== undefined) stringPath(options.cwd);
-      const env = {};
+      const env = Object.create(null);
       const inheritEnv = options.env == null;
       if (!inheritEnv) {
         if (typeof options.env !== 'object') throw new TypeError('Environment must be an object');
