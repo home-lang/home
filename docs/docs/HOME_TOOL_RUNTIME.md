@@ -227,6 +227,11 @@ URL-encoded targets still require additional resolver support; they are refused.
 
 The host supplies the CommonJS emitter's default and namespace import helpers. ES-module exports keep their module identity, while CommonJS objects and primitive exports receive the appropriate default binding. This allows executable entry points to use ordinary TypeScript import interoperability without relying on ambient helpers from Node or Bun.
 
+Mixed default/named and default/namespace imports use one module load per
+declaration and distinct temporaries reserved against parsed source names.
+Repeated mixed imports do not redeclare a shared `_mod` helper, and namespace
+bindings are initialized even when the same declaration also imports a default.
+
 Generated ES-module export assignments use a host binding absent from every
 source scope, so an import or local declaration named `module` cannot collide
 with the CommonJS wrapper. Ordinary source identifiers retain their meaning,

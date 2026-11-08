@@ -8320,7 +8320,17 @@ pub const Printer = struct {
         // Mixed default + named (or default + namespace): bind
         // a temporary, then destructure. Conservative — uses one
         // require but multiple statements.
-        try self.write("const _mod = ");
+        // Each import owns its temporary. Reserve against all parsed names,
+        // including escaped/nested identifiers that the new binding could capture.
+        var temp_buffer: [80]u8 = undefined;
+        var suffix: usize = 0;
+        const temp = while (true) : (suffix += 1) {
+            const candidate = try std.fmt.bufPrint(&temp_buffer, "__home_cjs_import_{d}_{d}", .{ node, suffix });
+            if (self.interner.lookup(candidate) == null) break candidate;
+        };
+        try self.write("const ");
+        try self.write(temp);
+        try self.write(" = ");
         try self.printStaticImport(module_str);
         try self.writeSemi();
         if (has_default) {
@@ -8328,9 +8338,11 @@ pub const Printer = struct {
             try self.printExpression(imp.default_binding);
             try self.write(" = ");
             if (self.options.es_module_interop) {
-                try self.write("__importDefault(_mod).default");
+                try self.write("__importDefault(");
+                try self.write(temp);
+                try self.write(").default");
             } else {
-                try self.write("_mod");
+                try self.write(temp);
             }
             try self.writeSemi();
         }
@@ -8346,7 +8358,17 @@ pub const Printer = struct {
                     try self.write(self.interner.get(sp.local));
                 }
             }
-            try self.write(" } = _mod");
+            try self.write(" } = ");
+            try self.write(temp);
+            try self.writeSemi();
+        }
+        if (has_namespace) {
+            try self.write("const ");
+            try self.printExpression(imp.namespace_binding);
+            try self.write(" = ");
+            if (self.options.es_module_interop) try self.write("__importStar(");
+            try self.write(temp);
+            if (self.options.es_module_interop) try self.write(")");
             try self.writeSemi();
         }
     }
@@ -15303,6 +15325,35 @@ test "emit: cjs named import destructures from require" {
     const out = try emitWithOpts("import { a, b } from \"y\";", .{ .module_kind = .commonjs });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "const { a, b } = require(\"y\")") != null);
+}
+
+test "emit: cjs mixed imports use distinct source-safe temporaries" {
+    const source = "import a, { b } from \"first\"; import c, { d } from \"second\";";
+    const out = try emitWithOpts(source, .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expectEqual(@as(usize, 2), std.mem.count(u8, out, "const __home_cjs_import_"));
+    try T.expectEqual(@as(usize, 1), std.mem.count(u8, out, "require(\"first\")"));
+    try T.expectEqual(@as(usize, 1), std.mem.count(u8, out, "require(\"second\")"));
+    const start = std.mem.indexOf(u8, out, "const __home_cjs_import_").? + "const ".len;
+    const end = start + std.mem.indexOfScalar(u8, out[start..], ' ').?;
+    const name = out[start..end];
+    const collision_source = try std.fmt.allocPrint(T.allocator, "{s} function nested({s}) {{ return {s}; }} const _mod = 41;", .{ source, name, name });
+    defer T.allocator.free(collision_source);
+    const collision = try emitWithOpts(collision_source, .{ .module_kind = .commonjs });
+    defer T.allocator.free(collision);
+    const capture = try std.fmt.allocPrint(T.allocator, "const {s} = require", .{name});
+    defer T.allocator.free(capture);
+    try T.expect(std.mem.indexOf(u8, collision, capture) == null);
+    try T.expect(std.mem.indexOf(u8, collision, "const _mod = 41") != null);
+}
+
+test "emit: cjs mixed default namespace initializes the namespace" {
+    inline for (.{ true, false }) |interop| {
+        const out = try emitWithOpts("import value, * as ns from \"first\";", .{ .module_kind = .commonjs, .es_module_interop = interop });
+        defer T.allocator.free(out);
+        try T.expectEqual(@as(usize, 1), std.mem.count(u8, out, "require(\"first\")"));
+        try T.expect(std.mem.indexOf(u8, out, if (interop) "const ns = __importStar(__home_cjs_import_" else "const ns = __home_cjs_import_") != null);
+    }
 }
 
 test "emit: cjs side-effect import emits bare require" {
