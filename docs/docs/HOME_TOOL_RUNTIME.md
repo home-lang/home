@@ -70,6 +70,15 @@ native query. ReadStream, WriteStream, raw mode and the full terminal/process
 stream surface remain unsupported; descriptor classification does not provide
 terminal I/O or an event loop.
 
+The `readline`/`node:readline` adapter supplies cursorTo, moveCursor, clearLine
+and clearScreenDown. These write real ANSI sequences to the supplied destination
+and preserve its write result, callback and errors. Operations with no output
+defer their completion callback through process.nextTick, following Node. Input
+interfaces, keypress decoding, prompts, questions and readline/promises are
+absent: the tool still needs actual input streams and an I/O event loop. The
+existing process.stdout.write writes bytes but does not yet implement Node's
+write callbacks; the helpers do not invent successful callback completion for it.
+
 The `crypto`/`node:crypto` adapter exposes synchronous randomBytes with real
 managed Buffer storage. It obtains fresh OS entropy through Zig Io.randomSecure;
 entropy failure throws instead of returning zeros or using a weak seed. Numeric

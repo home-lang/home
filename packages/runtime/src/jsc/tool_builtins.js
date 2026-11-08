@@ -84,7 +84,7 @@
   const nativeRandomBytes = globalThis.__home_tool_random_bytes;
   delete globalThis.__home_tool_random_bytes;
   const allocateBytes = bufferApi.Buffer.alloc;
-  function cryptoArgumentError(code, message, range) {
+  function nodeArgumentError(code, message, range) {
     const error = range ? new RangeError(message) : new TypeError(message);
     error.code = code;
     throw error;
@@ -92,10 +92,10 @@
   const cryptoApi = {
     randomBytes: function(size, callback) {
       // https://nodejs.org/api/crypto.html#cryptorandombytessize-callback
-      if (typeof size !== 'number') cryptoArgumentError('ERR_INVALID_ARG_TYPE', 'randomBytes size must be a number');
-      if (!Number.isFinite(size) || size < 0 || size > 0x7fffffff) cryptoArgumentError('ERR_OUT_OF_RANGE', 'randomBytes size must be between 0 and 2147483647', true);
+      if (typeof size !== 'number') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'randomBytes size must be a number');
+      if (!Number.isFinite(size) || size < 0 || size > 0x7fffffff) nodeArgumentError('ERR_OUT_OF_RANGE', 'randomBytes size must be between 0 and 2147483647', true);
       if (callback !== undefined) {
-        if (typeof callback !== 'function') cryptoArgumentError('ERR_INVALID_ARG_TYPE', 'randomBytes callback must be a function');
+        if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'randomBytes callback must be a function');
         unsupported('Home crypto.randomBytes callbacks require an asynchronous host');
       }
       const bytes = allocateBytes(Math.floor(size));
@@ -427,7 +427,52 @@
       return result;
     },
   };
+  function readlineCallback(callback) {
+    if (callback !== undefined && typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'readline callback must be a function');
+  }
+  function noCursorWrite(callback) {
+    if (typeof callback === 'function') process.nextTick(callback, null);
+    return true;
+  }
+  // Output helpers write actual ANSI sequences and preserve the destination's
+  // backpressure/callback behavior. Input interfaces need a real stream host.
+  // https://nodejs.org/api/readline.html#readlinecursortostream-x-y-callback
+  const readlineApi = {
+    cursorTo: function(stream, x, y, callback) {
+      readlineCallback(callback);
+      if (typeof y === 'function') {
+        callback = y;
+        y = undefined;
+      }
+      if (Number.isNaN(x) || Number.isNaN(y)) nodeArgumentError('ERR_INVALID_ARG_VALUE', 'Cursor coordinates cannot be NaN');
+      if (stream == null || (typeof x !== 'number' && typeof y !== 'number')) return noCursorWrite(callback);
+      if (typeof x !== 'number') nodeArgumentError('ERR_INVALID_CURSOR_POS', 'A row coordinate requires a numeric column');
+      return stream.write(typeof y === 'number' ? `\x1b[${y + 1};${x + 1}H` : `\x1b[${x + 1}G`, callback);
+    },
+    moveCursor: function(stream, dx, dy, callback) {
+      readlineCallback(callback);
+      if (stream == null || !(dx || dy)) return noCursorWrite(callback);
+      let sequence = '';
+      if (dx < 0) sequence += `\x1b[${-dx}D`;
+      else if (dx > 0) sequence += `\x1b[${dx}C`;
+      if (dy < 0) sequence += `\x1b[${-dy}A`;
+      else if (dy > 0) sequence += `\x1b[${dy}B`;
+      return stream.write(sequence, callback);
+    },
+    clearLine: function(stream, direction, callback) {
+      readlineCallback(callback);
+      if (stream == null) return noCursorWrite(callback);
+      return stream.write(`\x1b[${direction < 0 ? 1 : direction > 0 ? 0 : 2}K`, callback);
+    },
+    clearScreenDown: function(stream, callback) {
+      readlineCallback(callback);
+      if (stream == null) return noCursorWrite(callback);
+      return stream.write('\x1b[0J', callback);
+    },
+  };
   const builtins = Object.create(null);
+  builtins.readline = readlineApi;
+  builtins['node:readline'] = readlineApi;
   builtins.buffer = bufferApi;
   builtins['node:buffer'] = bufferApi;
   builtins.crypto = cryptoApi;
