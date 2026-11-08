@@ -331,6 +331,25 @@
       result = normalizedSegments(result, !absolute);
       return `${absolute ? '/' : ''}${result}` || '.';
     },
+    basename: function(path, suffix) {
+      if (suffix !== undefined) pathString(suffix);
+      pathString(path);
+      let end = path.length;
+      while (end > 0 && path[end - 1] === '/') end--;
+      let start = end;
+      while (start > 0 && path[start - 1] !== '/') start--;
+      const component = path.slice(start, end);
+      if (suffix !== undefined && suffix.length > 0 && suffix.length <= path.length) {
+        if (suffix === path) return '';
+        if (component.length > suffix.length && component.endsWith(suffix))
+          return component.slice(0, -suffix.length);
+        // Node retains trailing separators when a longer suffix only matches
+        // the whole shorter component, including the empty root component.
+        if (component.length < suffix.length && suffix.endsWith(component))
+          return path.slice(start);
+      }
+      return component;
+    },
     dirname: function(path) {
       pathString(path);
       if (path.length === 0) return '.';

@@ -254,7 +254,9 @@ does not parse or execute its target. URL objects, Windows referrers, and other
 Module APIs still require implementations.
 
 On POSIX hosts, `path`/`node:path` and `path/posix`/`node:path/posix` share
-`normalize`, `isAbsolute`, `join`, `resolve`, `dirname`, `sep` and `delimiter`.
+`normalize`, `isAbsolute`, `join`, `resolve`, `dirname`, `basename`, `sep` and
+`delimiter`. basename accepts string paths and an optional string suffix, retaining
+Node's measured trailing-separator and whole-component suffix behavior.
 `url`/`node:url` provide `fileURLToPath` for local POSIX file URL strings, with
 URL escaping, dot segments, scalar-value conversion and query/fragment handling.
 The Node-produced path/URL fixture retains both successful results and errors.

@@ -877,6 +877,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_comments.addArgs(&.{ "run", "comment_boundary_entry.ts" });
         run_home_tool_comments.expectStdOutEqual("OK bounded leading documentation emission\n");
         home_tool_smoke_step.dependOn(&run_home_tool_comments.step);
+        const run_home_tool_basename = b.addRunArtifact(home_tool_exe);
+        run_home_tool_basename.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_basename.addArgs(&.{ "run", "path_basename.mjs" });
+        run_home_tool_basename.expectStdOutEqual("OK actual POSIX basename and suffix boundaries\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_basename.step);
         const run_home_tool_syntax_smoke = b.addRunArtifact(home_tool_exe);
         run_home_tool_syntax_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_syntax_smoke.addArgs(&.{ "run", "runtime_invalid_syntax.js" });
