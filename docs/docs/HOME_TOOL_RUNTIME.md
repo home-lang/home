@@ -301,6 +301,23 @@ modules. Standalone baseUrl bare-name fallback and paths with multiple stars
 remain unsupported. Bun 1.4.4 fails the array-extends witness; Home uses its owned
 TypeScript config-chain behavior and retains that reference difference.
 
+Bare packages honor package.json `exports`, including scoped names and package
+self references. Static imports and re-exports select `import`; source require
+and require.resolve select `require`. Both activate `node`, with `default` and
+nested conditions evaluated in JSON order. Exact keys precede the most specific
+single-star pattern; targets may repeat the star. Null/excluded subpaths remain
+blocked even when files exist. Array targets follow resolver fallback semantics,
+not file-existence fallback: a missing first selected file fails. Export targets
+are exact files and cannot use extension/directory-main fallback or traversal,
+including escaped dot/node_modules segments. Lookup never executes a target.
+
+This is a Node condition profile: `bun`, `types`, `development`, custom CLI
+conditions, node-addons and module-sync are not active. Export targets containing
+raw query, fragment or backslash syntax are explicitly refused with
+ERR_HOME_PACKAGE_TARGET; full file-URL module identity remains unimplemented.
+Legacy packages without exports retain Home's existing main/module/index and
+TypeScript extension lookup. Relative-path resolution is unchanged.
+
 Package-private `#name` imports support exact, unconditional `./file` targets
 from the nearest `package.json`. Missing or null mappings remain errors, and
 lookup stops at package and `node_modules` boundaries. Targets do not use

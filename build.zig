@@ -920,6 +920,27 @@ pub fn build(b: *std.Build) void {
         run_home_tool_gzip.addArgs(&.{ "run", "node_gzip_contract.mjs" });
         run_home_tool_gzip.expectStdOutEqual("OK real gzip bytes, independent decoding, validation and pipelines\n");
         home_tool_smoke_step.dependOn(&run_home_tool_gzip.step);
+        const tool_exports_tests = b.addTest(.{
+            .name = "home-tool-package-exports-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_package_exports.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_exports_tests).step);
+        const run_home_tool_exports = b.addRunArtifact(home_tool_exe);
+        run_home_tool_exports.setCwd(b.path("packages/runtime/test/tool_modules/package_exports"));
+        run_home_tool_exports.addArgs(&.{ "run", "entry.mjs" });
+        run_home_tool_exports.expectStdOutEqual("OK actual package exports conditions, patterns and blocked targets\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_exports.step);
+        inline for (.{ "require-only", "blocked", "missing-array", "extensionless", "directory" }) |name| {
+            const run_home_tool_export_rejection = b.addRunArtifact(home_tool_exe);
+            run_home_tool_export_rejection.setCwd(b.path("packages/runtime/test/tool_modules/package_exports"));
+            run_home_tool_export_rejection.addArgs(&.{ "run", "reject-" ++ name ++ ".mjs" });
+            run_home_tool_export_rejection.expectExitCode(1);
+            home_tool_smoke_step.dependOn(&run_home_tool_export_rejection.step);
+        }
         const run_home_tool_imports_smoke = b.addRunArtifact(home_tool_exe);
         run_home_tool_imports_smoke.setCwd(b.path("packages/runtime/test/tool_modules/package_imports"));
         run_home_tool_imports_smoke.addArgs(&.{ "run", "entry.cjs" });

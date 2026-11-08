@@ -12,6 +12,7 @@ const extern_fns = @import("extern_fns.zig");
 const opaques = @import("opaques.zig");
 const ts_driver = @import("ts_driver");
 const hir_mod = @import("hir");
+const package_exports = @import("tool_package_exports.zig");
 
 const JSValue = opaques.JSValue;
 const JSContextRef = opaques.JSContextRef;
@@ -165,7 +166,91 @@ fn resolvePackageImport(allocator: std.mem.Allocator, specifier: []const u8, par
     }
 }
 
-fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_path: []const u8) ?[]u8 {
+const PackageExport = union(enum) { absent, path: []u8 };
+
+fn packageExport(allocator: std.mem.Allocator, directory: []const u8, subpath: []const u8, mode: package_exports.Mode, self_name: ?[]const u8) !PackageExport {
+    const package_path = try std.fs.path.join(allocator, &.{ directory, "package.json" });
+    defer allocator.free(package_path);
+    const source = std.Io.Dir.cwd().readFileAlloc(g_io, package_path, allocator, .limited(1024 * 1024)) catch |err| {
+        if (err == error.FileNotFound) return .absent;
+        return error.InvalidPackageConfig;
+    };
+    defer allocator.free(source);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, source, .{}) catch return error.InvalidPackageConfig;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidPackageConfig;
+    if (self_name) |expected| {
+        const name = parsed.value.object.get("name") orelse return .absent;
+        if (name != .string or !std.mem.eql(u8, name.string, expected)) return .absent;
+    }
+    const exports = parsed.value.object.get("exports") orelse return .absent;
+    // Node's package reader ignores null/primitive fields other than strings.
+    // Invalid nested targets still fail PACKAGE_TARGET_RESOLVE.
+    if (exports != .string and exports != .object and exports != .array) return .absent;
+    const relative = try package_exports.resolve(allocator, exports, subpath, mode);
+    defer allocator.free(relative);
+    const target = try std.fs.path.join(allocator, &.{ directory, relative });
+    defer allocator.free(target);
+    // Exports selects an exact file, never extension/index/array fallbacks
+    // chosen by filesystem existence. A missing selected target stays failed.
+    return .{ .path = resolvedFile(allocator, target) orelse return error.ExportedFileNotFound };
+}
+
+fn resolvePackage(allocator: std.mem.Allocator, specifier: []const u8, parent_dir: []const u8, mode: package_exports.Mode) !?[]u8 {
+    const first_slash = std.mem.findScalar(u8, specifier, '/');
+    const name_end = if (specifier[0] == '@') blk: {
+        const scope_end = first_slash orelse return error.InvalidModuleSpecifier;
+        if (scope_end < 2 or scope_end + 1 == specifier.len) return error.InvalidModuleSpecifier;
+        break :blk if (std.mem.findScalar(u8, specifier[scope_end + 1 ..], '/')) |offset| scope_end + 1 + offset else specifier.len;
+    } else first_slash orelse specifier.len;
+    const name = specifier[0..name_end];
+    if (name[0] == '.' or name[name.len - 1] == '/' or std.mem.findAny(u8, name, "\\%") != null) return error.InvalidModuleSpecifier;
+    const subpath = if (name_end == specifier.len) try allocator.dupe(u8, ".") else try std.mem.concat(allocator, u8, &.{ ".", specifier[name_end..] });
+    defer allocator.free(subpath);
+    var search_dir = try std.fs.path.resolve(allocator, &.{parent_dir});
+    defer allocator.free(search_dir);
+    // PACKAGE_SELF_RESOLVE uses only the nearest package scope and only when
+    // its name matches and exports exists. It cannot inherit a parent's name.
+    var scope = try allocator.dupe(u8, search_dir);
+    defer allocator.free(scope);
+    while (!std.mem.eql(u8, std.fs.path.basename(scope), "node_modules")) {
+        const manifest = try std.fs.path.join(allocator, &.{ scope, "package.json" });
+        defer allocator.free(manifest);
+        if (isFile(manifest)) {
+            switch (try packageExport(allocator, scope, subpath, mode, name)) {
+                .path => |path| return path,
+                .absent => break,
+            }
+        }
+        const next = std.fs.path.dirname(scope) orelse break;
+        if (std.mem.eql(u8, next, scope)) break;
+        const replacement = try allocator.dupe(u8, next);
+        allocator.free(scope);
+        scope = replacement;
+    }
+    while (true) {
+        const directory = try std.fs.path.join(allocator, &.{ search_dir, "node_modules", name });
+        defer allocator.free(directory);
+        if (isDirectory(directory)) {
+            switch (try packageExport(allocator, directory, subpath, mode, null)) {
+                .path => |path| return path,
+                .absent => {
+                    const candidate = try std.fs.path.join(allocator, &.{ search_dir, "node_modules", specifier });
+                    defer allocator.free(candidate);
+                    return tryPath(allocator, candidate);
+                },
+            }
+        }
+        const next = std.fs.path.dirname(search_dir) orelse break;
+        if (std.mem.eql(u8, next, search_dir)) break;
+        const replacement = try allocator.dupe(u8, next);
+        allocator.free(search_dir);
+        search_dir = replacement;
+    }
+    return null;
+}
+
+fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_path: []const u8, mode: package_exports.Mode) !?[]u8 {
     if (specifier.len == 0) return null;
     const parent_dir = if (parent_path.len == 0)
         "."
@@ -190,27 +275,7 @@ fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_pat
         if (tryPath(allocator, specifier)) |path| return path;
     }
 
-    var search_dir = std.fs.path.resolve(allocator, &.{parent_dir}) catch return null;
-    defer allocator.free(search_dir);
-    while (true) {
-        const candidate = std.fs.path.join(allocator, &.{ search_dir, "node_modules", specifier }) catch return null;
-        defer allocator.free(candidate);
-        if (tryPath(allocator, candidate)) |path| return path;
-        const next = std.fs.path.dirname(search_dir) orelse {
-            if (!std.mem.eql(u8, search_dir, ".")) {
-                const replacement = allocator.dupe(u8, ".") catch return null;
-                allocator.free(search_dir);
-                search_dir = replacement;
-                continue;
-            }
-            break;
-        };
-        if (std.mem.eql(u8, next, search_dir)) break;
-        const replacement = allocator.dupe(u8, next) catch return null;
-        allocator.free(search_dir);
-        search_dir = replacement;
-    }
-    return null;
+    return resolvePackage(allocator, specifier, parent_dir, mode);
 }
 
 // Await belongs to module evaluation only outside a function's body/parameters.
@@ -355,7 +420,14 @@ fn resolveModuleNative(
         setProperty(c, object, "code", stringValue(c, "ERR_HOME_TSCONFIG"));
         return @ptrCast(object);
     };
-    const path = alias orelse resolveModule(allocator, specifier, parent_path) orelse return extern_fns.JSValueMakeNull(c);
+    const mode: package_exports.Mode = if (argument_count > 3 and arguments[3] != null and extern_fns.JSValueToBoolean(c, arguments[3])) .import else .require;
+    const path = alias orelse (resolveModule(allocator, specifier, parent_path, mode) catch |err| {
+        const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
+        setProperty(c, object, "error", stringValue(c, @errorName(err)));
+        const code = if (err == error.ExportedFileNotFound and mode == .import) "ERR_MODULE_NOT_FOUND" else package_exports.code(err);
+        setProperty(c, object, "code", stringValue(c, code));
+        return @ptrCast(object);
+    }) orelse return extern_fns.JSValueMakeNull(c);
     defer allocator.free(path);
     // require.resolve must neither read nor parse/evaluate the target. It can
     // resolve a file containing invalid JavaScript or non-JavaScript assets.

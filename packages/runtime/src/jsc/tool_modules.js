@@ -1,8 +1,8 @@
 // Home-owned module linkage and evaluation for either public-C engine backend.
 (function() {
   const rawResolve = globalThis.__home_tool_resolve_module;
-  function resolveNative(specifier, parent, lookupOnly) {
-    const result = rawResolve(specifier, parent, lookupOnly);
+  function resolveNative(specifier, parent, lookupOnly, importMode) {
+    const result = rawResolve(specifier, parent, lookupOnly, !!importMode);
     if (result && result.error) throw moduleError(result.code, `Cannot resolve ${specifier} from ${parent}: ${result.error}`);
     return result;
   }
@@ -60,9 +60,9 @@
     error.code = code;
     return error;
   }
-  function link(specifier, parentPath) {
+  function link(specifier, parentPath, importMode) {
     if (isBuiltin(specifier)) return { builtin: true, exports: builtins[specifier] };
-    const resolved = resolveNative(specifier, parentPath || '', true);
+    const resolved = resolveNative(specifier, parentPath || '', true, importMode);
     if (resolved === null) throw new Error(`cannot resolve module ${specifier} from ${parentPath}`);
     if (Object.prototype.hasOwnProperty.call(records, resolved.path)) return records[resolved.path];
     const payload = resolveNative(resolved.path, '');
@@ -71,7 +71,7 @@
     records[payload.path] = record;
     try {
       JSON.parse(payload.staticImports || '[]').forEach(function(request) {
-        record.dependencies.push({ request: request, record: link(request, payload.path) });
+        record.dependencies.push({ request: request, record: link(request, payload.path, true) });
       });
     }
     catch (error) {
@@ -83,8 +83,8 @@
     }
     return record;
   }
-  function graph(specifier, parentPath) {
-    const root = link(specifier, parentPath);
+  function graph(specifier, parentPath, importMode) {
+    const root = link(specifier, parentPath, importMode);
     let changed = true;
     // Async evaluation propagates through static ESM edges, including cycles.
     // This fixed point never executes module bodies.
@@ -223,7 +223,7 @@
   Home.startModule = function(specifier) {
     let state = 'pending';
     let failure;
-    const root = graph(String(specifier), '');
+    const root = graph(String(specifier), '', true);
     if (!root.asynchronous) {
       evaluateSync(root, true);
       state = 'fulfilled';
