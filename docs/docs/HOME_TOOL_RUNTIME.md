@@ -53,6 +53,13 @@ Buffer-returning reads, other encodings/flags, URL/Buffer paths, and other Node
 built-ins still require implementations and remain errors. Native read errors
 propagate; complete Node filesystem error metadata is not provided yet.
 
+`module`/`node:module` expose `createRequire` for absolute POSIX filenames and
+file URL strings. The returned require resolves relative files, package imports
+and offline packages from that referrer, sharing the real module cache. The
+referrer need not exist; a trailing slash anchors a directory. `require.resolve`
+does not parse or execute its target. URL objects, Windows referrers, and other
+Module APIs still require implementations.
+
 The runner resolves relative and absolute modules plus offline `node_modules`
 packages. TypeScript/JavaScript modules emit to CommonJS, JSON modules load
 directly, package `main`/`module` entries and `index.*` fallbacks are supported,

@@ -86,8 +86,70 @@
       return Home.fileExists(stringPath(path));
     },
   };
+  function invalidReferrer() {
+    const error = new TypeError('createRequire needs an absolute filename or file URL string');
+    error.code = 'ERR_INVALID_ARG_VALUE';
+    throw error;
+  }
+
+  // POSIX file URL conversion for referrers. Normalize URL dot segments before
+  // percent decoding, so %252e remains a literal filename rather than a dot.
+  // https://nodejs.org/api/module.html#modulecreaterequirefilename
+  function fileReferrer(filename) {
+    let text = filename.trim().replace(/[\t\r\n]/g, '').replace(/\\/g, '/');
+    if (!/^file:/i.test(text)) invalidReferrer();
+    text = text.slice(5);
+    if (text.startsWith('//')) {
+      text = text.slice(2);
+      const end = text.search(/[/?#]/);
+      const host = end === -1 ? text : text.slice(0, end);
+      const decodedHost = decodeURIComponent(host).toLowerCase();
+      if (decodedHost !== '' && decodedHost !== 'localhost') invalidReferrer();
+      text = end === -1 ? '/' : text.slice(end);
+    }
+    text = text.split(/[?#]/)[0];
+    if (!text.startsWith('/')) text = `/${text}`;
+    if (/%2f/i.test(text)) invalidReferrer();
+    const segments = text.slice(1).split('/');
+    const normalized = [];
+    for (let index = 0; index < segments.length; index++) {
+      const segment = segments[index];
+      const dots = segment.replace(/%2e/ig, '.');
+      if (dots === '..') {
+        normalized.pop();
+        if (index === segments.length - 1) normalized.push('');
+      }
+      else if (dots === '.') {
+        if (index === segments.length - 1) normalized.push('');
+      }
+      else normalized.push(segment);
+    }
+    return decodeURIComponent(`/${normalized.join('/')}`);
+  }
+
+  const moduleApi = {
+    createRequire: function(filename) {
+      if (process.platform === 'win32') unsupported('Home createRequire currently supports POSIX referrers only');
+      if (typeof filename !== 'string') {
+        if (filename && typeof filename === 'object') unsupported('Home createRequire URL objects require a shared URL implementation');
+        invalidReferrer();
+      }
+      if (!filename.startsWith('/')) {
+        try {
+          filename = fileReferrer(filename);
+        }
+        catch {
+          invalidReferrer();
+        }
+      }
+      if (filename.indexOf('\0') !== -1) invalidReferrer();
+      return Home.createRequire(filename);
+    },
+  };
   const builtins = Object.create(null);
   builtins.fs = fs;
   builtins['node:fs'] = fs;
+  builtins.module = moduleApi;
+  builtins['node:module'] = moduleApi;
   globalThis.__home_tool_builtins = builtins;
 })();
