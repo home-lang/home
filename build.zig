@@ -903,11 +903,14 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path("packages/runtime/src/jsc/tool_fs.zig"),
                 .target = target,
                 .optimize = optimize,
+                .link_libc = true,
             }),
         });
         tool_file_tests.root_module.addAnonymousImport("tool_file_text_reference", .{
             .root_source_file = b.path("packages/runtime/test/tool_file_text_reference.zig"),
         });
+        const tool_file_test_bin = b.step("home-tool-file-io-test-bin", "Compile the native filesystem tests without running them");
+        tool_file_test_bin.dependOn(&b.addInstallArtifact(tool_file_tests, .{}).step);
         home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_file_tests).step);
         const run_file_utf8_native = b.addRunArtifact(home_tool_exe);
         run_file_utf8_native.addArgs(&.{ "run", "packages/runtime/test/tool_modules/bun_file_utf8_native.mjs" });

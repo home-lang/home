@@ -552,6 +552,12 @@ Use `zig build home-tool-smoke` with either engine selection to verify
 TypeScript emission, module loading, filesystem access, process execution, and
 argument setup.
 
+`zig build home-tool-file-io-test-bin` compiles and installs the standalone
+filesystem test executable, including its explicit libc dependency. It accepts
+the same target/optimization options for checking another platform's linkage;
+cross-compilation does not execute the tests. The normal smoke gate still
+runs every filesystem test on its actual host.
+
 ## Representative consumer regression
 
 The zig-js representative benchmark is also an end-to-end checker and runtime
