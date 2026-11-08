@@ -14,7 +14,7 @@ else if (mode === 'no-await') {
   Bun.spawn(['/bin/sh', '-c', 'sleep .03; printf "kept alive" > "$1"', 'sh', path], options);
 }
 else if (mode === 'refusals') {
-  for (const extra of [{ stdout: 'pipe' }, { stdin: 'pipe' }, { detached: true }, { timeout: 100 }]) {
+  for (const extra of [{ stdout: 'pipe' }, { stdin: 'pipe' }, { detached: true }, { timeout: 100 }, { stdio: ['ignore', 'pipe', 'ignore'] }, { stdio: ['ignore', 'ignore'] }]) {
     let error;
     try { Bun.spawn(['/bin/sh', '-c', 'printf "must not execute" > "$1"', 'sh', path], { ...options, ...extra }); }
     catch (caught) { error = caught; }

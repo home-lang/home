@@ -33,14 +33,19 @@ globalThis.__home_tool_spawn_factory = function(native, timers) {
     if (!argv[0]) invalid('Executable cannot be empty');
     if (options === null || typeof options !== 'object') invalid('spawn options must be an object');
     for (const key of Object.keys(options)) {
-      if (!['cwd', 'env', 'stdin', 'stdout', 'stderr', 'onExit'].includes(key)) unsupported(`Unsupported Home spawn option: ${key}`);
+      if (!['cwd', 'env', 'stdin', 'stdout', 'stderr', 'stdio', 'onExit'].includes(key)) unsupported(`Unsupported Home spawn option: ${key}`);
     }
     const cwd = options.cwd === undefined ? null : string(options.cwd, 'cwd');
     const onExit = options.onExit;
     if (onExit !== undefined && typeof onExit !== 'function') invalid('onExit must be a function');
     // Bun defaults stdout to a pipe. Refuse that default until real pipe
     // streams are implemented instead of silently discarding child output.
-    const modes = [options.stdin ?? 'ignore', options.stdout ?? 'pipe', options.stderr ?? 'inherit'];
+    const stdio = options.stdio;
+    if (stdio !== undefined && (!Array.isArray(stdio) || stdio.length !== 3)) unsupported('Home spawn requires an explicit three-entry stdio array');
+    // Bun gives the tuple precedence over individual stream options.
+    const modes = stdio === undefined
+      ? [options.stdin ?? 'ignore', options.stdout ?? 'pipe', options.stderr ?? 'inherit']
+      : [stdio[0], stdio[1], stdio[2]];
     for (const mode of modes) {
       if (mode !== 'inherit' && mode !== 'ignore') unsupported('Home spawn currently supports inherited or ignored stdio only');
     }

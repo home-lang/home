@@ -634,3 +634,13 @@ These methods share the writer's bounded encoding, creation-mode and flag
 options. Callback appendFile, FileHandle objects, iterable data, flush and other
 options remain unsupported. The Promise facade performs blocking native I/O and
 rejects actual filesystem errors; it is not a nonblocking I/O scheduler.
+
+
+### Subprocess stdio tuples
+
+`Bun.spawn` also accepts an explicit three-entry `stdio` array of `inherit` or
+`ignore` values. The tuple takes precedence over individual stream options, as
+Bun does; it uses the same real descriptor inheritance and native child lifecycle.
+Pipe values, short/defaulted tuples and other stream kinds remain explicitly
+unsupported. This lets Stacks dispatch its real test subprocess without claiming
+that Home supplies Bun's test scheduler.
