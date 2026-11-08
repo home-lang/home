@@ -330,6 +330,14 @@ Buffer-returning reads, other encodings/flags and URL/Buffer paths still require
 implementations and remain errors. Native read errors
 propagate; complete Node filesystem error metadata is not provided yet.
 
+`fs.accessSync` and `fs.promises.access` check actual native access permissions
+for string paths on macOS/Linux. The shared `constants` object exposes the four
+access flags `F_OK`, `R_OK`, `W_OK` and `X_OK`, including combined modes. Checks
+follow symbolic links and retain actual existence, permission, symlink-loop and
+non-directory errors. Success returns undefined; the Promise facade rejects on
+failure. This is an access-flag subset, not the full Node constants table.
+Access checks do not reserve a path or prevent subsequent filesystem races.
+
 The `fs/promises` and `node:fs/promises` aliases share `fs.promises`. Supported
 operations perform real native I/O: UTF-8 `readFile`, default-mode `mkdir`
 (including the first-created-ancestor return for recursive creation), `rm`

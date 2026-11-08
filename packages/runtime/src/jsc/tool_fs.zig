@@ -65,6 +65,8 @@ pub fn failure(ctx: *types.JSContextRef, object: *types.JSObject, err: anyerror)
         error.NoSpaceLeft => "ENOSPC",
         error.ReadOnlyFileSystem => "EROFS",
         error.FileBusy => "EBUSY",
+        error.InputOutput => "EIO",
+        error.SystemResources => "ENOMEM",
         error.StreamTooLong => "ERR_BUFFER_TOO_LARGE",
         error.Unsupported => "ERR_HOME_UNSUPPORTED",
         else => "ERR_HOME_FS",
@@ -100,6 +102,31 @@ fn mkdir(path: []const u8, recursive: bool, depth: usize) anyerror!?[]const u8 {
 }
 
 const DirectoryEntry = struct { name: []const u8, kind: std.Io.File.Kind };
+
+fn accessPath(path: [:0]const u8, mode: u3) !void {
+    const native_mode: c_uint =
+        @as(c_uint, if (mode & 4 != 0) std.c.R_OK else 0) |
+        @as(c_uint, if (mode & 2 != 0) std.c.W_OK else 0) |
+        @as(c_uint, if (mode & 1 != 0) std.c.X_OK else 0);
+    // Use access rather than stat/open: real-UID permissions, executable bits,
+    // symlink resolution and read-only mounts belong to the kernel. Dir.access
+    // currently folds ENOTDIR into ENOENT, losing Node's observable errno.
+    while (true) switch (std.posix.errno(std.c.access(path.ptr, native_mode))) {
+        .SUCCESS => return,
+        .INTR => continue,
+        .ACCES => return error.AccessDenied,
+        .PERM => return error.PermissionDenied,
+        .NOENT => return error.FileNotFound,
+        .NOTDIR => return error.NotDir,
+        .LOOP => return error.SymLinkLoop,
+        .NAMETOOLONG => return error.NameTooLong,
+        .ROFS => return error.ReadOnlyFileSystem,
+        .TXTBSY => return error.FileBusy,
+        .IO => return error.InputOutput,
+        .NOMEM => return error.SystemResources,
+        else => return error.Unexpected,
+    };
+}
 
 fn readDirectory(allocator: std.mem.Allocator, root: std.Io.Dir, path: []const u8, with_types: bool) ![]DirectoryEntry {
     var directory = try root.openDir(io, path, .{ .iterate = true });
@@ -151,7 +178,14 @@ fn operation(
     if (std.mem.indexOfScalar(u8, path, 0) != null) return failure(c, object, error.Unsupported);
     const recursive = count > 2 and api.JSValueToBoolean(c, args[2]);
     const force = count > 3 and api.JSValueToBoolean(c, args[3]);
-    if (std.mem.eql(u8, op, "writeFile")) {
+    if (std.mem.eql(u8, op, "access")) {
+        if (count < 3 or !api.JSValueIsNumber(c, args[2])) return failure(c, object, error.Unsupported);
+        const mode = api.JSValueToNumber(c, args[2], exception);
+        if (!std.math.isFinite(mode) or mode < 0 or mode > 7 or @trunc(mode) != mode) return failure(c, object, error.Unsupported);
+        const terminated = bun.dupeZ(allocator, u8, path) catch return failure(c, object, error.OutOfMemory);
+        defer allocator.free(terminated);
+        accessPath(terminated, @intFromFloat(mode)) catch |err| return failure(c, object, err);
+    } else if (std.mem.eql(u8, op, "writeFile")) {
         if (count < 3 or args[2] == null) return failure(c, object, error.Unsupported);
         const contents = if (api.JSValueIsString(c, args[2]))
             string(c, args[2], allocator) orelse return failure(c, object, error.OutOfMemory)

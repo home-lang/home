@@ -835,6 +835,12 @@ pub fn build(b: *std.Build) void {
         run_readdir.addFileArg(b.path("packages/runtime/test/tool_modules/fs_readdir.mjs"));
         run_readdir.expectStdOutEqual("OK actual directory names, seven entry predicates, symlinks, mutations and OS errors\n");
         home_tool_smoke_step.dependOn(&run_readdir.step);
+        const run_access = b.addSystemCommand(&.{"python3"});
+        run_access.addFileArg(b.path("packages/runtime/test/tool_access_fixture.py"));
+        run_access.addArtifactArg(home_tool_exe);
+        run_access.addFileArg(b.path("packages/runtime/test/tool_modules/fs_access.mjs"));
+        run_access.expectStdOutEqual("OK native access permissions, all mode bits, aliases, symlinks, errno and rejected promises\n");
+        home_tool_smoke_step.dependOn(&run_access.step);
         const run_async_property_names = b.addRunArtifact(home_tool_exe);
         run_async_property_names.addArgs(&.{ "run", "packages/runtime/test/tool_modules/async_property_names.mjs" });
         run_async_property_names.expectStdOutEqual("OK actual async keyword, literal, computed and generator methods\n");

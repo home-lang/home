@@ -195,7 +195,25 @@
   fs.readdirSync = function(path, options) {
     return readDirectory(path, options);
   };
+  const fsConstants = {};
+  for (const [key, value] of [['F_OK', 0], ['R_OK', 4], ['W_OK', 2], ['X_OK', 1]]) {
+    Object.defineProperty(fsConstants, key, { value, enumerable: true });
+  }
+  Object.defineProperty(fs, 'constants', { value: fsConstants, enumerable: true });
+  function accessFile(path, mode) {
+    if (mode == null) mode = 0;
+    if (typeof mode !== 'number') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'access mode must be a number');
+    // Node truncates numeric modes before validating the three access bits.
+    mode = Math.trunc(mode);
+    if (!Number.isFinite(mode) || mode < 0 || mode > 7) nodeArgumentError('ERR_OUT_OF_RANGE', 'access mode must be between 0 and 7', true);
+    fsOperation('access', path, mode, false);
+  }
+  fs.accessSync = accessFile;
   const fsPromises = {
+    constants: fsConstants,
+    access: async function(path, mode) {
+      accessFile(path, mode);
+    },
     readdir: async function(path, options) {
       return readDirectory(path, options);
     },
