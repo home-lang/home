@@ -530,6 +530,7 @@
   const fileFactory = globalThis.__home_tool_file_factory;
   delete globalThis.__home_tool_file_factory;
   const bunApi = { YAML: { parse: Home.parseYAML }, file: fileFactory(fsOperation, bufferApi.Buffer) };
+  Object.defineProperty(bunApi, 'argv', { value: process.argv, writable: true, enumerable: true, configurable: false });
   globalThis.Bun = bunApi;
   builtins.bun = bunApi;
   globalThis.__home_tool_builtins = builtins;

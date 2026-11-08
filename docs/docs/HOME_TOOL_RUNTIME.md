@@ -141,6 +141,10 @@ Gunzip streams, deflate/raw/Brotli/Zstd and compression parameter/reset APIs are
 absent. Passing bounded in-memory gzip does not certify native file/stdio I/O.
 
 The shared Bun/bun namespace also exposes file for string filesystem paths.
+Its argv property initially shares the actual process.argv array, including
+the native executable, canonical entry and user arguments. Array mutations
+share identity; replacing either property subsequently follows ordinary data
+property behavior. Bun.argv is writable/enumerable and nonconfigurable.
 This is a readonly file source, not a Web Blob: exists, text, json, bytes,
 arrayBuffer, size and existing-file lastModified use actual native stat/read
 operations. Byte reads preserve all bytes and return independent managed data;
