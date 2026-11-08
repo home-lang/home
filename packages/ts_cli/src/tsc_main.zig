@@ -793,7 +793,11 @@ fn buildOneProject(
             null,
         ) catch return .errors_outputs_skipped;
     }
-    if (input_files.items.len == 0) {
+    const resolver_fs = try ResolverRealFs.init(gpa);
+    defer resolver_fs.deinit();
+    var root_selection = try selectRootInputFiles(gpa, resolver_fs, &input_files);
+    defer root_selection.deinit();
+    if (root_selection.file_names.len == 0) {
         if (verbose) printStdout("  (no input files)\n", .{});
         return .up_to_date;
     }
@@ -824,18 +828,18 @@ fn buildOneProject(
             if (verbose) {
                 buildStatusMessage(6406, "Project '{s}' is out of date because buildinfo file '{s}' indicates there is change in compilerOptions\n", .{ config_path, buildinfo_path });
             }
-        } else if (projectBuildInfoRootMismatch(gpa, arena, config_path, cfg, input_files.items)) |mismatch| {
+        } else if (projectBuildInfoRootMismatch(gpa, arena, config_path, cfg, root_selection.file_names)) |mismatch| {
             if (verbose) {
                 buildStatusMessage(6412, "Project '{s}' is out of date because buildinfo file '{s}' indicates that file '{s}' was root file of compilation but not any more.\n", .{ config_path, mismatch.buildinfo_path, mismatch.root_path });
             }
-        } else if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts, emit_js)) {
+        } else if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, root_selection.file_names, out_dir, declaration_dir, emit_dts, emit_js)) {
             if (verbose) {
                 buildStatusMessage(6400, "Project '{s}' is up to date but needs to update timestamps of output files that are older than input files\n", .{config_path});
                 buildStatusMessage(6359, "Updating output timestamps of project '{s}'...\n", .{config_path});
             }
-            touchProjectOutputs(gpa, input_files.items, out_dir, declaration_dir, emit_dts, emit_js);
+            touchProjectOutputs(gpa, root_selection.file_names, out_dir, declaration_dir, emit_dts, emit_js);
             return .up_to_date;
-        } else if (projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, emit_js, config_path, verbose and !shouldReportUpToDateWithDtsFilesFromDependencies(upstream_dependency_built_with_unchanged_dts))) {
+        } else if (projectIsUpToDate(gpa, root_selection.file_names, out_dir, declaration_dir, emit_dts, emit_js, config_path, verbose and !shouldReportUpToDateWithDtsFilesFromDependencies(upstream_dependency_built_with_unchanged_dts))) {
             if (verbose and shouldReportUpToDateWithDtsFilesFromDependencies(upstream_dependency_built_with_unchanged_dts)) {
                 buildStatusMessage(6354, "Project '{s}' is up to date with .d.ts files from its dependencies\n", .{config_path});
             }
@@ -849,19 +853,18 @@ fn buildOneProject(
 
     const resolver_config = try resolverConfigFromConfig(arena, cfg, null);
 
-    const resolver_fs = try ResolverRealFs.init(gpa);
-    defer resolver_fs.deinit();
     var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), resolver_config);
     defer resolver.deinit();
     var program = ts_program.Program.init(gpa, &resolver);
     defer program.deinit();
-    for (input_files.items) |path| {
-        const src = RealFs.read(gpa, path) catch {
+    for (root_selection.roots) |root| {
+        const path = root.authored_name;
+        const src = RealFs.read(gpa, root.file_name) catch {
             printStdout("error reading {s}\n", .{path});
             return .errors_outputs_skipped;
         };
         defer gpa.free(src);
-        _ = program.add(path, src) catch return .errors_outputs_skipped;
+        _ = program.add(root.file_name, src) catch return .errors_outputs_skipped;
     }
 
     var compile_opts = ts_driver.optionsFromConfig(&cfg);
@@ -888,7 +891,6 @@ fn buildOneProject(
         const composite_summary = printCompositeProjectFileListDiagnostics(
             gpa,
             &program,
-            input_files.items,
             config_path,
             true,
             false,
@@ -925,7 +927,7 @@ fn buildOneProject(
 
 const ProjectDryStatus = enum { build, up_to_date, update_timestamps };
 
-fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8) ProjectDryStatus {
+fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8) !ProjectDryStatus {
     const cfg_src = RealFs.read(arena, config_path) catch return .build;
     var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch return .build;
     cfg.file_path = config_path;
@@ -953,17 +955,21 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
             null,
         ) catch return .build;
     }
-    if (input_files.items.len == 0) return .up_to_date;
+    const resolver_fs = try ResolverRealFs.init(gpa);
+    defer resolver_fs.deinit();
+    var root_selection = try selectRootInputFiles(gpa, resolver_fs, &input_files);
+    defer root_selection.deinit();
+    if (root_selection.file_names.len == 0) return .up_to_date;
 
     const out_dir = resolveOutputDirectory(arena, config_path, cfg.compiler_options.out_dir, null) catch return .build;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
     const declaration_dir = (resolveOutputDirectory(arena, config_path, cfg.compiler_options.declaration_dir, null) catch return .build) orelse out_dir;
 
-    if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts, emit_js)) {
+    if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, root_selection.file_names, out_dir, declaration_dir, emit_dts, emit_js)) {
         return .update_timestamps;
     }
-    return if (projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, emit_js, config_path, false))
+    return if (projectIsUpToDate(gpa, root_selection.file_names, out_dir, declaration_dir, emit_dts, emit_js, config_path, false))
         .up_to_date
     else
         .build;
@@ -1541,31 +1547,36 @@ fn appendProjectCleanOutputs(
         );
     }
 
+    const resolver_fs = try ResolverRealFs.init(gpa);
+    defer resolver_fs.deinit();
+    var root_selection = try selectRootInputFiles(gpa, resolver_fs, &input_files);
+    defer root_selection.deinit();
+
     const out_dir = try resolveOutputDirectory(arena, config_path, cfg.compiler_options.out_dir, null);
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
     const declaration_dir = (try resolveOutputDirectory(arena, config_path, cfg.compiler_options.declaration_dir, null)) orelse out_dir;
 
-    for (input_files.items) |path| {
+    for (root_selection.file_names) |path| {
         if (ts_program.Program.isDeclarationPath(path)) continue;
         if (emit_js) {
             const js = try computeOutPath(gpa, path, out_dir, ".js");
             defer gpa.free(js);
-            try appendCleanOutputIfPresent(gpa, input_files.items, outputs, js);
+            try appendCleanOutputIfPresent(gpa, root_selection.file_names, outputs, js);
             if (cfg.compiler_options.source_map == true) {
                 const map = try std.fmt.allocPrint(gpa, "{s}.map", .{js});
                 defer gpa.free(map);
-                try appendCleanOutputIfPresent(gpa, input_files.items, outputs, map);
+                try appendCleanOutputIfPresent(gpa, root_selection.file_names, outputs, map);
             }
         }
         if (emit_dts) {
             const dts = try computeOutPath(gpa, path, declaration_dir, ".d.ts");
             defer gpa.free(dts);
-            try appendCleanOutputIfPresent(gpa, input_files.items, outputs, dts);
+            try appendCleanOutputIfPresent(gpa, root_selection.file_names, outputs, dts);
             if (cfg.compiler_options.declaration_map == true) {
                 const map = try std.fmt.allocPrint(gpa, "{s}.map", .{dts});
                 defer gpa.free(map);
-                try appendCleanOutputIfPresent(gpa, input_files.items, outputs, map);
+                try appendCleanOutputIfPresent(gpa, root_selection.file_names, outputs, map);
             }
         }
     }
@@ -1573,7 +1584,7 @@ fn appendProjectCleanOutputs(
     var build_config = cfg;
     build_config.compiler_options.incremental = true;
     if (try projectBuildInfoFilePath(arena, config_path, build_config)) |info| {
-        try appendCleanOutputIfPresent(gpa, input_files.items, outputs, info);
+        try appendCleanOutputIfPresent(gpa, root_selection.file_names, outputs, info);
     }
 }
 
@@ -1667,12 +1678,28 @@ fn prepareCaseOnlyInputFiles(
     return first_mismatch;
 }
 
+/// Publish selected authored names only after the owning selection succeeds.
+/// The returned owner must outlive every input path and its diagnostic origins.
+fn selectRootInputFiles(
+    gpa: std.mem.Allocator,
+    fs: *ResolverRealFs,
+    inputs: *std.ArrayListUnmanaged([]const u8),
+) !ts_resolver.root_inputs.Selection {
+    const cwd = try std.process.currentPathAlloc(fs.threaded.io(), gpa);
+    defer gpa.free(cwd);
+    const selection = try ts_resolver.root_inputs.select(gpa, .{ .case_sensitive = fs.case_sensitive_file_names }, cwd, inputs.items);
+    for (selection.roots, 0..) |root, index| inputs.items[index] = root.authored_name;
+    inputs.items.len = selection.roots.len;
+    return selection;
+}
+
 const CaseOnlyInputRootContext = struct {
     config: ?tsconfig_mod.TsConfig = null,
     kind: enum { none, files, include } = .none,
     /// For wildcard roots, indices into the effective include list, recorded
     /// when discovery admits the selected path. Explicit files retain order.
     include_spec_indices: []const usize = &.{},
+    selected_roots: []const ts_resolver.root_inputs.Root = &.{},
 };
 
 /// Select project roots and retain the source of their admission alongside the
@@ -1726,7 +1753,8 @@ fn caseOnlyInputRelatedInfo(
     const message = (ts_diagnostics.codes.lookup(code) orelse unreachable).message;
     var len: usize = 0;
     const indices = [_]usize{ mismatch.existing_file_index, mismatch.file_index };
-    for (indices) |index| {
+    for (indices) |selected_index| {
+        const index = if (ctx.selected_roots.len > 0) ctx.selected_roots[selected_index].selected_input_index else selected_index;
         const spec_index = if (kind == .files) index else blk: {
             if (index >= ctx.include_spec_indices.len) continue;
             break :blk ctx.include_spec_indices[index];
@@ -2057,7 +2085,6 @@ fn printExplainFiles(
     gpa: std.mem.Allocator,
     fs: ts_resolver.FileSystem,
     program: *const ts_program.Program,
-    roots: []const []const u8,
     root: RootInclusion,
     module: ?tsconfig_mod.Module,
 ) void {
@@ -2148,7 +2175,7 @@ fn printExplainFiles(
     for (order) |file_id| {
         const f = program.files.items[file_id];
         printStdout("{s}\n", .{explainFileDisplayPath(f)});
-        const is_root = pathInList(roots, f.path);
+        const is_root = f.root_input;
         if (is_root) {
             // A file can independently be an include root and the target of
             // an import. TypeScript reports both reasons (for example an
@@ -2454,7 +2481,6 @@ fn compositeDiagnosticRelated(
 fn printCompositeProjectFileListDiagnostics(
     gpa: std.mem.Allocator,
     program: *const ts_program.Program,
-    roots: []const []const u8,
     config_path: []const u8,
     use_pretty: bool,
     use_color: bool,
@@ -2465,7 +2491,7 @@ fn printCompositeProjectFileListDiagnostics(
     defer seen_files.deinit(gpa);
     for (program.files.items) |f| {
         if (!sourceFileMayBeEmittedByProject(f)) continue;
-        if (pathInList(roots, f.path)) continue;
+        if (f.root_input) continue;
         const anchor = compositeDiagnosticAnchor(program, f);
         const lc = ts_diagnostics.positionToLineCol(anchor.file.source, anchor.pos);
         const message = compositeProjectFileListMessage(gpa, f.path, config_path) catch continue;
@@ -2659,13 +2685,16 @@ pub const LspProject = struct {
             owned_paths.deinit(self.gpa);
         }
         try ts_cli.appendProjectFilePaths(self.gpa, project_dir, roots, &paths, &owned_paths);
-        for (paths.items) |path| {
+        var selection = try selectRootInputFiles(self.gpa, self.fs, &paths);
+        defer selection.deinit();
+        for (selection.roots) |root| {
+            const path = root.authored_name;
             const class = classifyExtension(path);
-            if (class == .unsupported or (class == .javascript and !self.service.compile_options.allow_js)) {
+            if (!acceptsRootExtension(class, self.service.compile_options.allow_js)) {
                 try diagnostics.appendExtension(self.gpa, path, class, .files_list, project_dir);
                 continue;
             }
-            const source = RealFs.read(self.gpa, path) catch |err| switch (err) {
+            const source = RealFs.read(self.gpa, root.file_name) catch |err| switch (err) {
                 error.FileNotFound => {
                     try diagnostics.appendMissing(self.gpa, path, .files_list, project_dir);
                     continue;
@@ -2673,7 +2702,7 @@ pub const LspProject = struct {
                 else => return err,
             };
             defer self.gpa.free(source);
-            _ = try self.program.add(path, source);
+            _ = try self.program.add(root.file_name, source);
         }
         diagnostics.sort();
         self.config_root_diagnostics.deinit(self.gpa);
@@ -3821,7 +3850,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         if (bp.options.dry) {
             for (ord.order) |pi| {
                 const project_path = graph.paths[pi];
-                switch (projectDryStatus(gpa, args_arena.allocator(), project_path)) {
+                switch (try projectDryStatus(gpa, args_arena.allocator(), project_path)) {
                     .build => {
                         // TS6357 — dry build status for a project that would build.
                         buildStatusMessage(6357, "A non-dry build would build project '{s}'\n", .{project_path});
@@ -4176,6 +4205,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
     }
 
+    const resolver_fs = try ResolverRealFs.init(gpa);
+    defer resolver_fs.deinit();
+    var root_selection = try selectRootInputFiles(gpa, resolver_fs, &input_files);
+    defer root_selection.deinit();
+    case_only_root_context.selected_roots = root_selection.roots;
+
     var config_validation_diags: ?[]tsconfig_mod.ValidationDiagnostic = null;
     defer if (config_validation_diags) |diagnostics| {
         tsconfig_mod.freeValidationDiagnostics(gpa, diagnostics);
@@ -4232,7 +4267,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // created. Program option diagnostics such as TS5108 therefore do not
     // participate, even though file discovery does.
     if (opts.show_config) {
-        try printResolvedConfig(gpa, loaded_cfg, input_files.items);
+        try printResolvedConfig(gpa, loaded_cfg, root_selection.file_names);
         return;
     }
 
@@ -4272,8 +4307,6 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
     }
 
-    const resolver_fs = try ResolverRealFs.init(gpa);
-    defer resolver_fs.deinit();
     const resolver_config: ts_resolver.Config = if (loaded_cfg) |c|
         try resolverConfigFromConfig(cfg_arena.allocator(), c, opts.out_dir)
     else
@@ -4341,8 +4374,11 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     );
     defer root_diagnostics.deinit(gpa);
 
-    for (input_files.items) |path| {
-        const src = RealFs.readWithIo(gpa, source_io, path) catch |err| {
+    for (root_selection.roots) |root| {
+        const path = root.authored_name;
+        const class = classifyExtension(path);
+        if (!acceptsRootExtension(class, allow_js)) continue;
+        const src = RealFs.readWithIo(gpa, source_io, root.file_name) catch |err| {
             if (err == error.FileNotFound and root_file_reason != .none) {
                 try root_diagnostics.appendMissing(gpa, path, root_file_reason, diagnostic_cwd);
                 continue;
@@ -4351,7 +4387,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             std.process.exit(1);
         };
         defer gpa.free(src);
-        _ = program.add(path, src) catch |err| {
+        _ = program.add(root.file_name, src) catch |err| {
             std.debug.print("error adding file: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -4494,7 +4530,6 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 const composite_summary = printCompositeProjectFileListDiagnostics(
                     gpa,
                     &program,
-                    input_files.items,
                     c.file_path,
                     pretty,
                     diagnostic_color,
@@ -4630,7 +4665,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             }
         }
         const explain_module = if (loaded_cfg) |c| c.compiler_options.module else null;
-        printExplainFiles(gpa, resolver_fs.fs(), &program, input_files.items, root_incl, explain_module);
+        printExplainFiles(gpa, resolver_fs.fs(), &program, root_incl, explain_module);
     }
 
     // Resolve `sourceMap` from CLI or tsconfig. CLI wins.
@@ -4727,7 +4762,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         defer watch_interest.deinit();
         // Pre-populate the tracked set so the first tick records a
         // real baseline rather than reporting every input as added.
-        try watcher.trackMany(input_files.items);
+        for (root_selection.roots) |root| {
+            if (!acceptsRootExtension(classifyExtension(root.file_name), allow_js)) continue;
+            try watcher.track(root.file_name);
+        }
         try watch_interest.refresh(&watcher, &program);
         while (true) {
             // Inter-poll pause: 100ms via `std.Io.Clock.Duration.sleep`.
@@ -4840,9 +4878,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 streamDiagsCallback(&watch_stream_ctx, f.path, c.diagnostics.items);
             }
             if (root_file_reason != .none) {
-                for (input_files.items) |path| {
-                    if (program.lookupPath(path) != null) continue;
-                    const display_path = try rootFileDiagnosticPath(gpa, path, root_file_reason, diagnostic_cwd);
+                for (root_selection.roots) |root| {
+                    if (!acceptsRootExtension(classifyExtension(root.file_name), allow_js)) continue;
+                    if (program.lookupPath(root.file_name)) |id| {
+                        if (program.fileById(id).present) continue;
+                    }
+                    const display_path = try rootFileDiagnosticPath(gpa, root.authored_name, root_file_reason, diagnostic_cwd);
                     defer gpa.free(display_path);
                     const message = try missingRootFileDiagnostic(gpa, display_path, root_file_reason);
                     defer gpa.free(message);
@@ -5612,9 +5653,13 @@ fn classifyExtension(path: []const u8) ExtensionClass {
     // Mirror tsc: only files that actually carry an extension are
     // candidates for the unsupported-extension diagnostic. A path with
     // no `.` in its basename is left alone.
-    const base = std.fs.path.basename(path);
+    const base = if (std.mem.lastIndexOfAny(u8, path, "/\\")) |separator| path[separator + 1 ..] else path;
     if (std.mem.indexOfScalar(u8, base, '.') == null) return .supported;
     return .unsupported;
+}
+
+fn acceptsRootExtension(class: ExtensionClass, allow_js: bool) bool {
+    return class != .unsupported and (class != .javascript or allow_js);
 }
 
 /// TS6504: an input file is a JavaScript file but `allowJs` is not set.
@@ -5758,7 +5803,7 @@ fn collectRootFileExtensionDiagnostics(
     var valid_len: usize = 0;
     for (input_files.items) |path| {
         const class = classifyExtension(path);
-        const rejected = class == .unsupported or (class == .javascript and !allow_js);
+        const rejected = !acceptsRootExtension(class, allow_js);
         if (!rejected) {
             input_files.items[valid_len] = path;
             valid_len += 1;
@@ -7860,6 +7905,7 @@ test "tsc_main: classifyExtension recognizes TS, Home, JS and unsupported shapes
     // No extension -> left alone (matches tsc's HasExtension gate).
     try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("Makefile"));
     try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("src/noext"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("folder.v1\\noext"));
 }
 
 test "tsc_main: project discovery uses effective allowJs" {
@@ -9660,6 +9706,53 @@ test "LspProject: watched creation admits a previously missing JavaScript import
     try std.testing.expect(std.mem.indexOf(u8, importer_rejected, "\"code\":2307") == null);
     try std.testing.expect(project.program.lookupPath(js_path) != null);
     try std.testing.expect(project.takePendingDiagnostic() == null);
+}
+
+test "LspProject: explicit roots retain the latest host spelling" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][2][]const u8{
+        .{ "tsconfig.json", "{\"files\":[\"First.ts\",\"first.ts\"],\"compilerOptions\":{\"noLib\":true,\"noEmit\":true}}" },
+        .{ "First.ts", "export const value = 1;" },
+        .{ "first.ts", "export const value = 1;" },
+    }) |fixture| {
+        var file = try tmp.dir.createFile(io, fixture[0], .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, fixture[1]);
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", allocator);
+    defer allocator.free(config_path);
+    const project = try LspProject.create(allocator, config_path);
+    defer project.destroy();
+    try std.testing.expectEqual(@as(usize, if (project.fs.case_sensitive_file_names) 2 else 1), project.program.files.items.len);
+    const last = project.program.files.items[project.program.files.items.len - 1];
+    try std.testing.expect(std.mem.endsWith(u8, last.path, "/first.ts"));
+    try std.testing.expectEqualStrings("export const value = 1;", last.source);
+}
+
+test "tsc_main: root selection publishes no partial input list on allocation failure" {
+    const fs = try ResolverRealFs.init(std.testing.allocator);
+    defer fs.deinit();
+    const Lifecycle = struct {
+        fn run(allocator: std.mem.Allocator, native_fs: *ResolverRealFs) !void {
+            var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer paths.deinit(allocator);
+            const names: []const []const u8 = &.{ "missing/First.ts", "./missing/first.ts", "missing/../missing/First.ts" };
+            try paths.appendSlice(allocator, names);
+            var selection = selectRootInputFiles(allocator, native_fs, &paths) catch |err| {
+                try std.testing.expectEqual(names.len, paths.items.len);
+                for (names, paths.items) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
+                return err;
+            };
+            defer selection.deinit();
+            try std.testing.expectEqual(@as(usize, if (native_fs.case_sensitive_file_names) 2 else 1), paths.items.len);
+            try std.testing.expectEqualStrings(names[2], paths.items[0]);
+            try std.testing.expectEqual(@as(usize, 2), selection.roots[0].selected_input_index);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Lifecycle.run, .{fs});
 }
 
 fn testLspConstructionAllocations(relative: bool, with_paths: bool) !void {

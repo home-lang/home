@@ -264,11 +264,16 @@ def main() -> None:
             assert cleaned["exit"] == 0 and (directory / "index.js").read_bytes() == original, cleaned
 
         for label, watch_flag in (("canonical", "--watch"), ("short", "-w"), ("double-short", "--w"),
-                                  ("single-long", "-watch"), ("case", "--WATCH")):
+                                  ("single-long", "-watch"), ("case", "--WATCH"), ("positional", "--watch")):
             for engine, compiler in (("reference", reference), ("home", home)):
                 directory = setup("watch-" + label, engine, {})
                 log_path = directory / "watch.log"
                 command = compiler + [watch_flag, "-p", "tsconfig.json", "--pretty", "false"]
+                if label == "positional":
+                    command = compiler + [watch_flag, "./globals.d.ts", "./index.ts", "--ignoreConfig",
+                                          "--noLib", "--target", "ESNext", "--module", "ESNext",
+                                          "--declaration", "--emitDeclarationOnly", "--outDir", "js",
+                                          "--declarationDir", "types", "--pretty", "false"]
                 with log_path.open("w") as log:
                     process = subprocess.Popen(command, cwd=directory, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                     try:
