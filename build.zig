@@ -912,6 +912,11 @@ pub fn build(b: *std.Build) void {
         const tool_file_test_bin = b.step("home-tool-file-io-test-bin", "Compile the native filesystem tests without running them");
         tool_file_test_bin.dependOn(&b.addInstallArtifact(tool_file_tests, .{}).step);
         home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_file_tests).step);
+        const run_util_types = b.addRunArtifact(home_tool_exe);
+        run_util_types.addArg("run");
+        run_util_types.addFileArg(b.path(if (tool_use_zig_js) "packages/runtime/test/tool_modules/util_types.mjs" else "packages/runtime/test/tool_modules/util_types_unsupported.mjs"));
+        run_util_types.expectStdOutEqual(if (tool_use_zig_js) "OK native Promise/Proxy brands, revoked proxies, zero traps and unchanged rejection state\n" else "OK explicit unsupported native brand inspection on JSC reference backend\n");
+        home_tool_smoke_step.dependOn(&run_util_types.step);
         const run_file_utf8_native = b.addRunArtifact(home_tool_exe);
         run_file_utf8_native.addArgs(&.{ "run", "packages/runtime/test/tool_modules/bun_file_utf8_native.mjs" });
         run_file_utf8_native.expectStdOutEqual("OK actual file UTF-8 matches 65536 byte pairs and multibyte boundaries\n");

@@ -156,8 +156,18 @@ also verify partial-list ownership.
 The `util`/`node:util` adapter supplies stripVTControlCharacters for primitive
 strings using Node's CSI/terminated-OSC recognizer. It removes actual terminal
 control sequences, including colon-delimited SGR and Unicode/newline OSC data;
-non-string arguments fail with ERR_INVALID_ARG_TYPE. inspect, format, promisify,
-types and the remaining Node utility surface are absent.
+non-string arguments fail with ERR_INVALID_ARG_TYPE. inspect, format, promisify
+and the remaining Node utility surface are absent.
+
+`util.types`, `util/types` and `node:util/types` share the same native-brand
+adapter. The zig-js backend supports `isPromise` and `isProxy` through its
+explicit C extensions. It inspects actual slots, including Promise subclasses
+and revoked/callable proxies, without consulting prototypes, thenables or
+toStringTag getters. Inspection neither attaches Promise reactions nor changes
+rejection handling. A Proxy wrapping a Promise is a Proxy, not a Promise.
+Other types predicates remain absent. The JSC reference backend has no matching
+brand provider and throws ERR_HOME_UNSUPPORTED for these methods; it does not
+substitute heuristics or false results.
 
 The `stream`/`node:stream` aliases provide owned EventEmitter-based Readable,
 Writable, Duplex, Transform and PassThrough classes. These move actual managed

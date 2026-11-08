@@ -675,7 +675,22 @@
   // colon-delimited SGR and Unicode/newline OSC payloads. Keep it private.
   const vtControls = /(?:\x1b\][\s\S]*?(?:\x07|\x1b\\|\x9c))|[\x1b\x9b][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]/g;
   const stripControls = RegExp.prototype[Symbol.replace].bind(vtControls);
+  const nativeIsPromise = globalThis.__home_tool_is_promise;
+  const nativeIsProxy = globalThis.__home_tool_is_proxy;
+  delete globalThis.__home_tool_is_promise;
+  delete globalThis.__home_tool_is_proxy;
+  const utilTypes = {
+    isPromise: function(value) {
+      if (typeof nativeIsPromise !== 'function') unsupported('Home util.types.isPromise requires native engine brand inspection');
+      return nativeIsPromise(value);
+    },
+    isProxy: function(value) {
+      if (typeof nativeIsProxy !== 'function') unsupported('Home util.types.isProxy requires native engine brand inspection');
+      return nativeIsProxy(value);
+    },
+  };
   const utilApi = {
+    types: utilTypes,
     stripVTControlCharacters: function(text) {
       if (typeof text !== 'string') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'stripVTControlCharacters requires a string');
       return stripControls(text, '');
@@ -685,6 +700,8 @@
   builtins.zlib = zlibApi;
   builtins['node:zlib'] = zlibApi;
   builtins['node:util'] = utilApi;
+  builtins['util/types'] = utilTypes;
+  builtins['node:util/types'] = utilTypes;
   builtins.readline = readlineApi;
   builtins['node:readline'] = readlineApi;
   builtins.buffer = bufferApi;
