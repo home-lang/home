@@ -479,6 +479,17 @@
     },
   };
   const builtins = Object.create(null);
+  const asyncHooksFactory = globalThis.__home_tool_async_hooks_factory;
+  delete globalThis.__home_tool_async_hooks_factory;
+  const getAsyncContext = globalThis.__home_tool_get_async_context;
+  const swapAsyncContext = globalThis.__home_tool_swap_async_context;
+  delete globalThis.__home_tool_get_async_context;
+  delete globalThis.__home_tool_swap_async_context;
+  if (typeof getAsyncContext === 'function' && typeof swapAsyncContext === 'function') {
+    const asyncHooks = asyncHooksFactory(getAsyncContext, swapAsyncContext);
+    builtins.async_hooks = asyncHooks;
+    builtins['node:async_hooks'] = asyncHooks;
+  }
   builtins.stream = streamsApi;
   builtins['node:stream'] = streamsApi;
   builtins['stream/promises'] = streamsApi.promises;

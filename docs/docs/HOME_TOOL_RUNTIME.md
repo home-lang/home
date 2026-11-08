@@ -140,6 +140,23 @@ and other options are explicitly refused. Asynchronous compression callbacks,
 Gunzip streams, deflate/raw/Brotli/Zstd and compression parameter/reset APIs are
 absent. Passing bounded in-memory gzip does not certify native file/stdio I/O.
 
+With zig-js's execution-context extensions, async_hooks/node:async_hooks expose
+AsyncLocalStorage run, getStore, enterWith and exit. Immutable per-instance store
+snapshots live in the engine's rooted execution slot; actual Promise/await,
+queueMicrotask and Home nextTick callbacks inherit the snapshot captured when
+registered. Nested runs restore original identity on throws, overlapping async
+tasks stay isolated, and exit shadows only its own instance. Promise.then is not
+patched and there is no global ambient-store variable. Callback receivers follow
+Node's null receiver; Native Bun 1.4.4 uses undefined for strict callbacks.
+
+The module is absent on the system-JSC backend because it has no matching
+execution-context primitive. The explicit home-tool-async-context-smoke gate
+fails when requested there; the zig-js ecosystem bootstrap must run this gate.
+Disable/lifecycle hooks, AsyncResource, static bind/snapshot, constructor options
+and context inheritance for unsupported async sources (including rejection-event
+dispatch and timers) are not implemented. Refusals and reference differences
+remain capability failures; this is not the complete Node async_hooks surface.
+
 The shared Bun/bun namespace also exposes file for string filesystem paths.
 Its argv property initially shares the actual process.argv array, including
 the native executable, canonical entry and user arguments. Array mutations

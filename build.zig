@@ -814,6 +814,13 @@ pub fn build(b: *std.Build) void {
         // This capability gate is explicit: requesting it on a backend without
         // an actual rejection checkpoint fails, rather than skipping cases.
         const home_tool_rejections_step = b.step("home-tool-rejections-smoke", "Verify actual unhandled-rejection status and events");
+        // This gate must fail on a backend without actual execution snapshots.
+        const home_tool_async_context_step = b.step("home-tool-async-context-smoke", "Verify genuine async-context propagation through engine jobs");
+        const run_home_tool_async_context = b.addRunArtifact(home_tool_exe);
+        run_home_tool_async_context.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_async_context.addArgs(&.{ "run", "async_context.mjs" });
+        run_home_tool_async_context.expectStdOutEqual("OK actual async context across await, callbacks, siblings, exit and species\n");
+        home_tool_async_context_step.dependOn(&run_home_tool_async_context.step);
         inline for (.{
             .{ "error", 1, "exit 1\n" },
             .{ "undefined", 1, "exit 1\n" },
