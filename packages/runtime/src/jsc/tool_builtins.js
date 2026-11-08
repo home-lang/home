@@ -136,9 +136,9 @@
     if (options[key] !== undefined && typeof options[key] !== 'boolean') throw new TypeError(`Expected boolean ${key}`);
     return options[key] === true;
   }
-  function fsOperation(operation, path, recursive, force) {
+  function fsOperation(operation, path, recursive, force, mode) {
     path = stringPath(path);
-    const result = nativeFs(operation, path, recursive, force);
+    const result = nativeFs(operation, path, recursive, force, mode);
     if (result === null) throw new Error('Native filesystem operation failed');
     if (result.error) {
       const error = new Error(`${result.error}: ${operation} '${path}'${result.detail ? ` (${result.detail})` : ''}`);
@@ -209,6 +209,17 @@
     fsOperation('access', path, mode, false);
   }
   fs.accessSync = accessFile;
+  function creationMode(mode, fallback) {
+    if (mode == null) return fallback;
+    if (typeof mode === 'string') {
+      if (!/^[0-7]+$/.test(mode)) nodeArgumentError('ERR_INVALID_ARG_VALUE', 'creation mode must be an octal string');
+      mode = parseInt(mode, 8);
+    }
+    if (typeof mode !== 'number') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'creation mode must be a number or octal string');
+    if (!Number.isInteger(mode) || mode < 0 || mode > 0xffffffff) nodeArgumentError('ERR_OUT_OF_RANGE', 'creation mode must be a uint32', true);
+    if (mode > 0o7777) unsupported('Home creation mode supports POSIX permission bits only');
+    return mode;
+  }
   const fsPromises = {
     constants: fsConstants,
     access: async function(path, mode) {
@@ -226,17 +237,17 @@
       options = typeof options === 'string' ? { encoding: options } : fsOptions(options, ['encoding', 'flag', 'mode']);
       if (options.encoding != null && (typeof options.encoding !== 'string' || !['utf8', 'utf-8'].includes(options.encoding.toLowerCase()))) unsupported('Home writeFile supports UTF-8 encoding only');
       if (options.flag !== undefined && options.flag !== 'w') unsupported('Home writeFile supports the w flag only');
-      if (options.mode !== undefined && options.mode !== 0o666) unsupported('Home writeFile supports the default 0o666 creation mode only');
+      const mode = creationMode(options.mode, 0o666);
       if (data instanceof fsDataView) data = new fsBytes(fsViewBuffer.call(data), fsViewOffset.call(data), fsViewLength.call(data));
-      fsOperation('writeFile', path, data, false);
+      fsOperation('writeFile', path, data, false, mode);
     },
     readFile: async function(path, options) {
       utf8ReadOptions(options);
       return decodeUtf8(fsOperation('readFile', path, false, false).hex);
     },
     mkdir: async function(path, options) {
-      options = fsOptions(options, ['recursive']);
-      const result = fsOperation('mkdir', path, booleanFsOption(options, 'recursive'), false);
+      options = fsOptions(options, ['recursive', 'mode']);
+      const result = fsOperation('mkdir', path, booleanFsOption(options, 'recursive'), false, creationMode(options.mode, 0o777));
       return result.created;
     },
     rm: async function(path, options) {

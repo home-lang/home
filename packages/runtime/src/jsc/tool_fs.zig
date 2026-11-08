@@ -79,15 +79,15 @@ pub fn failure(ctx: *types.JSContextRef, object: *types.JSObject, err: anyerror)
 // Return the first created ancestor, as Node's recursive mkdir does. The
 // stdlib's createDirPath intentionally discards that path, so walk parents
 // only after a genuine missing-parent error. Preserve .. and symlink behavior.
-fn mkdir(path: []const u8, recursive: bool, depth: usize) anyerror!?[]const u8 {
+fn mkdir(path: []const u8, recursive: bool, depth: usize, permissions: std.Io.File.Permissions) anyerror!?[]const u8 {
     if (depth > 256) return error.Unsupported;
-    std.Io.Dir.cwd().createDir(io, path, .default_dir) catch |err| switch (err) {
+    std.Io.Dir.cwd().createDir(io, path, permissions) catch |err| switch (err) {
         error.FileNotFound => {
             if (!recursive) return err;
             const parent = std.fs.path.dirname(path) orelse return err;
             if (std.mem.eql(u8, parent, path)) return err;
-            const first = try mkdir(parent, true, depth + 1);
-            _ = try mkdir(path, true, depth + 1);
+            const first = try mkdir(parent, true, depth + 1, permissions);
+            _ = try mkdir(path, true, depth + 1, permissions);
             return first orelse path;
         },
         error.PathAlreadyExists => {
@@ -178,6 +178,15 @@ fn operation(
     if (std.mem.indexOfScalar(u8, path, 0) != null) return failure(c, object, error.Unsupported);
     const recursive = count > 2 and api.JSValueToBoolean(c, args[2]);
     const force = count > 3 and api.JSValueToBoolean(c, args[3]);
+    const creates_file = std.mem.eql(u8, op, "writeFile");
+    const creates_directory = std.mem.eql(u8, op, "mkdir");
+    var permissions: std.Io.File.Permissions = if (creates_directory) .default_dir else .default_file;
+    if ((creates_file or creates_directory) and count > 4 and !api.JSValueIsUndefined(c, args[4])) {
+        if (!api.JSValueIsNumber(c, args[4])) return failure(c, object, error.Unsupported);
+        const mode = api.JSValueToNumber(c, args[4], exception);
+        if (!std.math.isFinite(mode) or mode < 0 or mode > 0o7777 or @trunc(mode) != mode) return failure(c, object, error.Unsupported);
+        permissions = .fromMode(@intFromFloat(mode));
+    }
     if (std.mem.eql(u8, op, "access")) {
         if (count < 3 or !api.JSValueIsNumber(c, args[2])) return failure(c, object, error.Unsupported);
         const mode = api.JSValueToNumber(c, args[2], exception);
@@ -202,7 +211,9 @@ fn operation(
             break :contents allocator.dupe(u8, bytes[offset..][0..length]) catch return failure(c, object, error.OutOfMemory);
         };
         defer allocator.free(contents);
-        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = contents }) catch |err| return failure(c, object, err);
+        // Creation permissions are subject to the native umask. Never chmod an
+        // existing file: Node's mode option only applies when open creates it.
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = contents, .flags = .{ .permissions = permissions } }) catch |err| return failure(c, object, err);
     } else if (std.mem.eql(u8, op, "readFile") or std.mem.eql(u8, op, "readToolFile") or std.mem.eql(u8, op, "readToolTextFile")) {
         const bounded = !std.mem.eql(u8, op, "readFile");
         const contents = (if (bounded) readToolFile(.cwd(), path, allocator) else std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited)) catch |err| return failure(c, object, err);
@@ -236,7 +247,7 @@ fn operation(
         const result = text(c, encoded) orelse return failure(c, object, error.OutOfMemory);
         set(c, object, "entriesJSON", result);
     } else if (std.mem.eql(u8, op, "mkdir")) {
-        const first = mkdir(path, recursive, 0) catch |err| return failure(c, object, err);
+        const first = mkdir(path, recursive, 0, permissions) catch |err| return failure(c, object, err);
         if (recursive) if (first) |created| set(c, object, "created", text(c, created));
     } else if (std.mem.eql(u8, op, "rm")) {
         const stat = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |err| {

@@ -339,7 +339,7 @@ failure. This is an access-flag subset, not the full Node constants table.
 Access checks do not reserve a path or prevent subsequent filesystem races.
 
 The `fs/promises` and `node:fs/promises` aliases share `fs.promises`. Supported
-operations perform real native I/O: UTF-8 `readFile`, default-mode `mkdir`
+operations perform real native I/O: UTF-8 `readFile`, `mkdir`
 (including the first-created-ancestor return for recursive creation), `rm`
 (including recursive/force behavior and unlinking symlinks), and `stat`. Stat
 returns actual kind predicates, size, inode, link count and available access,
@@ -347,12 +347,15 @@ modification and change times; this is a subset of Node's Stats fields.
 `writeFile` writes actual UTF-8 string bytes or the exact byte ranges of
 Buffer/typed-array/DataView inputs, creates or truncates files, and propagates
 native errors through its returned promise. It supports UTF-8 encoding, the
-`w` flag and the default `0o666` creation mode (subject to the process umask).
+`w` flag and POSIX creation permissions from `0` through `0o7777`, as numbers
+or octal strings. The default file mode is `0o666`; mkdir defaults to `0o777`
+and applies its mode to each newly created recursive ancestor. The native umask
+restricts these modes. Existing file and directory permissions remain unchanged.
 String conversion preserves NUL and replaces lone surrogates without losing
 the remaining text. Iterable input, append/exclusive flags and other write
 options are explicitly unsupported; raw ArrayBuffer data is rejected as in Node.
 The methods return real promises, but native filesystem work currently blocks
-the tool thread. Buffer/URL paths, binary reads, custom permissions, retry,
+the tool thread. Buffer/URL paths, binary reads, non-permission mode bits, retry,
 bigint, abort and other options are unsupported rather than silently ignored.
 Other fs promises methods remain absent. The disposable filesystem smoke checks
 native reads/metadata, missing/existing paths, recursive deletion and that a
