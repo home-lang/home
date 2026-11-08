@@ -518,13 +518,19 @@ pub const Program = struct {
             .redirect_target = null,
         };
 
-        try self.files.append(self.gpa, file);
-
         const key = try self.gpa.dupe(u8, path);
-        try self.by_path.putContext(self.gpa, key, id, self.file_name_context);
-
+        errdefer self.gpa.free(key);
         const skey = try self.gpa.dupe(u8, path);
-        try self.sources.putContext(self.gpa, skey, owned_source, self.file_name_context);
+        errdefer self.gpa.free(skey);
+        try self.files.ensureUnusedCapacity(self.gpa, 1);
+        try self.by_path.ensureUnusedCapacityContext(self.gpa, 1, self.file_name_context);
+        try self.sources.ensureUnusedCapacityContext(self.gpa, 1, self.file_name_context);
+
+        // Publish all three owners together. No fallible operation may follow
+        // admission: error cleanup still owns every allocation until here.
+        self.files.appendAssumeCapacity(file);
+        self.by_path.putAssumeCapacityNoClobberContext(key, id, self.file_name_context);
+        self.sources.putAssumeCapacityNoClobberContext(skey, owned_source, self.file_name_context);
 
         return id;
     }
@@ -569,10 +575,13 @@ pub const Program = struct {
             .redirect_target = target_id,
         };
 
-        try self.files.append(self.gpa, file);
-
         const key = try self.gpa.dupe(u8, path);
-        try self.by_path.putContext(self.gpa, key, id, self.file_name_context);
+        errdefer self.gpa.free(key);
+        try self.files.ensureUnusedCapacity(self.gpa, 1);
+        try self.by_path.ensureUnusedCapacityContext(self.gpa, 1, self.file_name_context);
+
+        self.files.appendAssumeCapacity(file);
+        self.by_path.putAssumeCapacityNoClobberContext(key, id, self.file_name_context);
 
         return id;
     }
@@ -12554,6 +12563,62 @@ test "program filename identity survives alias updates removal and restoration" 
     try T.expectEqual(id, program.lookupPath("/src/K.ts").?);
     try T.expectEqual(@as(usize, 1), program.files.items.len);
     try T.expectEqual(@as(usize, 1), program.sources.count());
+}
+
+test "program admission owns root files across every allocation failure" {
+    const Lifecycle = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var virtual = ts_resolver.VirtualFs.init(T.allocator);
+            defer virtual.deinit();
+            var fs = virtual.fs();
+            fs.use_case_sensitive_file_names = false;
+            var resolver = ts_resolver.Resolver.init(T.allocator, fs, .{});
+            defer resolver.deinit();
+            var program = Program.init(allocator, &resolver);
+            defer program.deinit();
+            const id = program.add("/src/K.ts", "export const value = 1;") catch |err| {
+                try T.expectEqual(@as(usize, 0), program.files.items.len);
+                try T.expectEqual(@as(usize, 0), program.by_path.count());
+                try T.expectEqual(@as(usize, 0), program.sources.count());
+                return err;
+            };
+            try T.expectEqual(id, program.lookupPath("/src/k.ts").?);
+            try T.expectEqualStrings("export const value = 1;", program.fileById(id).source);
+            try T.expectEqual(@as(usize, 1), program.files.items.len);
+            try T.expectEqual(@as(usize, 1), program.sources.count());
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Lifecycle.run, .{});
+}
+
+test "program admission owns redirect files across every allocation failure" {
+    const Lifecycle = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var virtual = ts_resolver.VirtualFs.init(T.allocator);
+            defer virtual.deinit();
+            var resolver = ts_resolver.Resolver.init(T.allocator, virtual.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            const root = try program.add("/root.ts", "export const value = 1;");
+            program.gpa = allocator;
+            defer program.gpa = T.allocator;
+            const redirect = program.addRedirectFile("/redirect.ts", root) catch |err| {
+                try T.expectEqual(@as(usize, 1), program.files.items.len);
+                try T.expectEqual(@as(usize, 1), program.by_path.count());
+                try T.expectEqual(@as(usize, 1), program.sources.count());
+                try T.expectEqual(root, program.lookupPath("/root.ts").?);
+                try T.expect(program.lookupPath("/redirect.ts") == null);
+                try T.expectEqualStrings("export const value = 1;", program.fileById(root).source);
+                return err;
+            };
+            try T.expectEqual(redirect, program.lookupPath("/redirect.ts").?);
+            try T.expectEqual(root, program.fileById(redirect).redirect_target.?);
+            try T.expectEqual(@as(usize, 2), program.files.items.len);
+            try T.expectEqual(@as(usize, 1), program.sources.count());
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Lifecycle.run, .{});
 }
 
 test "module export assignment private type query follows object signatures" {
