@@ -479,6 +479,7 @@ fn projectConfigHasInputFiles(gpa: std.mem.Allocator, cfg_path: []const u8, cfg:
         tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
         &input_files,
         &owned,
+        null,
     );
     return input_files.items.len > 0;
 }
@@ -785,6 +786,7 @@ fn buildOneProject(
             tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
+            null,
         ) catch return .errors_outputs_skipped;
     }
     if (input_files.items.len == 0) {
@@ -944,6 +946,7 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
             tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
+            null,
         ) catch return .build;
     }
     if (input_files.items.len == 0) return .up_to_date;
@@ -1509,6 +1512,7 @@ fn appendProjectCleanOutputs(
             tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
+            null,
         );
     }
 
@@ -1639,29 +1643,47 @@ fn prepareCaseOnlyInputFiles(
 }
 
 const CaseOnlyInputRootContext = struct {
+    config: ?tsconfig_mod.TsConfig = null,
     kind: enum { none, files, include } = .none,
-    config_path: []const u8 = "",
-    config_source: []const u8 = "",
-    specs: []const []const u8 = &.{},
+    /// For wildcard roots, indices into the effective include list, recorded
+    /// when discovery admits the selected path. Explicit files retain order.
+    include_spec_indices: []const usize = &.{},
 };
 
-fn findTsConfigSpecLineCol(config_source: []const u8, property: []const u8, spec: []const u8) struct { line: u32, col: u32 } {
-    if (config_source.len == 0) return .{ .line = 1, .col = 1 };
-    var start: usize = 0;
-    var property_buf: [64]u8 = undefined;
-    const property_needle = std.fmt.bufPrint(&property_buf, "\"{s}\"", .{property}) catch "";
-    if (property_needle.len > 0) {
-        if (std.mem.indexOf(u8, config_source, property_needle)) |pos| start = pos + property_needle.len;
+/// Select project roots and retain the source of their admission alongside the
+/// effective paths. All returned context borrows the parsed config and indices.
+fn appendConfigInputFiles(
+    gpa: std.mem.Allocator,
+    config: tsconfig_mod.TsConfig,
+    inputs: *std.ArrayListUnmanaged([]const u8),
+    owned: *std.ArrayListUnmanaged([]u8),
+    include_indices: *std.ArrayListUnmanaged(usize),
+) !CaseOnlyInputRootContext {
+    std.debug.assert(inputs.items.len == 0 and include_indices.items.len == 0);
+    const project_dir = std.fs.path.dirname(config.file_path) orelse ".";
+    if (config.files) |files| {
+        try ts_cli.appendProjectFilePaths(gpa, project_dir, files, inputs, owned);
+        if (inputs.items.len > 0) return .{ .kind = .files, .config = config };
     }
-    var spec_buf: [512]u8 = undefined;
-    const spec_needle = std.fmt.bufPrint(&spec_buf, "\"{s}\"", .{spec}) catch "";
-    const pos = if (spec_needle.len > 0)
-        std.mem.indexOf(u8, config_source[start..], spec_needle)
-    else
-        null;
-    const absolute_pos = if (pos) |p| start + p else start;
-    const line_col = ts_diagnostics.positionToLineCol(config_source, @intCast(@min(absolute_pos, std.math.maxInt(u32))));
-    return .{ .line = line_col.line, .col = line_col.col };
+    {
+        var exclude_storage: [2][]const u8 = undefined;
+        try expandProjectGlobs(
+            gpa,
+            project_dir,
+            effectiveIncludePatterns(config),
+            config.effectiveExcludePatterns(&exclude_storage),
+            tsconfig_mod.effectiveAllowJs(config.compiler_options),
+            inputs,
+            owned,
+            include_indices,
+        );
+    }
+    if (config.include != null) return .{
+        .kind = .include,
+        .config = config,
+        .include_spec_indices = include_indices.items,
+    };
+    return .{};
 }
 
 fn caseOnlyInputRelatedInfo(
@@ -1669,32 +1691,35 @@ fn caseOnlyInputRelatedInfo(
     mismatch: CaseOnlyInputFileMismatch,
     out: *[2]ts_diagnostics.Related,
 ) []const ts_diagnostics.Related {
-    const code_include_pattern_specified_here: u32 = 1408;
-    const code_files_list_specified_here: u32 = 1410;
-    const code = switch (ctx.kind) {
-        .files => code_files_list_specified_here,
-        .include => code_include_pattern_specified_here,
+    const config = ctx.config orelse return &.{};
+    const kind: tsconfig_mod.FileSpecKind = switch (ctx.kind) {
+        .files => .files,
+        .include => .include,
         .none => return &.{},
     };
+    const code: u32 = if (kind == .files) 1410 else 1408;
     const message = (ts_diagnostics.codes.lookup(code) orelse unreachable).message;
-    const property = switch (ctx.kind) {
-        .files => "files",
-        .include => "include",
-        .none => unreachable,
-    };
-
     var len: usize = 0;
     const indices = [_]usize{ mismatch.existing_file_index, mismatch.file_index };
     for (indices) |index| {
-        const spec = if (index < ctx.specs.len) ctx.specs[index] else if (ctx.specs.len > 0) ctx.specs[0] else "";
-        const lc = findTsConfigSpecLineCol(ctx.config_source, property, spec);
+        const spec_index = if (kind == .files) index else blk: {
+            if (index >= ctx.include_spec_indices.len) continue;
+            break :blk ctx.include_spec_indices[index];
+        };
+        const origin = config.fileSpecSource(kind, spec_index) orelse continue;
+        const lc = ts_diagnostics.positionToLineCol(origin.source, origin.span.start);
         out[len] = .{
-            .file = ctx.config_path,
+            .file = origin.file_path,
             .line = lc.line,
             .col = lc.col,
             .code = code,
             .code_prefix = .TS,
             .message = message,
+            .source_span = .{
+                .source = origin.source,
+                .start = origin.span.start,
+                .length = origin.span.end - origin.span.start,
+            },
         };
         len += 1;
     }
@@ -1714,8 +1739,10 @@ fn caseOnlyInputReasonChain(
     const child_message: []const u8 = switch (ctx.kind) {
         .files => (ts_diagnostics.codes.lookup(code_files_list) orelse unreachable).message,
         .include => blk: {
-            const pattern = if (ctx.specs.len > 0) ctx.specs[0] else "**/*";
-            const config_name = if (ctx.config_path.len > 0) ctx.config_path else "tsconfig.json";
+            const config = ctx.config orelse return &.{};
+            const specs = config.include orelse &.{};
+            const pattern = if (specs.len > 0) specs[0] else "**/*";
+            const config_name = if (config.file_path.len > 0) config.file_path else "tsconfig.json";
             owned_child_message.* = try std.fmt.allocPrint(
                 gpa,
                 "Matched by include pattern '{s}' in '{s}'",
@@ -1922,9 +1949,7 @@ fn rootIncludeRelativePath(root: RootInclusion, file_path: []const u8) []const u
 
 fn matchingRootIncludeSpec(root: RootInclusion, file_path: []const u8) []const u8 {
     const relative_path = rootIncludeRelativePath(root, file_path);
-    for (root.specs) |spec| {
-        if (tsconfig_mod.matchFileIncludeGlob(spec, relative_path)) return spec;
-    }
+    if (firstFileIncludeMatch(root.specs, relative_path)) |index| return root.specs[index];
     return if (root.specs.len > 0) root.specs[0] else "**/*";
 }
 
@@ -4063,35 +4088,18 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     //      / `.d.ts` / `.mts` / `.cts` plus Home's `.hm` / `.home`.
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
     var owned_paths: std.ArrayListUnmanaged([]u8) = .empty;
+    var input_include_indices: std.ArrayListUnmanaged(usize) = .empty;
+    defer input_include_indices.deinit(gpa);
     defer {
         input_files.deinit(gpa);
         for (owned_paths.items) |p| gpa.free(p);
         owned_paths.deinit(gpa);
     }
     for (opts.files) |f| try input_files.append(gpa, f);
+    var case_only_root_context: CaseOnlyInputRootContext = .{};
     if (input_files.items.len == 0) {
         if (loaded_cfg) |c| {
-            if (c.files) |fs_list| {
-                const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
-                try ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned_paths);
-            }
-        }
-    }
-    if (input_files.items.len == 0) {
-        if (loaded_cfg) |c| {
-            const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
-            const include_patterns = effectiveIncludePatterns(c);
-            var exclude_storage: [2][]const u8 = undefined;
-            const exclude_patterns = c.effectiveExcludePatterns(&exclude_storage);
-            try expandProjectGlobs(
-                gpa,
-                project_dir,
-                include_patterns,
-                exclude_patterns,
-                tsconfig_mod.effectiveAllowJs(c.compiler_options),
-                &input_files,
-                &owned_paths,
-            );
+            case_only_root_context = try appendConfigInputFiles(gpa, c, &input_files, &owned_paths, &input_include_indices);
         }
     }
 
@@ -4224,29 +4232,6 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     const force_consistent_casing: bool = blk: {
         if (loaded_cfg) |c| break :blk (c.compiler_options.force_consistent_casing_in_file_names orelse true);
         break :blk true;
-    };
-    const case_only_root_context: CaseOnlyInputRootContext = blk: {
-        if (opts.files.len == 0) {
-            if (loaded_cfg) |c| {
-                if (c.files) |files| {
-                    break :blk .{
-                        .kind = .files,
-                        .config_path = c.file_path,
-                        .config_source = cfg_src,
-                        .specs = files,
-                    };
-                }
-                if (c.include) |include| {
-                    break :blk .{
-                        .kind = .include,
-                        .config_path = c.file_path,
-                        .config_source = cfg_src,
-                        .specs = include,
-                    };
-                }
-            }
-        }
-        break :blk .{};
     };
     const case_only_mismatch = try prepareCaseOnlyInputFiles(gpa, resolver_fs.fs(), input_files.items);
     if (force_consistent_casing) {
@@ -5259,6 +5244,7 @@ fn expandProjectGlobs(
     allow_js: bool,
     out: *std.ArrayListUnmanaged([]const u8),
     owned: *std.ArrayListUnmanaged([]u8),
+    include_indices: ?*std.ArrayListUnmanaged(usize),
 ) !void {
     const exclude_base = try std.fs.path.resolve(gpa, &.{project_dir});
     defer gpa.free(exclude_base);
@@ -5267,7 +5253,8 @@ fn expandProjectGlobs(
     // than appending every supported file. Keep this list separate from
     // `owned`: rejected and displaced allocations still remain owned by the
     // caller, while only the selected paths are appended to `out` below.
-    var wildcard_files: std.ArrayListUnmanaged([]const u8) = .empty;
+    const WildcardInput = struct { path: []const u8, include_index: usize };
+    var wildcard_files: std.ArrayListUnmanaged(WildcardInput) = .empty;
     defer wildcard_files.deinit(gpa);
     const case_sensitive_file_names = switch (builtin.os.tag) {
         .windows, .macos => false,
@@ -5286,7 +5273,8 @@ fn expandProjectGlobs(
         for (stack.items) |s| gpa.free(s);
         stack.deinit(gpa);
     }
-    try stack.append(gpa, try gpa.dupe(u8, ""));
+    try stack.ensureUnusedCapacity(gpa, 1);
+    stack.appendAssumeCapacity(try gpa.dupe(u8, ""));
 
     while (stack.items.len > 0) {
         const rel = stack.pop().?;
@@ -5322,20 +5310,24 @@ fn expandProjectGlobs(
                         gpa.free(child_rel);
                         continue;
                     }
-                    try stack.append(gpa, child_rel);
+                    stack.append(gpa, child_rel) catch |err| {
+                        gpa.free(child_rel);
+                        return err;
+                    };
                 },
                 .file => {
                     defer gpa.free(child_rel);
                     if (!isProjectInputExtension(child_rel, allow_js)) continue;
                     if (anyMatches(exclude_base, exclude, child_rel)) continue;
-                    if (!anyFileIncludeMatches(include, child_rel)) continue;
+                    const include_index = firstFileIncludeMatch(include, child_rel) orelse continue;
+                    try owned.ensureUnusedCapacity(gpa, 1);
                     const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, child_rel });
-                    try owned.append(gpa, full);
+                    owned.appendAssumeCapacity(full);
                     var keep_candidate = true;
                     var selected_index: usize = 0;
                     while (selected_index < wildcard_files.items.len) {
                         switch (tsconfig_mod.projectInputPriorityRelation(
-                            wildcard_files.items[selected_index],
+                            wildcard_files.items[selected_index].path,
                             full,
                             allow_js,
                             case_sensitive_file_names,
@@ -5350,13 +5342,21 @@ fn expandProjectGlobs(
                             .unrelated, .coexist => selected_index += 1,
                         }
                     }
-                    if (keep_candidate) try wildcard_files.append(gpa, full);
+                    if (keep_candidate) try wildcard_files.append(gpa, .{ .path = full, .include_index = include_index });
                 },
                 else => gpa.free(child_rel),
             }
         }
     }
-    try out.appendSlice(gpa, wildcard_files.items);
+    try out.ensureUnusedCapacity(gpa, wildcard_files.items.len);
+    if (include_indices) |indices| {
+        std.debug.assert(indices.items.len == out.items.len);
+        try indices.ensureUnusedCapacity(gpa, wildcard_files.items.len);
+    }
+    for (wildcard_files.items) |input| {
+        out.appendAssumeCapacity(input.path);
+        if (include_indices) |indices| indices.appendAssumeCapacity(input.include_index);
+    }
 }
 
 fn anyMatches(project_dir: []const u8, patterns: []const []const u8, path: []const u8) bool {
@@ -5382,11 +5382,11 @@ fn anyMatches(project_dir: []const u8, patterns: []const []const u8, path: []con
     return false;
 }
 
-fn anyFileIncludeMatches(patterns: []const []const u8, path: []const u8) bool {
-    for (patterns) |pattern| {
-        if (tsconfig_mod.matchFileIncludeGlob(pattern, path)) return true;
+fn firstFileIncludeMatch(patterns: []const []const u8, path: []const u8) ?usize {
+    for (patterns, 0..) |pattern, index| {
+        if (tsconfig_mod.matchFileIncludeGlob(pattern, path)) return index;
     }
-    return false;
+    return null;
 }
 
 fn anyFileIncludeMayMatchDirectory(patterns: []const []const u8, path: []const u8) bool {
@@ -6275,7 +6275,7 @@ test "tsc_main: explicit package include selects the actual root pattern" {
         matchingRootIncludeSpec(root_directory, "/node_modules/pkg/index.js"),
     );
     try std.testing.expect(anyFileIncludeMayMatchDirectory(root.specs, "node_modules"));
-    try std.testing.expect(anyFileIncludeMatches(root.specs, "node_modules/pkg/index.js"));
+    try std.testing.expectEqual(@as(?usize, 1), firstFileIncludeMatch(root.specs, "node_modules/pkg/index.js"));
 }
 
 test "tsc_main: resolver admission follows maxNodeModuleJsDepth" {
@@ -7898,6 +7898,8 @@ test "tsc_main: wildcard discovery honors TypeScript extension priority" {
 
     var selected: std.ArrayListUnmanaged([]const u8) = .empty;
     defer selected.deinit(std.testing.allocator);
+    var origins: std.ArrayListUnmanaged(usize) = .empty;
+    defer origins.deinit(std.testing.allocator);
     var owned: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
         for (owned.items) |path| std.testing.allocator.free(path);
@@ -7906,14 +7908,20 @@ test "tsc_main: wildcard discovery honors TypeScript extension priority" {
     try expandProjectGlobs(
         std.testing.allocator,
         root,
-        &[_][]const u8{"**/*"},
+        &[_][]const u8{ "a.d.ts", "a.ts", "**/*" },
         &.{},
         true,
         &selected,
         &owned,
+        &origins,
     );
 
     try std.testing.expectEqual(@as(usize, 4), selected.items.len);
+    try std.testing.expectEqual(selected.items.len, origins.items.len);
+    for (selected.items, origins.items) |path, origin| {
+        const expected: usize = if (std.mem.eql(u8, std.fs.path.basename(path), "a.ts")) 1 else 2;
+        try std.testing.expectEqual(expected, origin);
+    }
     for ([_][]const u8{ "a.ts", "b.d.ts", "b.js", "c.mts" }) |name| {
         const path = try std.fs.path.join(std.testing.allocator, &.{ root, name });
         defer std.testing.allocator.free(path);
@@ -7958,6 +7966,168 @@ test "tsc_main: TS1261 reports input files that differ only by casing" {
     );
 }
 
+test "tsc_main: config root diagnostics use original JSONC spans" {
+    const source =
+        \\{
+        \\  // "files": ["src/foo.ts"]
+        \\  "files": [null,
+        \\    "src/\u0066oo.ts",
+        \\    "src/Foo.ts"
+        \\  ]
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), source);
+    config.setFilePath("/repo/base/tsconfig.json");
+    var child = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), "{}");
+    child.setFilePath("/repo/child/tsconfig.json");
+    config = try tsconfig_mod.merge(arena.allocator(), config, child);
+    const mismatch = CaseOnlyInputFileMismatch{
+        .file_name = "src/Foo.ts",
+        .existing_file_name = "src/foo.ts",
+        .file_index = 1,
+        .existing_file_index = 0,
+    };
+    var related_buf: [2]ts_diagnostics.Related = undefined;
+    const related = caseOnlyInputRelatedInfo(.{
+        .config = config,
+        .kind = .files,
+    }, mismatch, &related_buf);
+    try std.testing.expectEqual(@as(usize, 2), related.len);
+    for (related, [_]u32{ 4, 5 }, [_][]const u8{ "\"src/\\u0066oo.ts\"", "\"src/Foo.ts\"" }) |item, line, lexeme| {
+        try std.testing.expectEqualStrings("/repo/base/tsconfig.json", item.file);
+        try std.testing.expectEqual(line, item.line);
+        try std.testing.expectEqual(@as(u32, 5), item.col);
+        const span = item.source_span orelse return error.TestExpectedSome;
+        try std.testing.expectEqualStrings(source, span.source);
+        try std.testing.expectEqualStrings(lexeme, span.source[span.start..][0..span.length]);
+    }
+}
+
+test "tsc_main: empty files list retains wildcard admission context" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    // Force pending-directory list growth, so allocation injection also
+    // exercises the child-path ownership transfer instead of only file paths.
+    for (0..9) |index| {
+        var name_buf: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "d{d}", .{index});
+        try tmp.dir.createDirPath(io, name);
+    }
+    for ([_][]const u8{ "first.ts", "d8/second.ts" }) |name| {
+        var file = try tmp.dir.createFile(io, name, .{ .truncate = true });
+        file.close(io);
+    }
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(),
+        \\{
+        \\  "files": [],
+        \\  "include": ["unused/**/*", "**/*.ts"]
+        \\}
+    );
+    config.setFilePath(try std.fs.path.join(arena.allocator(), &.{ root, "tsconfig.json" }));
+    var inputs: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer inputs.deinit(std.testing.allocator);
+    var owned: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (owned.items) |path| std.testing.allocator.free(path);
+        owned.deinit(std.testing.allocator);
+    }
+    var indices: std.ArrayListUnmanaged(usize) = .empty;
+    defer indices.deinit(std.testing.allocator);
+    const context = try appendConfigInputFiles(std.testing.allocator, config, &inputs, &owned, &indices);
+    try std.testing.expectEqual(@as(usize, 2), inputs.items.len);
+    try std.testing.expect(context.kind == .include);
+    var related_buf: [2]ts_diagnostics.Related = undefined;
+    const related = caseOnlyInputRelatedInfo(context, .{
+        .file_name = inputs.items[1],
+        .existing_file_name = inputs.items[0],
+        .file_index = 1,
+        .existing_file_index = 0,
+    }, &related_buf);
+    try std.testing.expectEqual(@as(usize, 2), related.len);
+    for (related) |item| {
+        try std.testing.expectEqual(@as(u32, 1408), item.code);
+        const span = item.source_span orelse return error.TestExpectedSome;
+        try std.testing.expectEqualStrings("\"**/*.ts\"", span.source[span.start..][0..span.length]);
+    }
+
+    const AllocationProbe = struct {
+        fn run(allocator: std.mem.Allocator, cfg: tsconfig_mod.TsConfig) !void {
+            var selected: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer selected.deinit(allocator);
+            var paths: std.ArrayListUnmanaged([]u8) = .empty;
+            defer {
+                for (paths.items) |path| allocator.free(path);
+                paths.deinit(allocator);
+            }
+            var origins: std.ArrayListUnmanaged(usize) = .empty;
+            defer origins.deinit(allocator);
+            const actual = try appendConfigInputFiles(allocator, cfg, &selected, &paths, &origins);
+            try std.testing.expect(actual.kind == .include);
+            try std.testing.expectEqual(@as(usize, 2), selected.items.len);
+            try std.testing.expectEqualSlices(usize, &.{ 1, 1 }, origins.items);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, AllocationProbe.run, .{config});
+}
+
+test "tsc_main: include diagnostics follow admitted pattern indices" {
+    const source =
+        \\{
+        \\  // "include": ["src/**/*"]
+        \\  "include": [null,
+        \\    "unused/**/*",
+        \\    "src/\u002a\u002a/*",
+        \\    "other/**/*"
+        \\  ]
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), source);
+    config.setFilePath("/repo/base/tsconfig.json");
+    const mismatch = CaseOnlyInputFileMismatch{
+        .file_name = "src/Foo.ts",
+        .existing_file_name = "other/foo.ts",
+        .file_index = 2,
+        .existing_file_index = 0,
+    };
+    var related_buf: [2]ts_diagnostics.Related = undefined;
+    const related = caseOnlyInputRelatedInfo(.{
+        .config = config,
+        .kind = .include,
+        .include_spec_indices = &.{ 2, 0, 1 },
+    }, mismatch, &related_buf);
+    try std.testing.expectEqual(@as(usize, 2), related.len);
+    for (related, [_]u32{ 6, 5 }, [_][]const u8{ "\"other/**/*\"", "\"src/\\u002a\\u002a/*\"" }) |item, line, lexeme| {
+        try std.testing.expectEqual(@as(u32, 1408), item.code);
+        try std.testing.expectEqualStrings("/repo/base/tsconfig.json", item.file);
+        try std.testing.expectEqual(line, item.line);
+        try std.testing.expectEqual(@as(u32, 5), item.col);
+        const span = item.source_span orelse return error.TestExpectedSome;
+        try std.testing.expectEqualStrings(lexeme, span.source[span.start..][0..span.length]);
+    }
+    // No admitted pattern or no authored source means no invented anchor.
+    try std.testing.expectEqual(@as(usize, 0), caseOnlyInputRelatedInfo(.{
+        .config = config,
+        .kind = .include,
+    }, mismatch, &related_buf).len);
+    var synthesized = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), "{}");
+    var synthetic_patterns = [_][]const u8{"**/*"};
+    synthesized.include = &synthetic_patterns;
+    try std.testing.expectEqual(@as(usize, 0), caseOnlyInputRelatedInfo(.{
+        .config = synthesized,
+        .kind = .include,
+        .include_spec_indices = &.{ 0, 0, 0 },
+    }, mismatch, &related_buf).len);
+}
+
 test "tsc_main: TS1261 carries config-root related information for files and include" {
     const mismatch = CaseOnlyInputFileMismatch{
         .file_name = "src/Foo.ts",
@@ -7973,13 +8143,14 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
         \\}
     ;
 
-    const files = [_][]const u8{ "src/foo.ts", "src/Foo.ts" };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), config_source);
+    config.setFilePath("/repo/tsconfig.json");
     var files_related_buf: [2]ts_diagnostics.Related = undefined;
     const files_related = caseOnlyInputRelatedInfo(.{
         .kind = .files,
-        .config_path = "/repo/tsconfig.json",
-        .config_source = config_source,
-        .specs = &files,
+        .config = config,
     }, mismatch, &files_related_buf);
     try std.testing.expectEqual(@as(usize, 2), files_related.len);
     try std.testing.expectEqual(@as(u32, 1410), files_related[0].code);
@@ -7991,9 +8162,7 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     defer if (owned_chain_child_message) |msg| std.testing.allocator.free(msg);
     const files_chain = try caseOnlyInputReasonChain(std.testing.allocator, .{
         .kind = .files,
-        .config_path = "/repo/tsconfig.json",
-        .config_source = config_source,
-        .specs = &files,
+        .config = config,
     }, &chain_top_buf, &chain_child_buf, &owned_chain_child_message);
     const files_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related, .{ .pretty = true });
     defer std.testing.allocator.free(files_msg);
@@ -8007,13 +8176,11 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     try std.testing.expect(std.mem.indexOf(u8, plain_msg, "/repo/tsconfig.json") == null);
     try std.testing.expect(std.mem.indexOf(u8, plain_msg, "File is matched by 'files' list specified here.") == null);
 
-    const include = [_][]const u8{"src/**/*"};
     var include_related_buf: [2]ts_diagnostics.Related = undefined;
     const include_related = caseOnlyInputRelatedInfo(.{
         .kind = .include,
-        .config_path = "/repo/tsconfig.json",
-        .config_source = config_source,
-        .specs = &include,
+        .config = config,
+        .include_spec_indices = &.{ 0, 0 },
     }, mismatch, &include_related_buf);
     try std.testing.expectEqual(@as(usize, 2), include_related.len);
     try std.testing.expectEqual(@as(u32, 1408), include_related[0].code);
@@ -8025,9 +8192,8 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     defer if (include_owned_chain_child_message) |msg| std.testing.allocator.free(msg);
     const include_chain = try caseOnlyInputReasonChain(std.testing.allocator, .{
         .kind = .include,
-        .config_path = "/repo/tsconfig.json",
-        .config_source = config_source,
-        .specs = &include,
+        .config = config,
+        .include_spec_indices = &.{ 0, 0 },
     }, &include_chain_top_buf, &include_chain_child_buf, &include_owned_chain_child_message);
     try std.testing.expectEqual(@as(usize, 1), include_chain.len);
     try std.testing.expectEqualStrings("The file is in the program because:", include_chain[0].message);
