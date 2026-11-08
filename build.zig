@@ -864,6 +864,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_pending_stream.expectExitCode(1);
         run_home_tool_pending_stream.expectStdOutEqual("waiting for actual write acknowledgment\n");
         home_tool_smoke_step.dependOn(&run_home_tool_pending_stream.step);
+        const run_home_tool_gzip = b.addRunArtifact(home_tool_exe);
+        run_home_tool_gzip.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_gzip.addArgs(&.{ "run", "node_gzip_contract.mjs" });
+        run_home_tool_gzip.expectStdOutEqual("OK real gzip bytes, independent decoding, validation and pipelines\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_gzip.step);
         const run_home_tool_imports_smoke = b.addRunArtifact(home_tool_exe);
         run_home_tool_imports_smoke.setCwd(b.path("packages/runtime/test/tool_modules/package_imports"));
         run_home_tool_imports_smoke.addArgs(&.{ "run", "entry.cjs" });

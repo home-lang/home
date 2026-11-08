@@ -56,6 +56,7 @@ fn runSource(
     tool_runtime.yaml.install(allocator, ctx, global);
     tool_runtime.tty.install(ctx, global);
     tool_runtime.crypto.install(ctx, global);
+    tool_runtime.gzip.install(ctx, global);
     tool_runtime.os.install(ctx, global);
     tool_runtime.fs.install(ctx, global);
     tool_runtime.builtins.install(allocator, ctx);

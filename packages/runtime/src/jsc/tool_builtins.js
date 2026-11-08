@@ -419,6 +419,11 @@
   const streamsFactory = globalThis.__home_tool_streams_factory;
   delete globalThis.__home_tool_streams_factory;
   const streamsApi = streamsFactory(eventsApi, bufferApi.Buffer);
+  const zlibFactory = globalThis.__home_tool_zlib_factory;
+  delete globalThis.__home_tool_zlib_factory;
+  const nativeGzip = globalThis.__home_tool_gzip;
+  delete globalThis.__home_tool_gzip;
+  const zlibApi = zlibFactory(nativeGzip, bufferApi.Buffer, streamsApi.Transform);
   const nativeIsatty = globalThis.__home_tool_isatty;
   delete globalThis.__home_tool_isatty;
   const ttyApi = {
@@ -489,6 +494,8 @@
     },
   };
   builtins.util = utilApi;
+  builtins.zlib = zlibApi;
+  builtins['node:zlib'] = zlibApi;
   builtins['node:util'] = utilApi;
   builtins.readline = readlineApi;
   builtins['node:readline'] = readlineApi;

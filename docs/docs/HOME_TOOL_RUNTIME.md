@@ -123,6 +123,23 @@ are absent or explicitly refused. Unrecognized constructor/helper options are
 refused. Native file-copy witnesses remain failed until fs stream adapters and
 their actual I/O exist; passing in-memory flow does not certify file I/O.
 
+The zlib/node:zlib aliases expose gzipSync, gunzipSync, Gzip and createGzip.
+The native Zig RFC 1952 compressor produces actual compressed binary bytes;
+gunzipSync validates header flags/header CRC, each member's data CRC/ISIZE,
+concatenated members and truncation. Inputs are strings, Buffers or Uint8Arrays.
+Compression input and decompressed output are limited to 2 MiB; compressed input
+is limited to 2 MiB + 1/8 of that + 1024 bytes. Exceeding a limit fails with
+ERR_BUFFER_TOO_LARGE rather than silently returning partial data.
+
+Gzip is a bounded managed Transform: it acknowledges actual input copies,
+retains at most 2 MiB, compresses on finalization and emits the real result.
+It has no incremental output guarantee. Pipeline/finished wait for the actual
+stream operations, and failures destroy stages and propagate their real errors.
+Only default compression options and stream highWaterMark are accepted; flush
+and other options are explicitly refused. Asynchronous compression callbacks,
+Gunzip streams, deflate/raw/Brotli/Zstd and compression parameter/reset APIs are
+absent. Passing bounded in-memory gzip does not certify native file/stdio I/O.
+
 The `crypto`/`node:crypto` adapter exposes synchronous randomBytes with real
 managed Buffer storage. It obtains fresh OS entropy through Zig Io.randomSecure;
 entropy failure throws instead of returning zeros or using a weak seed. Numeric

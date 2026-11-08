@@ -13,6 +13,9 @@ pub fn install(allocator: std.mem.Allocator, ctx: *opaques.JSContextRef) void {
     const streams = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_streams.js"), "home:tool-streams-factory-install", 1) catch return;
     defer streams.deinit(allocator);
     if (streams.exception != null) return;
+    const zlib = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_zlib.js"), "home:tool-zlib-factory-install", 1) catch return;
+    defer zlib.deinit(allocator);
+    if (zlib.exception != null) return;
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_builtins.js"), "home:tool-builtins-install", 1) catch return;
     result.deinit(allocator);
 }
