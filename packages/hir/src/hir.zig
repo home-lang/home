@@ -393,7 +393,8 @@ pub const IdentifierPayload = struct {
 };
 
 pub const LiteralStringPayload = struct {
-    /// Interned string content (after escape resolution).
+    /// Interned raw inner string content. Escape sequences remain authored;
+    /// ts_lexer.appendCookedStringText supplies the semantic value.
     value: StringId,
 };
 
@@ -1379,6 +1380,8 @@ pub const Hir = struct {
             .tuple_label_pool = .empty,
             .cold = ColdData.empty(),
         };
+
+        errdefer self.deinit();
 
         // Reserve index 0 in every hot column for the `none` sentinel.
         try self.kinds.append(gpa, .none);
@@ -4018,4 +4021,14 @@ test "Hir: reserved primitive TypeIds are stable" {
     try t.expectEqual(@as(TypeId, 15), reserved_type_ids.unmodeled);
     try t.expectEqual(@as(TypeId, 16), reserved_type_ids.first_dynamic);
     try t.expect(reserved_type_ids.first_dynamic > reserved_type_ids.unmodeled);
+}
+
+fn hirInitializationLifecycle(allocator: std.mem.Allocator) !void {
+    var hir = try Hir.init(allocator);
+    defer hir.deinit();
+    try std.testing.expectEqual(NodeKind.none, hir.kindOf(none_node_id));
+}
+
+test "Hir: partial initialization frees every allocated column on failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, hirInitializationLifecycle, .{});
 }

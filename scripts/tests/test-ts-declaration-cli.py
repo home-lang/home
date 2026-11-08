@@ -65,10 +65,10 @@ def main() -> None:
         "passed": False,
     }
 
-    def invoke(compiler: list[str], directory: Path, flags: list[str]) -> dict:
+    def invoke(compiler: list[str], directory: Path, flags: list[str], artifact_root: Path | None = None) -> dict:
         result = subprocess.run(compiler + flags, cwd=directory, capture_output=True, text=True, timeout=45)
         record = {"command": compiler + flags, "cwd": str(directory), "exit": result.returncode,
-                  "stdout": result.stdout, "stderr": result.stderr, "artifacts": artifacts(directory)}
+                  "stdout": result.stdout, "stderr": result.stderr, "artifacts": artifacts(artifact_root or directory)}
         records.append(record)
         return record
 
@@ -110,7 +110,79 @@ def main() -> None:
         expected_status = expected_exit if expected_exit is not None else (2 if expected_codes and expected else 1 if expected_codes else 0)
         assert observations[0]["exit"] == expected_status, observations
 
+    def compare_output_origins() -> None:
+        # Compile from outside the project. Existing same-directory fixtures
+        # cannot detect a config-relative path being interpreted as a CLI path.
+        for mode in ("configured", "absolute", "inherited", "override", "build"):
+            for engine, compiler in (("reference", reference), ("home", home)):
+                directory = root / ("output-origin-" + mode) / engine
+                project, caller = directory / "project", directory / "caller"
+                project.mkdir(parents=True, exist_ok=False)
+                caller.mkdir()
+                (project / "index.ts").write_text(SOURCE)
+                (project / "globals.d.ts").write_text(GLOBALS)
+                options = {"noLib": True, "target": "ESNext", "module": "ESNext", "rootDir": ".",
+                           "declaration": True, "outDir": "js", "declarationDir": "types"}
+                config = {"compilerOptions": options, "files": ["globals.d.ts", "index.ts"]}
+                js, dts = project / "js/index.js", project / "types/index.d.ts"
+                if mode == "absolute":
+                    options.update(outDir=str(project / "absolute-js"), declarationDir=str(project / "absolute-types"))
+                    js, dts = project / "absolute-js/index.js", project / "absolute-types/index.d.ts"
+                elif mode == "inherited":
+                    (project / "base").mkdir()
+                    options["rootDir"] = ".."
+                    (project / "base/tsconfig.json").write_text(json.dumps({"compilerOptions": options}))
+                    config = {"extends": "./base/tsconfig.json", "files": ["globals.d.ts", "index.ts"]}
+                    js, dts = project / "base/js/index.js", project / "base/types/index.d.ts"
+                flags = ["-p", str(project / "tsconfig.json"), "--pretty", "false"]
+                if mode == "override":
+                    flags += ["--outDir", "cli-js", "--declarationDir", "cli-types"]
+                    js, dts = caller / "cli-js/index.js", caller / "cli-types/index.d.ts"
+                elif mode == "build":
+                    flags = ["--build", str(project / "tsconfig.json"), "--pretty", "false"]
+                (project / "tsconfig.json").write_text(json.dumps(config))
+                originals = {str(path.relative_to(directory)): path.read_bytes()
+                             for path in project.rglob("*") if path.is_file()}
+                result = invoke(compiler, caller, flags, directory)
+                assert result["exit"] == 0 and result["stdout"] == "" and result["stderr"] == "", result
+                assert result["artifacts"] == sorted(str(path.relative_to(directory)) for path in (js, dts)), result
+                assert js.stat().st_size > 0 and "answer: number" in dts.read_text(), result
+                assert all((directory / name).read_bytes() == data for name, data in originals.items()), result
+
+    def compare_inherited_diagnostic_anchors() -> None:
+        for code, related, own in ((5052, "allowJs", "checkJs"),
+                                   (5069, "declaration", "emitDeclarationOnly")):
+            for mode in ("child-key", "fallback", "no-options"):
+                for engine, compiler in (("reference", reference), ("home", home)):
+                    directory = root / f"inherited-anchor-{code}-{mode}" / engine
+                    directory.mkdir(parents=True, exist_ok=False)
+                    options = {"noLib": True, "target": "ESNext", "module": "ESNext", "noEmit": True,
+                               related: False}
+                    child = {"extends": "./base.json"}
+                    if mode == "child-key":
+                        child["compilerOptions"] = {own: True}
+                    else:
+                        options[own] = True
+                        if mode == "fallback":
+                            child["compilerOptions"] = {"strict": True}
+                    child["files"] = ["globals.d.ts", "index.ts"]
+                    (directory / "base.json").write_text(json.dumps({"compilerOptions": options}, indent=2) + "\n")
+                    (directory / "tsconfig.json").write_text(json.dumps(child, indent=2) + "\n")
+                    (directory / "index.ts").write_text(SOURCE)
+                    (directory / "globals.d.ts").write_text(GLOBALS)
+                    originals = {path.name: path.read_bytes() for path in directory.iterdir()}
+                    result = invoke(compiler, directory, ["-p", "tsconfig.json", "--pretty", "false"])
+                    prefix = ("tsconfig.json(4,5): " if mode == "child-key" else
+                              "tsconfig.json(3,3): " if mode == "fallback" else "")
+                    required = "'allowJs'" if code == 5052 else "'declaration' or option 'composite'"
+                    expected = f"{prefix}error TS{code}: Option '{own}' cannot be specified without specifying option {required}.\n"
+                    assert result["exit"] == (1 if code == 5052 else 2), result
+                    assert result["stdout"] == expected and result["stderr"] == "" and result["artifacts"] == [], result
+                    assert all((directory / name).read_bytes() == data for name, data in originals.items()), result
+
     try:
+        compare_output_origins()
+        compare_inherited_diagnostic_anchors()
         compare("config-only", {}, [], ["types/index.d.ts"])
         compare("cli-override", {"emitDeclarationOnly": False, "declaration": False},
                 ["--declaration", "--emitDeclarationOnly", "--declarationDir", "cli-types"], ["cli-types/index.d.ts"])
@@ -125,6 +197,8 @@ def main() -> None:
         compare("declaration-map", {"sourceMap": True, "declarationMap": True}, [],
                 ["types/index.d.ts", "types/index.d.ts.map"])
         compare("missing-declaration", {"declaration": False, "declarationDir": None, "noEmit": True},
+                [], [], [5069], expected_exit=2)
+        compare("no-selected-outputs", {"declaration": False, "declarationDir": None, "noEmit": False},
                 [], [], [5069], expected_exit=2)
         compare("missing-declaration-list", {"declaration": False, "declarationDir": None, "noEmit": True},
                 ["--listFilesOnly"], [], [5069], expected_exit=1)

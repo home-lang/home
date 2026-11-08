@@ -464,6 +464,22 @@ pub const JsonParseDiagnostic = struct {
     message: []const u8,
 };
 
+pub const FileSpecKind = enum { files, include };
+
+/// A file-list entry's original source, borrowed for the config's lifetime.
+pub const FileSpecSource = struct {
+    file_path: []const u8,
+    source: []const u8,
+    span: jsonc.Span,
+};
+
+const FileSpecMetadata = struct {
+    /// Null is unbound; an empty bound path explicitly means unknown.
+    file_path: ?[]const u8 = null,
+    source: []const u8,
+    spans: []const jsonc.Span,
+};
+
 pub const TsConfig = struct {
     /// The path this config came from (set by the loader; empty when
     /// parsed via `parseString`).
@@ -483,6 +499,8 @@ pub const TsConfig = struct {
     /// `include`: glob patterns. `null` if not present (default
     /// `["**/*"]` if neither `files` nor `include` is set).
     include: ?[][]const u8,
+    files_source: ?FileSpecMetadata = null,
+    include_source: ?FileSpecMetadata = null,
     /// `exclude`: glob patterns. `null` if not present.
     exclude: ?[][]const u8,
     /// `references`: project-references entries. Phase 9 fills in.
@@ -527,6 +545,40 @@ pub const TsConfig = struct {
     /// object assignment, so these entries clear a value inherited from a
     /// parent even though the typed field itself is `null`.
     compiler_option_unsets: [][]const u8 = &.{},
+
+    /// Source metadata follows the filtered file-spec list's indices.
+    /// Synthesized specs without source metadata have no source reference.
+    pub fn fileSpecSource(self: TsConfig, kind: FileSpecKind, index: usize) ?FileSpecSource {
+        const values = switch (kind) {
+            .files => self.files,
+            .include => self.include,
+        } orelse return null;
+        const metadata = switch (kind) {
+            .files => self.files_source,
+            .include => self.include_source,
+        } orelse return null;
+        if (index >= values.len or index >= metadata.spans.len) return null;
+        return .{
+            .file_path = metadata.file_path orelse self.file_path,
+            .source = metadata.source,
+            .span = metadata.spans[index],
+        };
+    }
+
+    /// Bind a newly loaded source before inherited values are rebased.
+    /// Later active-path changes preserve an already bound declaring owner.
+    pub fn setFilePath(self: *TsConfig, path: []const u8) void {
+        self.file_path = path;
+        self.bindFileSpecSources(path);
+    }
+
+    fn bindFileSpecSources(self: *TsConfig, path: []const u8) void {
+        inline for (.{ "files_source", "include_source" }) |field| {
+            if (@field(self.*, field)) |*metadata| {
+                if (metadata.file_path == null) metadata.file_path = path;
+            }
+        }
+    }
 
     /// Return the config-file exclude specs used for project discovery.
     /// An explicit `exclude` list is authoritative, including an empty list.
@@ -930,11 +982,9 @@ pub const TsConfig = struct {
             }
         }
 
-        // TypeScript visits every matching JSON property in source order.
-        // A dependency error such as checkJs=true/allowJs=false therefore
-        // appears at both option keys, not only the first one. When neither
-        // key exists locally (for example after inheritance), use the
-        // compilerOptions key as the single fallback anchor.
+        // TypeScript anchors an option-dependency diagnostic at the first
+        // matching option key in source order. When neither key exists
+        // locally, use the compilerOptions key as the fallback anchor.
         var located: std.ArrayListUnmanaged(ValidationDiagnostic) = .empty;
         errdefer located.deinit(gpa);
         for (diags.items) |diagnostic| {
@@ -945,11 +995,9 @@ pub const TsConfig = struct {
                         !std.mem.eql(u8, location.name, diagnostic.related_field)) continue;
                     var copy = diagnostic;
                     copy.location = location.key;
-                    // All entries share one message allocation; the first
-                    // returned entry remains its sole owner.
-                    if (found) copy.owns_message = false;
                     try located.append(gpa, copy);
                     found = true;
+                    break;
                 }
                 if (found) continue;
                 var fallback = diagnostic;
@@ -1929,9 +1977,9 @@ pub fn parseString(
                 cfg.extends = arr;
             },
             .array => |arr| {
-                const out = try arena.alloc([]const u8, arr.len);
+                const out = try arena.alloc([]const u8, arr.items.len);
                 var count: usize = 0;
-                for (arr, 0..) |item, index| {
+                for (arr.items, 0..) |item, index| {
                     if (item.asString()) |value| {
                         out[count] = value;
                         count += 1;
@@ -1961,7 +2009,9 @@ pub fn parseString(
             // Root file lists treat null as absent, so an extended value is
             // still inherited.
         } else if (v.asArray() != null) {
-            cfg.files = try parseStringArray(arena, v, "files", &config_diags);
+            var spans: []const jsonc.Span = &.{};
+            cfg.files = try parseStringArray(arena, v, "files", &config_diags, &spans);
+            cfg.files_source = .{ .source = source, .spans = spans };
         } else {
             try recordOptionTypeMismatch(arena, &config_diags, "files", "Array");
         }
@@ -1970,7 +2020,9 @@ pub fn parseString(
         if (v == .null_) {
             // See `files` above.
         } else if (v.asArray() != null) {
-            cfg.include = try parseStringArray(arena, v, "include", &config_diags);
+            var spans: []const jsonc.Span = &.{};
+            cfg.include = try parseStringArray(arena, v, "include", &config_diags, &spans);
+            cfg.include_source = .{ .source = source, .spans = spans };
         } else {
             try recordOptionTypeMismatch(arena, &config_diags, "include", "Array");
         }
@@ -1979,7 +2031,7 @@ pub fn parseString(
         if (v == .null_) {
             // See `files` above.
         } else if (v.asArray() != null) {
-            cfg.exclude = try parseStringArray(arena, v, "exclude", &config_diags);
+            cfg.exclude = try parseStringArray(arena, v, "exclude", &config_diags, null);
         } else {
             try recordOptionTypeMismatch(arena, &config_diags, "exclude", "Array");
         }
@@ -2106,8 +2158,8 @@ fn collectRootInvalidJsonValueDiagnostics(
 fn containsInvalidJsonValue(value: jsonc.Value) bool {
     return switch (value) {
         .invalid => true,
-        .array => |items| blk: {
-            for (items) |item| {
+        .array => |array| blk: {
+            for (array.items) |item| {
                 if (containsInvalidJsonValue(item)) break :blk true;
             }
             break :blk false;
@@ -2138,13 +2190,19 @@ fn parseStringArray(
     v: jsonc.Value,
     option: []const u8,
     diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+    source_spans: ?*[]const jsonc.Span,
 ) ![][]const u8 {
+    if (source_spans) |spans| spans.* = &.{};
     const arr = v.asArray() orelse return &.{};
     const out = try arena.alloc([]const u8, arr.len);
+    const spans: ?[]jsonc.Span = if (source_spans != null) try arena.alloc(jsonc.Span, arr.len) else null;
     var n: usize = 0;
     for (arr, 0..) |item, index| {
         if (item.asString()) |s| {
             out[n] = s;
+            // Only parsed root arrays request metadata. Their array spans
+            // retain raw indices even when null or invalid entries are filtered.
+            if (spans) |locations| locations[n] = v.arraySpan(index).?;
             n += 1;
         } else if (item != .null_) {
             // Null list elements convert to undefined and are filtered out
@@ -2153,6 +2211,7 @@ fn parseStringArray(
             try recordOptionElementTypeMismatch(arena, diags, option, "string", index);
         }
     }
+    if (source_spans) |locations| locations.* = spans.?[0..n];
     return out[0..n];
 }
 
@@ -2467,7 +2526,7 @@ fn fillCompilerOptions(
                 if (value == .null_) {
                     try unsets.append(arena, entry.name);
                 } else if (value.asArray() != null) {
-                    @field(co, entry.field) = try parseStringArray(arena, value, entry.name, diags);
+                    @field(co, entry.field) = try parseStringArray(arena, value, entry.name, diags, null);
                 } else {
                     try recordOptionTypeMismatch(arena, diags, entry.name, "Array");
                     try unsets.append(arena, entry.name);
@@ -2624,6 +2683,9 @@ fn fillCompilerOptions(
 /// `extends` chain — base = parent, child = current file.
 pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfig {
     var merged = base;
+    merged.bindFileSpecSources(base.file_path);
+    var child_sources = child;
+    child_sources.bindFileSpecSources(child.file_path);
     // Compiler options: child overrides base on every set field. A known
     // option that converted to undefined also overrides: TypeScript merges
     // these objects with `assign`, so `{ allowJs: null }` clears an inherited
@@ -2665,19 +2727,12 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
     }
     merged.compiler_options.extra = combined;
 
-    var combined_locations: std.ArrayListUnmanaged(CompilerOptionLocation) = .empty;
-    for (base.compiler_option_locations) |base_location| {
-        var shadowed = false;
-        for (child.compiler_option_locations) |child_location| {
-            if (std.mem.eql(u8, child_location.name, base_location.name)) {
-                shadowed = true;
-                break;
-            }
-        }
-        if (!shadowed) try combined_locations.append(arena, base_location);
-    }
-    try combined_locations.appendSlice(arena, child.compiler_option_locations);
-    merged.compiler_option_locations = try combined_locations.toOwnedSlice(arena);
+    // Effective values inherit, but program option diagnostics are anchored
+    // in the active child's syntax. Base coordinates cannot describe that
+    // source, including the compilerOptions fallback when no key matches.
+    merged.file_path = child.file_path;
+    merged.compiler_option_locations = child.compiler_option_locations;
+    merged.compiler_options_key_location = child.compiler_options_key_location;
 
     inline for (@typeInfo(HomeOptions).@"struct".field_names) |field_name| {
         const child_value = @field(child.home_options, field_name);
@@ -2687,8 +2742,14 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
     }
 
     // Top-level keys: child overrides if set.
-    if (child.files) |f| merged.files = f;
-    if (child.include) |f| merged.include = f;
+    if (child.files) |f| {
+        merged.files = f;
+        merged.files_source = child_sources.files_source;
+    }
+    if (child.include) |f| {
+        merged.include = f;
+        merged.include_source = child_sources.include_source;
+    }
     if (child.exclude) |f| merged.exclude = f;
     if (child.references.len > 0) merged.references = child.references;
     if (child.extends.len > 0) merged.extends = child.extends;
@@ -3666,7 +3727,7 @@ test "tsconfig.validate: dependent options report TS5052" {
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
-    try t.expectEqual(@as(usize, 5), diags.len);
+    try t.expectEqual(@as(usize, 4), diags.len);
     try t.expectEqual(@as(u32, 5052), diags[0].code);
     try t.expectEqualStrings("Option 'strictPropertyInitialization' cannot be specified without specifying option 'strictNullChecks'.", diags[0].message);
     try t.expectEqual(@as(u32, 5052), diags[1].code);
@@ -3674,9 +3735,7 @@ test "tsconfig.validate: dependent options report TS5052" {
     try t.expectEqual(@as(u32, 5052), diags[2].code);
     try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diags[2].message);
     try t.expectEqual(@as(u32, 5052), diags[3].code);
-    try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diags[3].message);
-    try t.expectEqual(@as(u32, 5052), diags[4].code);
-    try t.expectEqualStrings("Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'.", diags[4].message);
+    try t.expectEqualStrings("Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'.", diags[3].message);
 }
 
 test "tsconfig.validate: checkJs implies allowJs when allowJs is omitted" {
@@ -3714,22 +3773,21 @@ test "tsconfig.validate: checkJs implies allowJs when allowJs is omitted" {
     try t.expectEqualStrings("Option 'allowJs' cannot be specified with option 'isolatedDeclarations'.", isolated_diags[0].message);
 }
 
-test "tsconfig.validate: dependent-option diagnostics use every explicit option key" {
+test "tsconfig.validate: dependent-option diagnostics use the first explicit matching key" {
     inline for (.{
-        .{ "{\"compilerOptions\":{\"allowJs\":false,\"checkJs\":true}}", "allowJs", "checkJs" },
-        .{ "{\"compilerOptions\":{\"checkJs\":true,\"allowJs\":false}}", "checkJs", "allowJs" },
+        .{ "{\"compilerOptions\":{\"allowJs\":false,\"checkJs\":true}}", "allowJs", @as(u32, 5052) },
+        .{ "{\"compilerOptions\":{\"checkJs\":true,\"allowJs\":false}}", "checkJs", @as(u32, 5052) },
+        .{ "{\"compilerOptions\":{\"declaration\":false,\"emitDeclarationOnly\":true}}", "declaration", @as(u32, 5069) },
+        .{ "{\"compilerOptions\":{\"emitDeclarationOnly\":true,\"declaration\":false}}", "emitDeclarationOnly", @as(u32, 5069) },
     }) |case| {
         var arena = std.heap.ArenaAllocator.init(t.allocator);
         defer arena.deinit();
         const config = try parseString(t.allocator, arena.allocator(), case[0]);
         const diags = try config.validate(t.allocator);
         defer freeValidationDiagnostics(t.allocator, diags);
-        try t.expectEqual(@as(usize, 2), diags.len);
-        for (diags, [_][]const u8{ case[1], case[2] }) |diag, name| {
-            try t.expectEqual(@as(u32, 5052), diag.code);
-            try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diag.message);
-            try t.expectEqualDeep(config.compilerOptionKeyLocation(name), diag.location);
-        }
+        try t.expectEqual(@as(usize, 1), diags.len);
+        try t.expectEqual(case[2], diags[0].code);
+        try t.expectEqualDeep(config.compilerOptionKeyLocation(case[1]), diags[0].location);
     }
 }
 
@@ -5243,4 +5301,94 @@ test "tsconfig: JSON defaults preserve explicit false and modern resolution mode
     try t.expect(effectiveResolveJsonModule(.{}));
     try t.expect(effectiveResolveJsonModule(.{ .module = .nodenext }));
     try t.expect(!effectiveResolveJsonModule(.{ .module = .node16 }));
+}
+
+test "tsconfig.merge: dependency diagnostics belong to the active child source" {
+    inline for (.{
+        .{ "allowJs", "checkJs", @as(u32, 5052) },
+        .{ "declaration", "emitDeclarationOnly", @as(u32, 5069) },
+    }) |options| {
+        for ([_][]const u8{ "key", "fallback", "none" }) |mode| {
+            var arena = std.heap.ArenaAllocator.init(t.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const base_source = try std.fmt.allocPrint(a, "{{\n\n\n  \"compilerOptions\": {{ \"{s}\": false, \"{s}\": true }}\n}}", .{ options[0], options[1] });
+            var base = try parseString(t.allocator, a, base_source);
+            base.file_path = "/repo/base.json";
+            const child_source = if (std.mem.eql(u8, mode, "key"))
+                try std.fmt.allocPrint(a, "{{\n  \"compilerOptions\": {{\n    \"{s}\": true\n  }}\n}}", .{options[1]})
+            else if (std.mem.eql(u8, mode, "fallback"))
+                "{\n  \"compilerOptions\": {}\n}"
+            else
+                "{}";
+            var child = try parseString(t.allocator, a, child_source);
+            child.file_path = "/repo/tsconfig.json";
+            const merged = try merge(a, base, child);
+            try t.expectEqualStrings("/repo/tsconfig.json", merged.file_path);
+            const diagnostics = try merged.validate(t.allocator);
+            defer freeValidationDiagnostics(t.allocator, diagnostics);
+            try t.expectEqual(@as(usize, 1), diagnostics.len);
+            try t.expectEqual(options[2], diagnostics[0].code);
+            if (std.mem.eql(u8, mode, "none")) {
+                try t.expect(diagnostics[0].location == null);
+            } else {
+                const location = diagnostics[0].location.?;
+                try t.expectEqual(@as(u32, if (std.mem.eql(u8, mode, "key")) 3 else 2), location.line);
+                try t.expectEqual(@as(u32, if (std.mem.eql(u8, mode, "key")) 4 else 2), location.column);
+            }
+        }
+    }
+}
+
+test "tsconfig: file spec sources follow filtered files and include entries" {
+    inline for (.{ FileSpecKind.files, FileSpecKind.include }) |kind| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const source = try std.fmt.allocPrint(arena.allocator(), "{{\"{s}\":[null,\"src/\\u0066oo.ts\",null,\"src/Foo.ts\"]}}", .{@tagName(kind)});
+        var config = try parseString(t.allocator, arena.allocator(), source);
+        config.file_path = "/repo/base.json";
+        const first = config.fileSpecSource(kind, 0) orelse return error.TestExpectedSome;
+        try t.expectEqualStrings("/repo/base.json", first.file_path);
+        try t.expectEqualStrings(source, first.source);
+        try t.expectEqualStrings("\"src/\\u0066oo.ts\"", first.source[first.span.start..first.span.end]);
+        const second = config.fileSpecSource(kind, 1) orelse return error.TestExpectedSome;
+        try t.expectEqualStrings("\"src/Foo.ts\"", second.source[second.span.start..second.span.end]);
+        try t.expect(config.fileSpecSource(kind, 2) == null);
+    }
+}
+
+test "tsconfig.merge: file spec sources retain their declaring owner" {
+    inline for (.{ FileSpecKind.files, FileSpecKind.include }) |kind| {
+        for ([_][]const u8{ "/repo/base.json", "" }) |base_path| {
+            var arena = std.heap.ArenaAllocator.init(t.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const base_source = try std.fmt.allocPrint(a, "{{\"{s}\":[\"src/base.ts\"]}}", .{@tagName(kind)});
+            var base = try parseString(t.allocator, a, base_source);
+            base.file_path = base_path;
+            var child = try parseString(t.allocator, a, "{}");
+            child.file_path = "/repo/child.json";
+            const inherited = try merge(a, base, child);
+            const origin = inherited.fileSpecSource(kind, 0) orelse return error.TestExpectedSome;
+            try t.expectEqualStrings(base_path, origin.file_path);
+            try t.expectEqualStrings(base_source, origin.source);
+            try t.expectEqualStrings("\"src/base.ts\"", origin.source[origin.span.start..origin.span.end]);
+
+            const child_source = try std.fmt.allocPrint(a, "{{\"{s}\":[\"src/child.ts\"]}}", .{@tagName(kind)});
+            var explicit = try parseString(t.allocator, a, child_source);
+            explicit.file_path = child.file_path;
+            const overridden = try merge(a, base, explicit);
+            const own = overridden.fileSpecSource(kind, 0) orelse return error.TestExpectedSome;
+            try t.expectEqualStrings(child.file_path, own.file_path);
+            try t.expectEqualStrings(child_source, own.source);
+            try t.expectEqualStrings("\"src/child.ts\"", own.source[own.span.start..own.span.end]);
+
+            var synthetic = try parseString(t.allocator, a, "{}");
+            synthetic.file_path = child.file_path;
+            var names = [_][]const u8{"virtual.ts"};
+            @field(synthetic, @tagName(kind)) = &names;
+            const replaced = try merge(a, base, synthetic);
+            try t.expect(replaced.fileSpecSource(kind, 0) == null);
+        }
+    }
 }

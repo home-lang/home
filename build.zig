@@ -862,6 +862,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_yaml.addArgs(&.{ "run", "yaml_entry.cjs" });
         run_home_tool_yaml.expectStdOutEqual("OK home-tool native YAML parsing\n");
         home_tool_smoke_step.dependOn(&run_home_tool_yaml.step);
+        const run_home_tool_child_env = b.addRunArtifact(home_tool_exe);
+        run_home_tool_child_env.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_child_env.addArgs(&.{ "run", "node_child_env_entry.cjs" });
+        run_home_tool_child_env.expectStdOutEqual("ordinary-configured\nprototype-configured\nOK home-tool own environment keys\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_child_env.step);
     } else {
         const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);
@@ -4088,6 +4093,16 @@ pub fn build(b: *std.Build) void {
     const ts_lexer_tests = b.addTest(.{ .root_module = ts_lexer_pkg });
     const run_ts_lexer_tests = b.addRunArtifact(ts_lexer_tests);
     dependOnTest(test_step, &run_ts_lexer_tests.step, test_filter, "ts_lexer");
+
+    const ts_source_edit_pkg = createPackage(b, "packages/ts_parser/src/source_edit.zig", target, optimize, zig_test_framework);
+    ts_source_edit_pkg.addImport("ts_lexer", ts_lexer_pkg);
+    ts_source_edit_pkg.addImport("hir", hir_pkg);
+    ts_source_edit_pkg.addImport("string_interner", string_interner_pkg);
+    const ts_source_edit_tests = b.addTest(.{ .root_module = ts_source_edit_pkg, .filters = &.{"source edit:"} });
+    const ts_source_edit_step = b.step("test:ts-source-edit", "Preserve authored TypeScript config bytes during property edits");
+    const run_ts_source_edit_tests = b.addRunArtifact(ts_source_edit_tests);
+    ts_source_edit_step.dependOn(&run_ts_source_edit_tests.step);
+    dependOnTest(test_step, &run_ts_source_edit_tests.step, test_filter, "ts_parser_source_edit");
 
     const ts_parser_tests = b.addTest(.{ .root_module = ts_parser_pkg });
     const run_ts_parser_tests = b.addRunArtifact(ts_parser_tests);

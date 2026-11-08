@@ -9594,7 +9594,7 @@ test "Program: unsupported merged namespace leaf cannot publish a partial functi
     ;
     const second =
         \\declare module "pkg" {
-        \\  export namespace Nested { export type Bad = `item-${string}`; }
+        \\  export namespace Nested { export type Bad = Uppercase<string>; }
         \\}
     ;
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
@@ -25729,7 +25729,7 @@ test "Program: bare ambient import types and dynamic imports do not skip the dec
     }
 }
 
-test "Program: unsupported template value graphs remain projection-only" {
+test "Program: template value graphs retain complete source-owned expressions" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
@@ -25737,6 +25737,23 @@ test "Program: unsupported template value graphs remain projection-only" {
     var program = Program.init(T.allocator, &resolver);
     defer program.deinit();
     _ = try program.add("/owner.ts", "export type Box = `item-${string}`;export declare function make():Box;");
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    try T.expectEqual(@as(usize, 1), graph.values.len);
+    try T.expectEqual(@as(usize, 1), graph.types.len);
+    try T.expect(!graph.values[0].projection_only);
+    try T.expect(!graph.types[0].projection_only);
+}
+test "Program: unsupported intrinsic string graphs remain projection-only" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.ts", "export type Box = Uppercase<string>;export declare function make():Box;");
     try program.prepareNameStore();
     try program.prepareFiles(.{ .bind_only = true });
     var graph = try program.collectProgramDeclarations();
@@ -26044,5 +26061,112 @@ test "Program: imported heritage meaning survives an unprojectable member" {
             try expectCompilationHasDiagnosticCode(invalid_compilation, 2304);
             try expectCompilationHasDiagnosticCode(invalid_compilation, 2749);
         }
+    }
+}
+
+test "Program: imported readonly template index signatures keep concrete fields and mutable domains" {
+    const owner_source =
+        \\export interface Attributes {
+        \\  [key: string]: string;
+        \\  readonly [key: `data-${string}`]: string;
+        \\  'data-fixed': string;
+        \\}
+        \\export declare const attributes: Attributes;
+    ;
+    const consumer_source =
+        \\import { attributes } from './owner';
+        \\attributes.mutable = 'ok';
+        \\attributes['data-fixed'] = 'ok';
+        \\attributes['data-\u0066ixed'] = 'ok';
+        \\declare const dataKey: `data-${string}`;
+        \\attributes['data-other'] = 'bad';
+        \\attributes[dataKey] = 'bad';
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.ts", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const owner = try p.add("/owner.ts", owner_source);
+    const consumer = try p.add("/consumer.ts", consumer_source);
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), p.fileById(owner).compilation.?.diagnostics.items.len);
+    const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+    if (diagnostics.len != 2) {
+        for (diagnostics) |diagnostic| std.debug.print("TS{d} at {d}: {s}\n", .{ diagnostic.code, diagnostic.pos, diagnostic.message });
+    }
+    try T.expectEqual(@as(usize, 2), diagnostics.len);
+    for (diagnostics, 0..) |diagnostic, index| {
+        try T.expectEqual(@as(u32, 2542), diagnostic.code);
+        const expected = [_][]const u8{ "attributes['data-other']", "attributes[dataKey]" };
+        try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, consumer_source, expected[index]).?)), diagnostic.pos);
+    }
+}
+
+test "Program: imported template value graphs preserve generic and escaped interpolation constraints" {
+    const Case = struct { owner: []const u8, precise: []const u8, wrong: []const u8 };
+    for ([_]Case{
+        .{ .owner = "export type Box = `item-${string}`;export declare function make():Box;", .precise = "`item-${string}`", .wrong = "`other-${string}`" },
+        .{ .owner = "export type Box<T extends string> = `item-${T}`;export declare function make():Box<'ready'>;", .precise = "'item-ready'", .wrong = "'item-other'" },
+        .{ .owner = "export type Box = `it\\u0065m-${string}`;export declare function make():Box;", .precise = "`item-${string}`", .wrong = "`other-${string}`" },
+    }) |case| {
+        const consumer_source = try std.fmt.allocPrint(T.allocator, "import {{make}} from './owner'; const good:{s}=make(); const bad:{s}=make(); void good; void bad;", .{ case.precise, case.wrong });
+        defer T.allocator.free(consumer_source);
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.ts", case.owner);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const owner = try program.add("/owner.ts", case.owner);
+        const consumer = try program.add("/consumer.ts", consumer_source);
+        try program.compileAll(.{
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        });
+        try T.expectEqual(@as(usize, 0), program.fileById(owner).compilation.?.diagnostics.items.len);
+        const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+        const bad_pos: u32 = @intCast(std.mem.indexOf(u8, consumer_source, "bad:").?);
+        if (diagnostics.len != 1 or diagnostics[0].pos != bad_pos) {
+            for (diagnostics) |diagnostic| std.debug.print("TS{d} at {d}: {s}\n", .{ diagnostic.code, diagnostic.pos, diagnostic.message });
+        }
+        try T.expectEqual(@as(usize, 1), diagnostics.len);
+        try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+        try T.expectEqual(bad_pos, diagnostics[0].pos);
+    }
+}
+
+test "program: config graph retains file spec declaring sources across rebasing" {
+    inline for (.{ tsconfig_mod.FileSpecKind.files, tsconfig_mod.FileSpecKind.include }) |kind| {
+        var arena = std.heap.ArenaAllocator.init(T.allocator);
+        defer arena.deinit();
+        var fs = ts_resolver.VirtualFs.init(T.allocator);
+        defer fs.deinit();
+        const base_source = try std.fmt.allocPrint(arena.allocator(), "{{\"{s}\":[null,\"src/\\u0066oo.ts\"]}}", .{@tagName(kind)});
+        try fs.addFile("/repo/base/base.json", base_source);
+        try fs.addFile("/repo/child/tsconfig.json", "{\"extends\":\"../base/base.json\"}");
+        const resolution = try config_graph.resolve(T.allocator, arena.allocator(), fs.fs(), "/repo/child/tsconfig.json");
+        try T.expect(resolution.failure == null);
+        const config = resolution.config orelse return error.TestExpectedSome;
+        try T.expectEqualStrings("/repo/child/tsconfig.json", config.file_path);
+        const values = @field(config, @tagName(kind)).?;
+        try T.expectEqual(@as(usize, 1), values.len);
+        try T.expectEqualStrings("../base/src/foo.ts", values[0]);
+        const origin = config.fileSpecSource(kind, 0) orelse return error.TestExpectedSome;
+        try T.expectEqualStrings("/repo/base/base.json", origin.file_path);
+        try T.expectEqualStrings(base_source, origin.source);
+        try T.expectEqualStrings("\"src/\\u0066oo.ts\"", origin.source[origin.span.start..origin.span.end]);
     }
 }

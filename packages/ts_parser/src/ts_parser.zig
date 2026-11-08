@@ -37,6 +37,7 @@ pub const Hir = hir_mod.Hir;
 pub const NodeId = hir_mod.NodeId;
 pub const Span = hir_mod.Span;
 
+pub const source_edit = @import("source_edit.zig");
 pub const jsdoc = @import("jsdoc.zig");
 test {
     _ = jsdoc;
@@ -415,6 +416,21 @@ pub const Parser = struct {
     /// recovery because one bad JSX statement commonly leaves several
     /// expression-shaped token tails before the next synchronization point.
     recover_source_after_partial_jsx: bool,
+
+    /// The scanner can report errors in text later claimed by a contextual
+    /// regex/template rescan. Keep this source interpretation shared by every
+    /// front-end consumer; genuine syntax errors remain diagnostics.
+    pub fn suppressesScannerDiagnostic(self: *const Parser, code: u32, position: u32) bool {
+        if (code == 1127) for (self.regex_rescan_spans.items) |span_| {
+            if (position >= span_.start and position < span_.end) return true;
+        };
+        if (ts_lexer.diagnostics.scannerDiagnosticIsInvalidStringTemplateEscape(.{ .code = code, .message = "" })) {
+            for (self.tagged_template_spans.items) |span_| {
+                if (position >= span_.start and position <= span_.end) return true;
+            }
+        }
+        return false;
+    }
 
     pub fn init(
         gpa: std.mem.Allocator,

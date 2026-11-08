@@ -2275,58 +2275,18 @@ pub fn prepareSource(
         });
         c.has_errors = true;
     }
-    // Drop any scanner-emitted TS1127 ("Invalid character.") diagnostics
-    // that fall inside a regex span the parser later claimed via
-    // `parseRegexLiteralExpression`. The scanner walks linearly and
-    // didn't know `\` (and other stray bytes) actually belonged to a
-    // regex body. Mirrors tsc's `reScanSlashToken` flow.
-    if (parser.regex_rescan_spans.items.len > 0) {
-        var idx: usize = 0;
-        while (idx < c.diagnostics.items.len) {
-            const d = c.diagnostics.items[idx];
-            if (d.phase == .lex and d.code == 1127) {
-                var drop = false;
-                for (parser.regex_rescan_spans.items) |sp| {
-                    if (d.pos >= sp.start and d.pos < sp.end) {
-                        drop = true;
-                        break;
-                    }
-                }
-                if (drop) {
-                    gpa.free(d.message);
-                    _ = c.diagnostics.orderedRemove(idx);
-                    continue;
-                }
+    // Contextual rescans belong to the parser. The editor and compiler driver
+    // must suppress the same lexer artifacts after that context is known.
+    {
+        var index: usize = 0;
+        while (index < c.diagnostics.items.len) {
+            const diagnostic = c.diagnostics.items[index];
+            if (diagnostic.phase == .lex and parser.suppressesScannerDiagnostic(diagnostic.code, diagnostic.pos)) {
+                gpa.free(diagnostic.message);
+                _ = c.diagnostics.orderedRemove(index);
+                continue;
             }
-            idx += 1;
-        }
-    }
-    // A template's tag is parser context, so the initial scanner cannot know
-    // whether invalid escape sequences should produce cooked-text errors.
-    // Drop only those lexer diagnostics inside spans the parser later claimed
-    // as tagged templates, matching tsgo's tagged-template rescan mode.
-    if (parser.tagged_template_spans.items.len > 0) {
-        var idx: usize = 0;
-        while (idx < c.diagnostics.items.len) {
-            const d = c.diagnostics.items[idx];
-            if (d.phase == .lex and scannerDiagnosticIsInvalidStringTemplateEscape(.{
-                .code = d.code,
-                .message = d.message,
-            })) {
-                var drop = false;
-                for (parser.tagged_template_spans.items) |sp| {
-                    if (d.pos >= sp.start and d.pos <= sp.end) {
-                        drop = true;
-                        break;
-                    }
-                }
-                if (drop) {
-                    gpa.free(d.message);
-                    _ = c.diagnostics.orderedRemove(idx);
-                    continue;
-                }
-            }
-            idx += 1;
+            index += 1;
         }
     }
     try appendJsxDirectiveDiagnostics(gpa, c, source, options);
@@ -3552,138 +3512,11 @@ fn isDiagnosticInsideJsxText(source: []const u8, pos: u32) bool {
     return false;
 }
 
-const NormalizedScannerDiagnostic = struct {
-    code: u32 = 0,
-    message: []const u8,
-};
-
-fn scannerDiagnosticIsUnexpectedCharacter(message: []const u8) bool {
-    return std.mem.eql(u8, message, "unexpected character") or
-        std.mem.eql(u8, message, "Invalid character.");
-}
-
-fn scannerDiagnosticIsSuppressedInJsxText(message: []const u8) bool {
-    return scannerDiagnosticIsUnexpectedCharacter(message) or
-        std.mem.eql(u8, message, "An identifier or keyword cannot immediately follow a numeric literal.");
-}
-
-fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
-    if (scannerDiagnosticIsUnexpectedCharacter(message)) {
-        return .{ .code = 1127, .message = "Invalid character." };
-    }
-    // The scanner emits a lowercase "unterminated template literal"
-    // message when it walks off the end of a backtick literal.
-    // Upstream tsc reports this as TS1160 with sentence-case
-    // ("Unterminated template literal.") — matching that here so
-    // exact-baseline conformance fixtures like
-    // `labeledStatementDeclarationListInLoopNoCrash3/4` pass.
-    if (std.mem.eql(u8, message, "unterminated template literal")) {
-        return .{ .code = 1160, .message = "Unterminated template literal." };
-    }
-    // The scanner emits a lowercase "unterminated string literal" (with
-    // an optional " at EOF" suffix when it walks past EOF without seeing
-    // the closing quote). tsc reports both shapes uniformly as TS1002
-    // with sentence-case ("Unterminated string literal.") — match that
-    // exactly so exact-baseline fixtures like `scannerStringLiterals`
-    // ratchet through.
-    if (std.mem.eql(u8, message, "unterminated string literal") or
-        std.mem.eql(u8, message, "unterminated string literal at EOF"))
-    {
-        return .{ .code = 1002, .message = "Unterminated string literal." };
-    }
-    // TS1126 — backslash immediately before EOF inside a string
-    // literal. tsc emits "Unexpected end of text." instead of the
-    // generic TS1002 for this specific shape. Mirrors
-    // `unterminatedStringLiteralWithBackslash1.ts(1,3)`.
-    if (std.mem.eql(u8, message, "Unexpected end of text.")) {
-        return .{ .code = 1126, .message = "Unexpected end of text." };
-    }
-    if (std.mem.eql(u8, message, "'*/' expected") or std.mem.eql(u8, message, "'*/' expected.")) {
-        return .{ .code = 1010, .message = "'*/' expected." };
-    }
-    if (std.mem.eql(u8, message, "Numeric separators are not allowed here.")) {
-        return .{ .code = 6188, .message = message };
-    }
-    if (std.mem.eql(u8, message, "Multiple consecutive numeric separators are not permitted.")) {
-        return .{ .code = 6189, .message = message };
-    }
-    if (std.mem.eql(u8, message, "An identifier or keyword cannot immediately follow a numeric literal.")) {
-        return .{ .code = 1351, .message = message };
-    }
-    if (std.mem.eql(u8, message, "A bigint literal cannot use exponential notation.")) {
-        return .{ .code = 1352, .message = message };
-    }
-    if (std.mem.eql(u8, message, "A bigint literal must be an integer.")) {
-        return .{ .code = 1353, .message = message };
-    }
-    if (std.mem.eql(u8, message, "Digit expected.")) {
-        return .{ .code = 1124, .message = message };
-    }
-    if (std.mem.eql(u8, message, "Hexadecimal digit expected.")) {
-        return .{ .code = 1125, .message = message };
-    }
-    if (std.mem.eql(u8, message, "Binary digit expected.")) {
-        return .{ .code = 1177, .message = message };
-    }
-    if (std.mem.eql(u8, message, "Octal digit expected.")) {
-        return .{ .code = 1178, .message = message };
-    }
-    if (std.mem.eql(u8, message, "Unterminated Unicode escape sequence.")) {
-        return .{ .code = 1199, .message = message };
-    }
-    // TS1198 — `\u{N}` extended unicode escape whose codepoint
-    // exceeds the Unicode Scalar Value cap (0x10FFFF). Scanner
-    // emits at the first hex digit so `(line, col)` matches the
-    // upstream baseline (`unicodeExtendedEscapesIn{Strings,Templates}07/12`).
-    if (std.mem.eql(u8, message, "An extended Unicode escape value must be between 0x0 and 0x10FFFF inclusive.")) {
-        return .{ .code = 1198, .message = message };
-    }
-    // Sentence-case + TS1002 for the scanner's lowercase
-    // "unterminated string literal" messages. Mirrors tsc which
-    // emits `Unterminated string literal.` when a string token
-    // hits EOL/EOF without its closing quote — fixture
-    // `unicodeExtendedEscapesInStrings25` baselines this exact
-    // text/code pair.
-    if (std.mem.eql(u8, message, "unterminated string literal") or
-        std.mem.eql(u8, message, "unterminated string literal at EOF"))
-    {
-        return .{ .code = 1002, .message = "Unterminated string literal." };
-    }
-    if (std.mem.eql(u8, message, "Unexpected '}'. Did you mean to escape it with backslash?")) {
-        return .{ .code = 1508, .message = message };
-    }
-    if (std.mem.startsWith(u8, message, "Octal escape sequences are not allowed. Use the syntax ")) {
-        return .{ .code = 1487, .message = message };
-    }
-    if (std.mem.startsWith(u8, message, "Escape sequence '") and
-        std.mem.endsWith(u8, message, "' is not allowed."))
-    {
-        return .{ .code = 1488, .message = message };
-    }
-    // TS1499 — invalid regex flag character (anything outside the
-    // ES2024 set g/i/m/s/u/y/d/v). Scanner emits at the offending
-    // flag column so the (line, col) anchor matches tsc.
-    if (std.mem.eql(u8, message, "Unknown regular expression flag.")) {
-        return .{ .code = 1499, .message = message };
-    }
-    if (std.mem.eql(u8, message, "File appears to be binary.")) {
-        return .{ .code = 1490, .message = message };
-    }
-    if (std.mem.eql(u8, message, "Merge conflict marker encountered.")) {
-        return .{ .code = 1185, .message = message };
-    }
-    if (std.mem.eql(u8, message, "'#!' can only be used at the start of a file.")) {
-        return .{ .code = 18026, .message = message };
-    }
-    return .{ .message = message };
-}
-
-fn scannerDiagnosticIsInvalidStringTemplateEscape(d: NormalizedScannerDiagnostic) bool {
-    return switch (d.code) {
-        1125, 1127, 1199, 1487, 1488 => true,
-        else => false,
-    };
-}
+const NormalizedScannerDiagnostic = ts_lexer.diagnostics.NormalizedScannerDiagnostic;
+const scannerDiagnosticIsUnexpectedCharacter = ts_lexer.diagnostics.scannerDiagnosticIsUnexpectedCharacter;
+const scannerDiagnosticIsSuppressedInJsxText = ts_lexer.diagnostics.scannerDiagnosticIsSuppressedInJsxText;
+const normalizeScannerDiagnostic = ts_lexer.diagnostics.normalizeScannerDiagnostic;
+const scannerDiagnosticIsInvalidStringTemplateEscape = ts_lexer.diagnostics.scannerDiagnosticIsInvalidStringTemplateEscape;
 
 fn tsxScannerDiagnosticPos(source: []const u8, is_tsx: bool, code: u32, original: u32) u32 {
     if (!is_tsx or code != 1002 or original == 0) return original;
@@ -9139,5 +8972,139 @@ test "driver: modern module defaults do not invent classic JSON option errors" {
                 try T.expect(diagnostic.code != 5070 and diagnostic.code != 5071);
             }
         }
+    }
+}
+
+test "driver: readonly template index keys reject writes without freezing mutable index domains" {
+    const positive =
+        \\interface Attributes {
+        \\  [key: string]: string;
+        \\  readonly [key: `data-${string}`]: string;
+        \\  readonly [key: `locked_${string}`]: string;
+        \\}
+        \\declare const attributes: Attributes;
+        \\declare const anyKey: string;
+        \\attributes.mutable = 'ok';
+        \\attributes['mutable'] = 'ok';
+        \\attributes[anyKey] = 'ok';
+        \\attributes[0] = 'ok';
+    ;
+    const valid = try compileSource(T.allocator, positive, .{ .strict = true, .no_emit = true });
+    defer {
+        valid.deinit();
+        T.allocator.destroy(valid);
+    }
+    try T.expect(!valid.has_errors);
+    const negative = try std.fmt.allocPrint(T.allocator, "{s}\n{s}", .{
+        positive,
+        \\declare const dataKey: `data-${string}`;
+        \\attributes['data-fixed'] = 'bad';
+        \\attributes.locked_value = 'bad';
+        \\attributes[dataKey] = 'bad';
+    });
+    defer T.allocator.free(negative);
+    const invalid = try compileSource(T.allocator, negative, .{ .strict = true, .no_emit = true });
+    defer {
+        invalid.deinit();
+        T.allocator.destroy(invalid);
+    }
+    try T.expect(invalid.has_errors);
+    try T.expectEqual(@as(usize, 3), invalid.diagnostics.items.len);
+    for (invalid.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2542), diagnostic.code);
+}
+
+test "driver: readonly template index explicit mutable fields use cooked key identity" {
+    const source =
+        \\interface Attributes {
+        \\  readonly [key: `data-${string}`]: string;
+        \\  'data-fixed': string;
+        \\}
+        \\declare const attributes: Attributes;
+        \\attributes['data-fixed'] = 'ok';
+        \\attributes['data-\u0066ixed'] = 'ok';
+    ;
+    const compiled = try compileSource(T.allocator, source, .{ .strict = true, .no_emit = true });
+    defer {
+        compiled.deinit();
+        T.allocator.destroy(compiled);
+    }
+    try T.expect(!compiled.has_errors);
+}
+
+test "driver: readonly template index aliases and inherited domains retain write permissions" {
+    const source =
+        \\interface ParentAttributes {
+        \\  [key: string]: string;
+        \\  readonly [key: `data-${string}`]: string;
+        \\}
+        \\interface ChildAttributes extends ParentAttributes { own: string; }
+        \\type AliasAttributes = { [key: string]: string; readonly [key: `data-${string}`]: string; };
+        \\declare const child: ChildAttributes;
+        \\declare const alias: AliasAttributes;
+        \\child.mutable = 'ok';
+        \\alias.mutable = 'ok';
+    ;
+    const valid = try compileSource(T.allocator, source, .{ .strict = true, .no_emit = true });
+    defer {
+        valid.deinit();
+        T.allocator.destroy(valid);
+    }
+    try T.expect(!valid.has_errors);
+    const negative = try std.fmt.allocPrint(T.allocator, "{s}\n{s}", .{
+        source,
+        \\child['data-child'] = 'bad';
+        \\alias['data-alias'] = 'bad';
+    });
+    defer T.allocator.free(negative);
+    const invalid = try compileSource(T.allocator, negative, .{ .strict = true, .no_emit = true });
+    defer {
+        invalid.deinit();
+        T.allocator.destroy(invalid);
+    }
+    try T.expect(invalid.has_errors);
+    try T.expectEqual(@as(usize, 2), invalid.diagnostics.items.len);
+    for (invalid.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2542), diagnostic.code);
+}
+
+test "driver: readonly template index inheritance overrides overlaps and generics match TypeScript" {
+    const source =
+        \\interface Parent { readonly [key: `data-${string}`]: string; }
+        \\interface MutableOverride extends Parent { [key: `data-${string}`]: string; }
+        \\declare const overridden: MutableOverride;
+        \\overridden["data-x"] = "ok";
+        \\interface Left extends Parent { left: string; }
+        \\interface Right extends Parent { right: string; }
+        \\interface Diamond extends Left, Right { own: string; }
+        \\declare const diamond: Diamond;
+        \\diamond.own = "ok";
+        \\diamond["data-x"] = "bad";
+        \\interface Overlap { readonly [key: `data-${string}`]: string; [key: `${string}-x`]: string; }
+        \\declare const overlap: Overlap;
+        \\overlap["mutable-x"] = "ok";
+        \\overlap["data-x"] = "bad";
+        \\interface GenericParent<T> { readonly [key: `data-${string}`]: T; }
+        \\interface GenericChild extends GenericParent<string> { own: string; }
+        \\declare const generic: GenericChild;
+        \\generic.own = "ok";
+        \\generic["data-x"] = "bad";
+        \\type GenericAlias<T> = { readonly [key: `data-${string}`]: T; };
+        \\declare const alias: GenericAlias<string>;
+        \\alias["data-x"] = "bad";
+    ;
+    const compiled = try compileSource(T.allocator, source, .{ .strict = true, .no_emit = true });
+    defer {
+        compiled.deinit();
+        T.allocator.destroy(compiled);
+    }
+    if (compiled.diagnostics.items.len != 3) {
+        for (compiled.diagnostics.items) |diagnostic| {
+            std.debug.print("TS{d} at {d}: {s}\n", .{ diagnostic.code, diagnostic.pos, diagnostic.message });
+        }
+    }
+    try T.expectEqual(@as(usize, 3), compiled.diagnostics.items.len);
+    for (compiled.diagnostics.items, 0..) |diagnostic, index| {
+        try T.expectEqual(@as(u32, 2542), diagnostic.code);
+        const expected = [_][]const u8{ "diamond[", "generic[", "alias[" };
+        try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, expected[index]).?)), diagnostic.pos);
     }
 }

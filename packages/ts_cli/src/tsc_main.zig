@@ -479,6 +479,7 @@ fn projectConfigHasInputFiles(gpa: std.mem.Allocator, cfg_path: []const u8, cfg:
         tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
         &input_files,
         &owned,
+        null,
     );
     return input_files.items.len > 0;
 }
@@ -552,7 +553,7 @@ fn printConfigValidationDiagnostics(
     }
 }
 
-fn printResolvedConfig(loaded_cfg: ?tsconfig_mod.TsConfig, input_files: []const []const u8) void {
+fn printResolvedConfig(gpa: std.mem.Allocator, loaded_cfg: ?tsconfig_mod.TsConfig, input_files: []const []const u8) !void {
     printStdout("{{\n", .{});
     printStdout("  \"compileOnSave\": false,\n", .{});
     printStdout("  \"compilerOptions\": {{\n", .{});
@@ -575,7 +576,9 @@ fn printResolvedConfig(loaded_cfg: ?tsconfig_mod.TsConfig, input_files: []const 
         }
         if (co.out_dir) |d| {
             option_index += 1;
-            printStdout("    \"outDir\": \"{s}\"{s}\n", .{ d, if (option_index < option_count) "," else "" });
+            const literal = try jsonStringLiteral(gpa, d);
+            defer gpa.free(literal);
+            printStdout("    \"outDir\": {s}{s}\n", .{ literal, if (option_index < option_count) "," else "" });
         }
         if (co.strict) |s| {
             option_index += 1;
@@ -589,7 +592,9 @@ fn printResolvedConfig(loaded_cfg: ?tsconfig_mod.TsConfig, input_files: []const 
     printStdout("  }},\n", .{});
     printStdout("  \"files\": [\n", .{});
     for (input_files, 0..) |path, i| {
-        printStdout("    \"{s}\"{s}\n", .{ path, if (i + 1 < input_files.len) "," else "" });
+        const literal = try jsonStringLiteral(gpa, path);
+        defer gpa.free(literal);
+        printStdout("    {s}{s}\n", .{ literal, if (i + 1 < input_files.len) "," else "" });
     }
     printStdout("  ]\n", .{});
     printStdout("}}\n", .{});
@@ -785,6 +790,7 @@ fn buildOneProject(
             tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
+            null,
         ) catch return .errors_outputs_skipped;
     }
     if (input_files.items.len == 0) {
@@ -793,16 +799,10 @@ fn buildOneProject(
     }
 
     // Output directories are resolved against the project's own dir.
-    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors_outputs_skipped)
-    else
-        null;
+    const out_dir = resolveOutputDirectory(arena, config_path, cfg.compiler_options.out_dir, null) catch return .errors_outputs_skipped;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
-    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors_outputs_skipped)
-    else
-        out_dir;
+    const declaration_dir = (resolveOutputDirectory(arena, config_path, cfg.compiler_options.declaration_dir, null) catch return .errors_outputs_skipped) orelse out_dir;
 
     // Incremental up-to-date check (tsc's getUpToDateStatus, simplified to
     // input/output mtime comparison). Skipped under `--force`.
@@ -950,20 +950,15 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
             tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
+            null,
         ) catch return .build;
     }
     if (input_files.items.len == 0) return .up_to_date;
 
-    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .build)
-    else
-        null;
+    const out_dir = resolveOutputDirectory(arena, config_path, cfg.compiler_options.out_dir, null) catch return .build;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
-    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .build)
-    else
-        out_dir;
+    const declaration_dir = (resolveOutputDirectory(arena, config_path, cfg.compiler_options.declaration_dir, null) catch return .build) orelse out_dir;
 
     if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts, emit_js)) {
         return .update_timestamps;
@@ -1274,15 +1269,36 @@ fn appendBuildInfoJsonStringArray(
     try buf.append(gpa, ']');
 }
 
+/// Go's JSON writer replaces each invalid UTF8 byte, including preserved
+/// WTF8 surrogate bytes, before emitting a valid JSON string. Keep that
+/// output policy at the serialization boundary rather than in the parser.
+fn jsonStringLiteral(gpa: std.mem.Allocator, value: []const u8) ![]u8 {
+    if (std.unicode.utf8ValidateSlice(value)) return std.json.Stringify.valueAlloc(gpa, value, .{});
+    var valid: std.ArrayListUnmanaged(u8) = .empty;
+    defer valid.deinit(gpa);
+    var i: usize = 0;
+    while (i < value.len) {
+        const width: usize = blk: {
+            const len = std.unicode.utf8ByteSequenceLength(value[i]) catch break :blk 0;
+            if (len > value.len - i) break :blk 0;
+            _ = std.unicode.utf8Decode(value[i..][0..len]) catch break :blk 0;
+            break :blk len;
+        };
+        if (width == 0) {
+            try valid.appendSlice(gpa, "\u{fffd}");
+            i += 1;
+        } else {
+            try valid.appendSlice(gpa, value[i..][0..width]);
+            i += width;
+        }
+    }
+    return std.json.Stringify.valueAlloc(gpa, valid.items, .{});
+}
+
 fn appendJsonStringBody(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
-    for (value) |c| switch (c) {
-        '"' => try buf.appendSlice(gpa, "\\\""),
-        '\\' => try buf.appendSlice(gpa, "\\\\"),
-        '\n' => try buf.appendSlice(gpa, "\\n"),
-        '\r' => try buf.appendSlice(gpa, "\\r"),
-        '\t' => try buf.appendSlice(gpa, "\\t"),
-        else => try buf.append(gpa, c),
-    };
+    const literal = try jsonStringLiteral(gpa, value);
+    defer gpa.free(literal);
+    try buf.appendSlice(gpa, literal[1 .. literal.len - 1]);
 }
 
 fn moduleOptionName(value: tsconfig_mod.Module) []const u8 {
@@ -1291,6 +1307,20 @@ fn moduleOptionName(value: tsconfig_mod.Module) []const u8 {
 
 fn moduleResolutionOptionName(value: tsconfig_mod.ModuleResolution) []const u8 {
     return @tagName(value);
+}
+
+/// Configured output directories are relative to the declaring project;
+/// command-line overrides retain the caller's working-directory context.
+/// Returned allocations belong to the supplied arena.
+fn resolveOutputDirectory(
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    configured: ?[]const u8,
+    override: ?[]const u8,
+) !?[]const u8 {
+    if (override) |path| return path;
+    const path = configured orelse return null;
+    return try std.fs.path.resolve(arena, &.{ std.fs.path.dirname(config_path) orelse ".", path });
 }
 
 fn resolverConfigFromConfig(
@@ -1507,19 +1537,14 @@ fn appendProjectCleanOutputs(
             tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
+            null,
         );
     }
 
-    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
-        try std.fs.path.join(arena, &.{ project_dir, d })
-    else
-        null;
+    const out_dir = try resolveOutputDirectory(arena, config_path, cfg.compiler_options.out_dir, null);
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
-    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
-        try std.fs.path.join(arena, &.{ project_dir, d })
-    else
-        out_dir;
+    const declaration_dir = (try resolveOutputDirectory(arena, config_path, cfg.compiler_options.declaration_dir, null)) orelse out_dir;
 
     for (input_files.items) |path| {
         if (ts_program.Program.isDeclarationPath(path)) continue;
@@ -1579,48 +1604,111 @@ const CaseOnlyInputFileMismatch = struct {
     existing_file_index: usize,
 };
 
-fn findCaseOnlyInputFileMismatch(input_files: []const []const u8) ?CaseOnlyInputFileMismatch {
-    for (input_files, 0..) |path, i| {
-        var j: usize = 0;
-        while (j < i) : (j += 1) {
-            const previous = input_files[j];
-            if (std.mem.eql(u8, previous, path)) break;
-            if (!std.ascii.eqlIgnoreCase(previous, path)) continue;
-            return .{
+/// Share one authored read path for case-only spellings proven to name one file.
+/// Keep the input slots for config provenance, using ordinary duplicate-root
+/// handling downstream. Distinct files retain a casing diagnostic; missing or
+/// inaccessible files are left to the ordinary root-file diagnostic path.
+fn retainCaseOnlyReadSpelling(input_files: [][]const u8, previous_index: usize, current_index: usize, spelling: []const u8) void {
+    const previous_read = input_files[previous_index];
+    for (input_files[0..current_index]) |*input| {
+        if (std.mem.eql(u8, input.*, previous_read)) input.* = spelling;
+    }
+    input_files[current_index] = spelling;
+}
+
+fn prepareCaseOnlyInputFiles(
+    gpa: std.mem.Allocator,
+    fs: ts_resolver.FileSystem,
+    input_files: [][]const u8,
+) !?CaseOnlyInputFileMismatch {
+    // Authored names select casing families and config-origin indices. Read
+    // paths can retain the latest spelling without changing comparison identities.
+    const authored = try gpa.dupe([]const u8, input_files);
+    defer gpa.free(authored);
+    var first_mismatch: ?CaseOnlyInputFileMismatch = null;
+    next_input: for (authored, 0..) |path, i| {
+        var has_case_candidate = false;
+        for (authored[0..i], 0..) |previous, j| {
+            if (std.mem.eql(u8, previous, path)) {
+                retainCaseOnlyReadSpelling(input_files, j, i, path);
+                continue :next_input;
+            }
+            has_case_candidate = has_case_candidate or std.ascii.eqlIgnoreCase(previous, path);
+        }
+        if (!has_case_candidate or !fs.fileExists(path)) continue;
+        const canonical = fs.realpath(gpa, path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
+        };
+        defer gpa.free(canonical);
+        var candidate: ?CaseOnlyInputFileMismatch = null;
+        for (authored[0..i], 0..) |previous, j| {
+            if (!std.ascii.eqlIgnoreCase(previous, path) or !fs.fileExists(previous)) continue;
+            const previous_canonical = fs.realpath(gpa, previous) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+            defer gpa.free(previous_canonical);
+            if (std.mem.eql(u8, canonical, previous_canonical)) {
+                // Real paths prove identity, but the retained authored path
+                // supplies relative import context, including for symlinks.
+                retainCaseOnlyReadSpelling(input_files, j, i, path);
+                continue :next_input;
+            }
+            if (candidate == null) candidate = .{
                 .file_name = path,
                 .existing_file_name = previous,
                 .file_index = i,
                 .existing_file_index = j,
             };
         }
+        if (first_mismatch == null) first_mismatch = candidate;
     }
-    return null;
+    return first_mismatch;
 }
 
 const CaseOnlyInputRootContext = struct {
+    config: ?tsconfig_mod.TsConfig = null,
     kind: enum { none, files, include } = .none,
-    config_path: []const u8 = "",
-    config_source: []const u8 = "",
-    specs: []const []const u8 = &.{},
+    /// For wildcard roots, indices into the effective include list, recorded
+    /// when discovery admits the selected path. Explicit files retain order.
+    include_spec_indices: []const usize = &.{},
 };
 
-fn findTsConfigSpecLineCol(config_source: []const u8, property: []const u8, spec: []const u8) struct { line: u32, col: u32 } {
-    if (config_source.len == 0) return .{ .line = 1, .col = 1 };
-    var start: usize = 0;
-    var property_buf: [64]u8 = undefined;
-    const property_needle = std.fmt.bufPrint(&property_buf, "\"{s}\"", .{property}) catch "";
-    if (property_needle.len > 0) {
-        if (std.mem.indexOf(u8, config_source, property_needle)) |pos| start = pos + property_needle.len;
+/// Select project roots and retain the source of their admission alongside the
+/// effective paths. All returned context borrows the parsed config and indices.
+fn appendConfigInputFiles(
+    gpa: std.mem.Allocator,
+    config: tsconfig_mod.TsConfig,
+    inputs: *std.ArrayListUnmanaged([]const u8),
+    owned: *std.ArrayListUnmanaged([]u8),
+    include_indices: *std.ArrayListUnmanaged(usize),
+) !CaseOnlyInputRootContext {
+    std.debug.assert(inputs.items.len == 0 and include_indices.items.len == 0);
+    const project_dir = std.fs.path.dirname(config.file_path) orelse ".";
+    if (config.files) |files| {
+        try ts_cli.appendProjectFilePaths(gpa, project_dir, files, inputs, owned);
+        if (inputs.items.len > 0) return .{ .kind = .files, .config = config };
     }
-    var spec_buf: [512]u8 = undefined;
-    const spec_needle = std.fmt.bufPrint(&spec_buf, "\"{s}\"", .{spec}) catch "";
-    const pos = if (spec_needle.len > 0)
-        std.mem.indexOf(u8, config_source[start..], spec_needle)
-    else
-        null;
-    const absolute_pos = if (pos) |p| start + p else start;
-    const line_col = ts_diagnostics.positionToLineCol(config_source, @intCast(@min(absolute_pos, std.math.maxInt(u32))));
-    return .{ .line = line_col.line, .col = line_col.col };
+    {
+        var exclude_storage: [2][]const u8 = undefined;
+        try expandProjectGlobs(
+            gpa,
+            project_dir,
+            effectiveIncludePatterns(config),
+            config.effectiveExcludePatterns(&exclude_storage),
+            tsconfig_mod.effectiveAllowJs(config.compiler_options),
+            inputs,
+            owned,
+            include_indices,
+        );
+    }
+    if (config.include != null) return .{
+        .kind = .include,
+        .config = config,
+        .include_spec_indices = include_indices.items,
+    };
+    return .{};
 }
 
 fn caseOnlyInputRelatedInfo(
@@ -1628,32 +1716,35 @@ fn caseOnlyInputRelatedInfo(
     mismatch: CaseOnlyInputFileMismatch,
     out: *[2]ts_diagnostics.Related,
 ) []const ts_diagnostics.Related {
-    const code_include_pattern_specified_here: u32 = 1408;
-    const code_files_list_specified_here: u32 = 1410;
-    const code = switch (ctx.kind) {
-        .files => code_files_list_specified_here,
-        .include => code_include_pattern_specified_here,
+    const config = ctx.config orelse return &.{};
+    const kind: tsconfig_mod.FileSpecKind = switch (ctx.kind) {
+        .files => .files,
+        .include => .include,
         .none => return &.{},
     };
+    const code: u32 = if (kind == .files) 1410 else 1408;
     const message = (ts_diagnostics.codes.lookup(code) orelse unreachable).message;
-    const property = switch (ctx.kind) {
-        .files => "files",
-        .include => "include",
-        .none => unreachable,
-    };
-
     var len: usize = 0;
     const indices = [_]usize{ mismatch.existing_file_index, mismatch.file_index };
     for (indices) |index| {
-        const spec = if (index < ctx.specs.len) ctx.specs[index] else if (ctx.specs.len > 0) ctx.specs[0] else "";
-        const lc = findTsConfigSpecLineCol(ctx.config_source, property, spec);
+        const spec_index = if (kind == .files) index else blk: {
+            if (index >= ctx.include_spec_indices.len) continue;
+            break :blk ctx.include_spec_indices[index];
+        };
+        const origin = config.fileSpecSource(kind, spec_index) orelse continue;
+        const lc = ts_diagnostics.positionToLineCol(origin.source, origin.span.start);
         out[len] = .{
-            .file = ctx.config_path,
+            .file = origin.file_path,
             .line = lc.line,
             .col = lc.col,
             .code = code,
             .code_prefix = .TS,
             .message = message,
+            .source_span = .{
+                .source = origin.source,
+                .start = origin.span.start,
+                .length = origin.span.end - origin.span.start,
+            },
         };
         len += 1;
     }
@@ -1673,8 +1764,10 @@ fn caseOnlyInputReasonChain(
     const child_message: []const u8 = switch (ctx.kind) {
         .files => (ts_diagnostics.codes.lookup(code_files_list) orelse unreachable).message,
         .include => blk: {
-            const pattern = if (ctx.specs.len > 0) ctx.specs[0] else "**/*";
-            const config_name = if (ctx.config_path.len > 0) ctx.config_path else "tsconfig.json";
+            const config = ctx.config orelse return &.{};
+            const specs = config.include orelse &.{};
+            const pattern = if (specs.len > 0) specs[0] else "**/*";
+            const config_name = if (config.file_path.len > 0) config.file_path else "tsconfig.json";
             owned_child_message.* = try std.fmt.allocPrint(
                 gpa,
                 "Matched by include pattern '{s}' in '{s}'",
@@ -1699,6 +1792,7 @@ fn alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
     mismatch: CaseOnlyInputFileMismatch,
     chain: []const ts_diagnostics.ChainEntry,
     related: []const ts_diagnostics.Related,
+    format: struct { pretty: bool = false, color: bool = false },
 ) ![]u8 {
     const message = try alreadyIncludedFileNameDiffersOnlyInCasingMessage(gpa, mismatch.file_name, mismatch.existing_file_name);
     defer gpa.free(message);
@@ -1714,11 +1808,13 @@ fn alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
         .chain = chain,
         .related = related,
     };
-    return ts_diagnostics.formatDefault(gpa, diag);
+    return if (format.pretty)
+        ts_diagnostics.formatPretty(gpa, diag, null, format.color)
+    else
+        ts_diagnostics.formatDefault(gpa, diag);
 }
 
-fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, input_files: []const []const u8, root_context: CaseOnlyInputRootContext) bool {
-    const mismatch = findCaseOnlyInputFileMismatch(input_files) orelse return false;
+fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, mismatch: CaseOnlyInputFileMismatch, root_context: CaseOnlyInputRootContext, pretty: bool, color: bool) void {
     var chain_top_buf: [1]ts_diagnostics.ChainEntry = undefined;
     var chain_child_buf: [1]ts_diagnostics.ChainEntry = undefined;
     var owned_chain_child_message: ?[]u8 = null;
@@ -1726,10 +1822,9 @@ fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, input_files: []con
     const chain = caseOnlyInputReasonChain(gpa, root_context, &chain_top_buf, &chain_child_buf, &owned_chain_child_message) catch &.{};
     var related_buf: [2]ts_diagnostics.Related = undefined;
     const related = caseOnlyInputRelatedInfo(root_context, mismatch, &related_buf);
-    const msg = alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(gpa, mismatch, chain, related) catch return true;
+    const msg = alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(gpa, mismatch, chain, related, .{ .pretty = pretty, .color = color }) catch return;
     defer gpa.free(msg);
     printStdout("{s}\n", .{msg});
-    return true;
 }
 
 /// How a root (input) file was specified, for `--explainFiles`.
@@ -1879,9 +1974,7 @@ fn rootIncludeRelativePath(root: RootInclusion, file_path: []const u8) []const u
 
 fn matchingRootIncludeSpec(root: RootInclusion, file_path: []const u8) []const u8 {
     const relative_path = rootIncludeRelativePath(root, file_path);
-    for (root.specs) |spec| {
-        if (tsconfig_mod.matchFileIncludeGlob(spec, relative_path)) return spec;
-    }
+    if (firstFileIncludeMatch(root.specs, relative_path)) |index| return root.specs[index];
     return if (root.specs.len > 0) root.specs[0] else "**/*";
 }
 
@@ -3766,6 +3859,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         var parse_ctx: ts_cli.ParseContext = .{};
         opts = ts_cli.parseArgsCtx(gpa, argv.items, &parse_ctx) catch |err| {
             switch (err) {
+                error.UnknownFlag => {
+                    const message = ts_cli.unknownCompilerOptionDiagnostic(gpa, parse_ctx.unknown_option) catch
+                        std.process.exit(@backingInt(ts_cli.ExitCode.internal_error));
+                    defer gpa.free(message);
+                    printStdout("{s}\n", .{message});
+                },
                 // TS6044: a non-boolean flag (e.g. `--outDir`) was the last
                 // argument with no value following it.
                 error.MissingValue => {
@@ -4000,7 +4099,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     }
 
     const config_pretty: ?bool = if (loaded_cfg) |c| c.compiler_options.pretty else null;
-    const pretty = opts.pretty orelse config_pretty orelse default_pretty;
+    // The diagnostic reporter uses command-line/TTY mode; the summary
+    // independently honors the project's effective pretty setting.
+    const pretty = opts.pretty orelse default_pretty;
+    const summary_pretty = opts.pretty orelse config_pretty orelse default_pretty;
     const diagnostic_color = pretty;
 
     // Determine the file list. Precedence:
@@ -4011,35 +4113,18 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     //      / `.d.ts` / `.mts` / `.cts` plus Home's `.hm` / `.home`.
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
     var owned_paths: std.ArrayListUnmanaged([]u8) = .empty;
+    var input_include_indices: std.ArrayListUnmanaged(usize) = .empty;
+    defer input_include_indices.deinit(gpa);
     defer {
         input_files.deinit(gpa);
         for (owned_paths.items) |p| gpa.free(p);
         owned_paths.deinit(gpa);
     }
     for (opts.files) |f| try input_files.append(gpa, f);
+    var case_only_root_context: CaseOnlyInputRootContext = .{};
     if (input_files.items.len == 0) {
         if (loaded_cfg) |c| {
-            if (c.files) |fs_list| {
-                const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
-                try ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned_paths);
-            }
-        }
-    }
-    if (input_files.items.len == 0) {
-        if (loaded_cfg) |c| {
-            const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
-            const include_patterns = effectiveIncludePatterns(c);
-            var exclude_storage: [2][]const u8 = undefined;
-            const exclude_patterns = c.effectiveExcludePatterns(&exclude_storage);
-            try expandProjectGlobs(
-                gpa,
-                project_dir,
-                include_patterns,
-                exclude_patterns,
-                tsconfig_mod.effectiveAllowJs(c.compiler_options),
-                &input_files,
-                &owned_paths,
-            );
+            case_only_root_context = try appendConfigInputFiles(gpa, c, &input_files, &owned_paths, &input_include_indices);
         }
     }
 
@@ -4099,7 +4184,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // created. Program option diagnostics such as TS5108 therefore do not
     // participate, even though file discovery does.
     if (opts.show_config) {
-        printResolvedConfig(loaded_cfg, input_files.items);
+        try printResolvedConfig(gpa, loaded_cfg, input_files.items);
         return;
     }
 
@@ -4112,10 +4197,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     if (loaded_cfg) |cfg_ptr| {
         const want_buildinfo = cfg_ptr.compiler_options.incremental orelse false;
         if (want_buildinfo) {
-            const out_dir_for_read: ?[]const u8 = opts.out_dir orelse blk: {
-                if (cfg_ptr.compiler_options.out_dir) |d| break :blk d;
-                break :blk null;
-            };
+            const out_dir_for_read = try resolveOutputDirectory(
+                cfg_arena.allocator(),
+                cfg_ptr.file_path,
+                cfg_ptr.compiler_options.out_dir,
+                opts.out_dir,
+            );
             const bi_path: ?[]u8 = blk: {
                 if (cfg_ptr.compiler_options.ts_buildinfo_file) |p| break :blk gpa.dupe(u8, p) catch null;
                 break :blk if (out_dir_for_read) |od|
@@ -4171,30 +4258,13 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         if (loaded_cfg) |c| break :blk (c.compiler_options.force_consistent_casing_in_file_names orelse true);
         break :blk true;
     };
-    const case_only_root_context: CaseOnlyInputRootContext = blk: {
-        if (opts.files.len == 0) {
-            if (loaded_cfg) |c| {
-                if (c.files) |files| {
-                    break :blk .{
-                        .kind = .files,
-                        .config_path = c.file_path,
-                        .config_source = cfg_src,
-                        .specs = files,
-                    };
-                }
-                if (c.include) |include| {
-                    break :blk .{
-                        .kind = .include,
-                        .config_path = c.file_path,
-                        .config_source = cfg_src,
-                        .specs = include,
-                    };
-                }
-            }
+    const case_only_mismatch = try prepareCaseOnlyInputFiles(gpa, resolver_fs.fs(), input_files.items);
+    if (force_consistent_casing) {
+        if (case_only_mismatch) |mismatch| {
+            reportCaseOnlyInputFileDiagnostics(gpa, mismatch, case_only_root_context, pretty, diagnostic_color);
+            std.process.exit(1);
         }
-        break :blk .{};
-    };
-    if (force_consistent_casing and reportCaseOnlyInputFileDiagnostics(gpa, input_files.items, case_only_root_context)) std.process.exit(1);
+    }
 
     const allow_js: bool = blk: {
         if (loaded_cfg) |c| break :blk tsconfig_mod.effectiveAllowJs(c.compiler_options);
@@ -4401,10 +4471,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // admitted program and returns, even though that mode never writes a
     // file. Resolve the paths here so both list-only and ordinary compiles
     // share one verification pass.
-    const out_dir: ?[]const u8 = opts.out_dir orelse blk: {
-        if (loaded_cfg) |c| if (c.compiler_options.out_dir) |d| break :blk d;
-        break :blk null;
-    };
+    const out_dir = try resolveOutputDirectory(
+        cfg_arena.allocator(),
+        if (loaded_cfg) |c| c.file_path else "",
+        if (loaded_cfg) |c| c.compiler_options.out_dir else null,
+        opts.out_dir,
+    );
     const emit_dts: bool = blk: {
         if (opts.declaration) |d| break :blk d;
         if (loaded_cfg) |c| break :blk (c.compiler_options.declaration orelse false) or (c.compiler_options.composite orelse false);
@@ -4414,10 +4486,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         if (loaded_cfg) |c| break :blk c.compiler_options.emit_declaration_only orelse false;
         break :blk false;
     });
-    const declaration_dir: ?[]const u8 = opts.declaration_dir orelse blk: {
-        if (loaded_cfg) |c| if (c.compiler_options.declaration_dir) |d| break :blk d;
-        break :blk out_dir;
-    };
+    const declaration_dir = (try resolveOutputDirectory(
+        cfg_arena.allocator(),
+        if (loaded_cfg) |c| c.file_path else "",
+        if (loaded_cfg) |c| c.compiler_options.declaration_dir else null,
+        opts.declaration_dir,
+    )) orelse out_dir;
     var blocked_outputs: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (blocked_outputs.items) |path| gpa.free(path);
@@ -4455,7 +4529,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
         if (opts.list_files_only) {
             reportErrorSummary(
-                pretty,
+                summary_pretty,
                 stream_error_count,
                 stream_files_with_errors,
                 stream_first_error_file,
@@ -4479,7 +4553,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         reportWatchErrorStatus(stream_error_count);
     } else {
         reportErrorSummary(
-            pretty,
+            summary_pretty,
             stream_error_count,
             stream_files_with_errors,
             stream_first_error_file,
@@ -4530,11 +4604,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // this loop only handles JS / .d.ts emission. The streaming
     // any-errors flag flows into the final exit-code decision.
     const any_errors = any_errors_streaming;
-    // TypeScript's whole-program `--noEmit` path calls `emitBuildInfo`, whose
-    // result is not marked emitSkipped merely because ordinary JS/d.ts output
-    // was disabled. Diagnostics therefore exit 2 unless an actual emit block
-    // was reported (the `--listFilesOnly` path exits separately above).
-    _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
+    // Preserve the actual ordinary-output result for the diagnostic status.
+    // The reference exits 1 when no JS/d.ts output is generated, including
+    // --noEmit, and 2 when diagnostics accompany generated output.
+    const emit_skipped = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
 
     // §4.A.12 — write `.tsbuildinfo` when `compilerOptions.incremental: true`.
     if (loaded_cfg) |cfg_ptr| {
@@ -4739,7 +4812,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         const status = if (reported_command_line_errors)
             ts_cli.ExitCode.config_error
         else
-            ts_cli.diagnosticsExitCode(output_collision_count != 0);
+            ts_cli.diagnosticsExitCode(emit_skipped);
         std.process.exit(@backingInt(status));
     }
 }
@@ -4751,6 +4824,8 @@ fn renderDeclarationOutput(gpa: std.mem.Allocator, compilation: *const ts_driver
     return emitter.toOwnedSlice();
 }
 
+/// Return whether any eligible output was skipped, independently of whether
+/// another output was written. A program with no selected outputs skips none.
 fn emitProgramOutputs(
     gpa: std.mem.Allocator,
     program: *const ts_program.Program,
@@ -4763,11 +4838,14 @@ fn emitProgramOutputs(
     emit_decl_map: bool,
     blocked_outputs: []const []const u8,
 ) !bool {
-    var outputs_generated = false;
+    var emit_skipped = false;
     for (program.files.items) |f| {
         if (!sourceFileMayBeEmittedByProject(f) or f.redirect_target != null) continue;
         const c = f.compilation orelse continue;
-        if (compile_opts.no_emit) continue;
+        if (compile_opts.no_emit) {
+            emit_skipped = emit_skipped or emit_js or emit_dts;
+            continue;
+        }
         if (emit_js) {
             const out_path = try computeOutPath(gpa, f.path, out_dir, ".js");
             defer gpa.free(out_path);
@@ -4813,12 +4891,13 @@ fn emitProgramOutputs(
 
                 const js_bytes: []const u8 = sm_owned_js orelse c.js;
                 writeOrDie(gpa, out_path, js_bytes);
-                outputs_generated = true;
                 if (emit_source_map) {
                     const map_bytes: []const u8 = sm_owned_map orelse "{}";
                     const map_path = sm_map_path_owned.?;
                     writeOrDie(gpa, map_path, map_bytes);
                 }
+            } else {
+                emit_skipped = true;
             }
         }
         if (emit_dts) {
@@ -4829,9 +4908,11 @@ fn emitProgramOutputs(
             defer gpa.free(dts_bytes);
             const dts_path = try computeOutPath(gpa, f.path, declaration_dir, ".d.ts");
             defer gpa.free(dts_path);
-            if (pathInList(blocked_outputs, dts_path)) continue;
+            if (pathInList(blocked_outputs, dts_path)) {
+                emit_skipped = true;
+                continue;
+            }
             writeOrDie(gpa, dts_path, dts_bytes);
-            outputs_generated = true;
 
             // §4.A.x — when `declarationMap` is on, write a parallel
             // `.d.ts.map` next to the `.d.ts`. v0 emits Source Map V3
@@ -4859,7 +4940,7 @@ fn emitProgramOutputs(
         }
     }
 
-    return outputs_generated;
+    return emit_skipped;
 }
 
 fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
@@ -5188,6 +5269,7 @@ fn expandProjectGlobs(
     allow_js: bool,
     out: *std.ArrayListUnmanaged([]const u8),
     owned: *std.ArrayListUnmanaged([]u8),
+    include_indices: ?*std.ArrayListUnmanaged(usize),
 ) !void {
     const exclude_base = try std.fs.path.resolve(gpa, &.{project_dir});
     defer gpa.free(exclude_base);
@@ -5196,7 +5278,8 @@ fn expandProjectGlobs(
     // than appending every supported file. Keep this list separate from
     // `owned`: rejected and displaced allocations still remain owned by the
     // caller, while only the selected paths are appended to `out` below.
-    var wildcard_files: std.ArrayListUnmanaged([]const u8) = .empty;
+    const WildcardInput = struct { path: []const u8, include_index: usize };
+    var wildcard_files: std.ArrayListUnmanaged(WildcardInput) = .empty;
     defer wildcard_files.deinit(gpa);
     const case_sensitive_file_names = switch (builtin.os.tag) {
         .windows, .macos => false,
@@ -5215,7 +5298,8 @@ fn expandProjectGlobs(
         for (stack.items) |s| gpa.free(s);
         stack.deinit(gpa);
     }
-    try stack.append(gpa, try gpa.dupe(u8, ""));
+    try stack.ensureUnusedCapacity(gpa, 1);
+    stack.appendAssumeCapacity(try gpa.dupe(u8, ""));
 
     while (stack.items.len > 0) {
         const rel = stack.pop().?;
@@ -5251,20 +5335,24 @@ fn expandProjectGlobs(
                         gpa.free(child_rel);
                         continue;
                     }
-                    try stack.append(gpa, child_rel);
+                    stack.append(gpa, child_rel) catch |err| {
+                        gpa.free(child_rel);
+                        return err;
+                    };
                 },
                 .file => {
                     defer gpa.free(child_rel);
                     if (!isProjectInputExtension(child_rel, allow_js)) continue;
                     if (anyMatches(exclude_base, exclude, child_rel)) continue;
-                    if (!anyFileIncludeMatches(include, child_rel)) continue;
+                    const include_index = firstFileIncludeMatch(include, child_rel) orelse continue;
+                    try owned.ensureUnusedCapacity(gpa, 1);
                     const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, child_rel });
-                    try owned.append(gpa, full);
+                    owned.appendAssumeCapacity(full);
                     var keep_candidate = true;
                     var selected_index: usize = 0;
                     while (selected_index < wildcard_files.items.len) {
                         switch (tsconfig_mod.projectInputPriorityRelation(
-                            wildcard_files.items[selected_index],
+                            wildcard_files.items[selected_index].path,
                             full,
                             allow_js,
                             case_sensitive_file_names,
@@ -5279,13 +5367,21 @@ fn expandProjectGlobs(
                             .unrelated, .coexist => selected_index += 1,
                         }
                     }
-                    if (keep_candidate) try wildcard_files.append(gpa, full);
+                    if (keep_candidate) try wildcard_files.append(gpa, .{ .path = full, .include_index = include_index });
                 },
                 else => gpa.free(child_rel),
             }
         }
     }
-    try out.appendSlice(gpa, wildcard_files.items);
+    try out.ensureUnusedCapacity(gpa, wildcard_files.items.len);
+    if (include_indices) |indices| {
+        std.debug.assert(indices.items.len == out.items.len);
+        try indices.ensureUnusedCapacity(gpa, wildcard_files.items.len);
+    }
+    for (wildcard_files.items) |input| {
+        out.appendAssumeCapacity(input.path);
+        if (include_indices) |indices| indices.appendAssumeCapacity(input.include_index);
+    }
 }
 
 fn anyMatches(project_dir: []const u8, patterns: []const []const u8, path: []const u8) bool {
@@ -5311,11 +5407,11 @@ fn anyMatches(project_dir: []const u8, patterns: []const []const u8, path: []con
     return false;
 }
 
-fn anyFileIncludeMatches(patterns: []const []const u8, path: []const u8) bool {
-    for (patterns) |pattern| {
-        if (tsconfig_mod.matchFileIncludeGlob(pattern, path)) return true;
+fn firstFileIncludeMatch(patterns: []const []const u8, path: []const u8) ?usize {
+    for (patterns, 0..) |pattern, index| {
+        if (tsconfig_mod.matchFileIncludeGlob(pattern, path)) return index;
     }
-    return false;
+    return null;
 }
 
 fn anyFileIncludeMayMatchDirectory(patterns: []const []const u8, path: []const u8) bool {
@@ -5638,27 +5734,9 @@ fn appendJsonStringArray(
     try out.append(gpa, '[');
     for (values, 0..) |value, i| {
         if (i > 0) try out.append(gpa, ',');
-        try out.append(gpa, '"');
-        for (value) |ch| {
-            switch (ch) {
-                '"' => try out.appendSlice(gpa, "\\\""),
-                '\\' => try out.appendSlice(gpa, "\\\\"),
-                '\n' => try out.appendSlice(gpa, "\\n"),
-                '\r' => try out.appendSlice(gpa, "\\r"),
-                '\t' => try out.appendSlice(gpa, "\\t"),
-                else => {
-                    if (ch < 0x20) {
-                        const hex = "0123456789abcdef";
-                        try out.appendSlice(gpa, "\\u00");
-                        try out.append(gpa, hex[ch >> 4]);
-                        try out.append(gpa, hex[ch & 0x0f]);
-                    } else {
-                        try out.append(gpa, ch);
-                    }
-                },
-            }
-        }
-        try out.append(gpa, '"');
+        const literal = try jsonStringLiteral(gpa, value);
+        defer gpa.free(literal);
+        try out.appendSlice(gpa, literal);
     }
     try out.append(gpa, ']');
 }
@@ -6204,7 +6282,7 @@ test "tsc_main: explicit package include selects the actual root pattern" {
         matchingRootIncludeSpec(root_directory, "/node_modules/pkg/index.js"),
     );
     try std.testing.expect(anyFileIncludeMayMatchDirectory(root.specs, "node_modules"));
-    try std.testing.expect(anyFileIncludeMatches(root.specs, "node_modules/pkg/index.js"));
+    try std.testing.expectEqual(@as(?usize, 1), firstFileIncludeMatch(root.specs, "node_modules/pkg/index.js"));
 }
 
 test "tsc_main: resolver admission follows maxNodeModuleJsDepth" {
@@ -7827,6 +7905,8 @@ test "tsc_main: wildcard discovery honors TypeScript extension priority" {
 
     var selected: std.ArrayListUnmanaged([]const u8) = .empty;
     defer selected.deinit(std.testing.allocator);
+    var origins: std.ArrayListUnmanaged(usize) = .empty;
+    defer origins.deinit(std.testing.allocator);
     var owned: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
         for (owned.items) |path| std.testing.allocator.free(path);
@@ -7835,14 +7915,20 @@ test "tsc_main: wildcard discovery honors TypeScript extension priority" {
     try expandProjectGlobs(
         std.testing.allocator,
         root,
-        &[_][]const u8{"**/*"},
+        &[_][]const u8{ "a.d.ts", "a.ts", "**/*" },
         &.{},
         true,
         &selected,
         &owned,
+        &origins,
     );
 
     try std.testing.expectEqual(@as(usize, 4), selected.items.len);
+    try std.testing.expectEqual(selected.items.len, origins.items.len);
+    for (selected.items, origins.items) |path, origin| {
+        const expected: usize = if (std.mem.eql(u8, std.fs.path.basename(path), "a.ts")) 1 else 2;
+        try std.testing.expectEqual(expected, origin);
+    }
     for ([_][]const u8{ "a.ts", "b.d.ts", "b.js", "c.mts" }) |name| {
         const path = try std.fs.path.join(std.testing.allocator, &.{ root, name });
         defer std.testing.allocator.free(path);
@@ -7855,6 +7941,45 @@ test "tsc_main: wildcard discovery honors TypeScript extension priority" {
     }
 }
 
+test "tsc_main: JSON string writers escape controls and replace invalid UTF8" {
+    const values = [_][]const u8{
+        "\x00\x08\x0c\n\r\t\\\"", "\u{10400}", "\xed\xa0\x80", "\xe2\x82",
+        "é",
+    };
+    const expected = [_][]const u8{
+        "\x00\x08\x0c\n\r\t\\\"", "\u{10400}", "\u{fffd}\u{fffd}\u{fffd}", "\u{fffd}\u{fffd}",
+        "é",
+    };
+    for (values, expected) |value, decoded| {
+        var body: std.ArrayListUnmanaged(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try body.append(std.testing.allocator, '"');
+        try appendJsonStringBody(std.testing.allocator, &body, value);
+        try body.append(std.testing.allocator, '"');
+        const parsed = try std.json.parseFromSlice([]const u8, std.testing.allocator, body.items, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings(decoded, parsed.value);
+    }
+    var array: std.ArrayListUnmanaged(u8) = .empty;
+    defer array.deinit(std.testing.allocator);
+    try appendJsonStringArray(&array, std.testing.allocator, &values);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, array.items, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(expected.len, parsed.value.array.items.len);
+    for (parsed.value.array.items, expected) |value, decoded| {
+        try std.testing.expectEqualStrings(decoded, value.string);
+    }
+
+    const AllocationProbe = struct {
+        fn serialize(allocator: std.mem.Allocator) !void {
+            const literal = try jsonStringLiteral(allocator, "\xed\xa0\x80\x00");
+            defer allocator.free(literal);
+            try std.testing.expectEqualStrings("\"\u{fffd}\u{fffd}\u{fffd}\\u0000\"", literal);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, AllocationProbe.serialize, .{});
+}
+
 test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {
     const include = [_][]const u8{"src/\x01*.ts"};
     const exclude = [_][]const u8{};
@@ -7865,22 +7990,188 @@ test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {
 }
 
 test "tsc_main: TS1261 reports input files that differ only by casing" {
-    const exact = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/foo.ts" };
-    try std.testing.expect(findCaseOnlyInputFileMismatch(&exact) == null);
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer fs.deinit();
+    try fs.addFile("/repo/src/foo.ts", "export {};");
+    try fs.addFile("/repo/src/Foo.ts", "export {};");
+    var exact = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/foo.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &exact)) == null);
 
-    const mismatch = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/Foo.ts" };
-    const found = findCaseOnlyInputFileMismatch(&mismatch) orelse return error.TestExpectedSome;
+    var mismatch = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/Foo.ts" };
+    const found = (try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &mismatch)) orelse return error.TestExpectedSome;
     try std.testing.expectEqualStrings("/repo/src/Foo.ts", found.file_name);
     try std.testing.expectEqualStrings("/repo/src/foo.ts", found.existing_file_name);
     try std.testing.expectEqual(@as(usize, 1), found.file_index);
     try std.testing.expectEqual(@as(usize, 0), found.existing_file_index);
 
-    const msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, found, &.{}, &.{});
+    const msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, found, &.{}, &.{}, .{});
     defer std.testing.allocator.free(msg);
     try std.testing.expectEqualStrings(
         "error TS1261: Already included file name '/repo/src/Foo.ts' differs from file name '/repo/src/foo.ts' only in casing.",
         msg,
     );
+}
+
+test "tsc_main: config root diagnostics use original JSONC spans" {
+    const source =
+        \\{
+        \\  // "files": ["src/foo.ts"]
+        \\  "files": [null,
+        \\    "src/\u0066oo.ts",
+        \\    "src/Foo.ts"
+        \\  ]
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), source);
+    config.setFilePath("/repo/base/tsconfig.json");
+    var child = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), "{}");
+    child.setFilePath("/repo/child/tsconfig.json");
+    config = try tsconfig_mod.merge(arena.allocator(), config, child);
+    const mismatch = CaseOnlyInputFileMismatch{
+        .file_name = "src/Foo.ts",
+        .existing_file_name = "src/foo.ts",
+        .file_index = 1,
+        .existing_file_index = 0,
+    };
+    var related_buf: [2]ts_diagnostics.Related = undefined;
+    const related = caseOnlyInputRelatedInfo(.{
+        .config = config,
+        .kind = .files,
+    }, mismatch, &related_buf);
+    try std.testing.expectEqual(@as(usize, 2), related.len);
+    for (related, [_]u32{ 4, 5 }, [_][]const u8{ "\"src/\\u0066oo.ts\"", "\"src/Foo.ts\"" }) |item, line, lexeme| {
+        try std.testing.expectEqualStrings("/repo/base/tsconfig.json", item.file);
+        try std.testing.expectEqual(line, item.line);
+        try std.testing.expectEqual(@as(u32, 5), item.col);
+        const span = item.source_span orelse return error.TestExpectedSome;
+        try std.testing.expectEqualStrings(source, span.source);
+        try std.testing.expectEqualStrings(lexeme, span.source[span.start..][0..span.length]);
+    }
+}
+
+test "tsc_main: empty files list retains wildcard admission context" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    // Force pending-directory list growth, so allocation injection also
+    // exercises the child-path ownership transfer instead of only file paths.
+    for (0..9) |index| {
+        var name_buf: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "d{d}", .{index});
+        try tmp.dir.createDirPath(io, name);
+    }
+    for ([_][]const u8{ "first.ts", "d8/second.ts" }) |name| {
+        var file = try tmp.dir.createFile(io, name, .{ .truncate = true });
+        file.close(io);
+    }
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(),
+        \\{
+        \\  "files": [],
+        \\  "include": ["unused/**/*", "**/*.ts"]
+        \\}
+    );
+    config.setFilePath(try std.fs.path.join(arena.allocator(), &.{ root, "tsconfig.json" }));
+    var inputs: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer inputs.deinit(std.testing.allocator);
+    var owned: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (owned.items) |path| std.testing.allocator.free(path);
+        owned.deinit(std.testing.allocator);
+    }
+    var indices: std.ArrayListUnmanaged(usize) = .empty;
+    defer indices.deinit(std.testing.allocator);
+    const context = try appendConfigInputFiles(std.testing.allocator, config, &inputs, &owned, &indices);
+    try std.testing.expectEqual(@as(usize, 2), inputs.items.len);
+    try std.testing.expect(context.kind == .include);
+    var related_buf: [2]ts_diagnostics.Related = undefined;
+    const related = caseOnlyInputRelatedInfo(context, .{
+        .file_name = inputs.items[1],
+        .existing_file_name = inputs.items[0],
+        .file_index = 1,
+        .existing_file_index = 0,
+    }, &related_buf);
+    try std.testing.expectEqual(@as(usize, 2), related.len);
+    for (related) |item| {
+        try std.testing.expectEqual(@as(u32, 1408), item.code);
+        const span = item.source_span orelse return error.TestExpectedSome;
+        try std.testing.expectEqualStrings("\"**/*.ts\"", span.source[span.start..][0..span.length]);
+    }
+
+    const AllocationProbe = struct {
+        fn run(allocator: std.mem.Allocator, cfg: tsconfig_mod.TsConfig) !void {
+            var selected: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer selected.deinit(allocator);
+            var paths: std.ArrayListUnmanaged([]u8) = .empty;
+            defer {
+                for (paths.items) |path| allocator.free(path);
+                paths.deinit(allocator);
+            }
+            var origins: std.ArrayListUnmanaged(usize) = .empty;
+            defer origins.deinit(allocator);
+            const actual = try appendConfigInputFiles(allocator, cfg, &selected, &paths, &origins);
+            try std.testing.expect(actual.kind == .include);
+            try std.testing.expectEqual(@as(usize, 2), selected.items.len);
+            try std.testing.expectEqualSlices(usize, &.{ 1, 1 }, origins.items);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, AllocationProbe.run, .{config});
+}
+
+test "tsc_main: include diagnostics follow admitted pattern indices" {
+    const source =
+        \\{
+        \\  // "include": ["src/**/*"]
+        \\  "include": [null,
+        \\    "unused/**/*",
+        \\    "src/\u002a\u002a/*",
+        \\    "other/**/*"
+        \\  ]
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), source);
+    config.setFilePath("/repo/base/tsconfig.json");
+    const mismatch = CaseOnlyInputFileMismatch{
+        .file_name = "src/Foo.ts",
+        .existing_file_name = "other/foo.ts",
+        .file_index = 2,
+        .existing_file_index = 0,
+    };
+    var related_buf: [2]ts_diagnostics.Related = undefined;
+    const related = caseOnlyInputRelatedInfo(.{
+        .config = config,
+        .kind = .include,
+        .include_spec_indices = &.{ 2, 0, 1 },
+    }, mismatch, &related_buf);
+    try std.testing.expectEqual(@as(usize, 2), related.len);
+    for (related, [_]u32{ 6, 5 }, [_][]const u8{ "\"other/**/*\"", "\"src/\\u002a\\u002a/*\"" }) |item, line, lexeme| {
+        try std.testing.expectEqual(@as(u32, 1408), item.code);
+        try std.testing.expectEqualStrings("/repo/base/tsconfig.json", item.file);
+        try std.testing.expectEqual(line, item.line);
+        try std.testing.expectEqual(@as(u32, 5), item.col);
+        const span = item.source_span orelse return error.TestExpectedSome;
+        try std.testing.expectEqualStrings(lexeme, span.source[span.start..][0..span.length]);
+    }
+    // No admitted pattern or no authored source means no invented anchor.
+    try std.testing.expectEqual(@as(usize, 0), caseOnlyInputRelatedInfo(.{
+        .config = config,
+        .kind = .include,
+    }, mismatch, &related_buf).len);
+    var synthesized = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), "{}");
+    var synthetic_patterns = [_][]const u8{"**/*"};
+    synthesized.include = &synthetic_patterns;
+    try std.testing.expectEqual(@as(usize, 0), caseOnlyInputRelatedInfo(.{
+        .config = synthesized,
+        .kind = .include,
+        .include_spec_indices = &.{ 0, 0, 0 },
+    }, mismatch, &related_buf).len);
 }
 
 test "tsc_main: TS1261 carries config-root related information for files and include" {
@@ -7898,13 +8189,14 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
         \\}
     ;
 
-    const files = [_][]const u8{ "src/foo.ts", "src/Foo.ts" };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), config_source);
+    config.setFilePath("/repo/tsconfig.json");
     var files_related_buf: [2]ts_diagnostics.Related = undefined;
     const files_related = caseOnlyInputRelatedInfo(.{
         .kind = .files,
-        .config_path = "/repo/tsconfig.json",
-        .config_source = config_source,
-        .specs = &files,
+        .config = config,
     }, mismatch, &files_related_buf);
     try std.testing.expectEqual(@as(usize, 2), files_related.len);
     try std.testing.expectEqual(@as(u32, 1410), files_related[0].code);
@@ -7916,23 +8208,25 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     defer if (owned_chain_child_message) |msg| std.testing.allocator.free(msg);
     const files_chain = try caseOnlyInputReasonChain(std.testing.allocator, .{
         .kind = .files,
-        .config_path = "/repo/tsconfig.json",
-        .config_source = config_source,
-        .specs = &files,
+        .config = config,
     }, &chain_top_buf, &chain_child_buf, &owned_chain_child_message);
-    const files_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related);
+    const files_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related, .{ .pretty = true });
     defer std.testing.allocator.free(files_msg);
     try std.testing.expect(std.mem.indexOf(u8, files_msg, "\n  The file is in the program because:\n    Part of 'files' list in tsconfig.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,13): File is matched by 'files' list specified here.") != null);
-    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,27): File is matched by 'files' list specified here.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json:2:13 - File is matched by 'files' list specified here.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json:2:27 - File is matched by 'files' list specified here.") != null);
 
-    const include = [_][]const u8{"src/**/*"};
+    const plain_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related, .{});
+    defer std.testing.allocator.free(plain_msg);
+    try std.testing.expect(std.mem.indexOf(u8, plain_msg, "Part of 'files' list in tsconfig.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain_msg, "/repo/tsconfig.json") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain_msg, "File is matched by 'files' list specified here.") == null);
+
     var include_related_buf: [2]ts_diagnostics.Related = undefined;
     const include_related = caseOnlyInputRelatedInfo(.{
         .kind = .include,
-        .config_path = "/repo/tsconfig.json",
-        .config_source = config_source,
-        .specs = &include,
+        .config = config,
+        .include_spec_indices = &.{ 0, 0 },
     }, mismatch, &include_related_buf);
     try std.testing.expectEqual(@as(usize, 2), include_related.len);
     try std.testing.expectEqual(@as(u32, 1408), include_related[0].code);
@@ -7944,9 +8238,8 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     defer if (include_owned_chain_child_message) |msg| std.testing.allocator.free(msg);
     const include_chain = try caseOnlyInputReasonChain(std.testing.allocator, .{
         .kind = .include,
-        .config_path = "/repo/tsconfig.json",
-        .config_source = config_source,
-        .specs = &include,
+        .config = config,
+        .include_spec_indices = &.{ 0, 0 },
     }, &include_chain_top_buf, &include_chain_child_buf, &include_owned_chain_child_message);
     try std.testing.expectEqual(@as(usize, 1), include_chain.len);
     try std.testing.expectEqualStrings("The file is in the program because:", include_chain[0].message);
@@ -9499,4 +9792,119 @@ test "tsc_main: resolver JSON policy preserves configured false and resolution d
         cfg.compiler_options.resolve_json_module = false;
         try std.testing.expect(!resolverConfigFromConfig(arena.allocator(), cfg, null).resolve_json);
     }
+}
+
+fn testCaseOnlyRootAliasAllocations(allocator: std.mem.Allocator) !void {
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer fs.deinit();
+    try fs.addFile("/repo/src/Foo.ts", "export const value = 1;");
+    try fs.addFile("/repo/src/FOO.ts", "export const value = 1;");
+    try fs.addRealPath("/repo/src/Foo.ts", "/repo/src/foo.ts");
+    try fs.addRealPath("/repo/src/FOO.ts", "/repo/src/foo.ts");
+    var roots = [_][]const u8{ "/repo/src/Foo.ts", "/repo/src/FOO.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(allocator, fs.fs(), &roots)) == null);
+    try std.testing.expectEqualStrings("/repo/src/FOO.ts", roots[0]);
+    try std.testing.expectEqualStrings(roots[0], roots[1]);
+}
+
+test "tsc_main: case-only root aliases use filesystem identity before casing diagnostics" {
+    try testCaseOnlyRootAliasAllocations(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testCaseOnlyRootAliasAllocations, .{});
+}
+
+test "tsc_main: missing case-only roots retain ordinary root diagnostics" {
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer fs.deinit();
+    try fs.addFile("/repo/src/foo.ts", "export {};");
+    var roots = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/Foo.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &roots)) == null);
+    try std.testing.expectEqualStrings("/repo/src/Foo.ts", roots[1]);
+}
+
+fn caseRootGroupFileSystem() !ts_resolver.VirtualFs {
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    errdefer fs.deinit();
+    for ([_][]const u8{ "/repo/Foo.ts", "/repo/FOO.ts", "/repo/foo.ts", "/shared/actual.ts" }) |path| {
+        try fs.addFile(path, "export const value = 1;");
+    }
+    try fs.addRealPath("/repo/Foo.ts", "/shared/actual.ts");
+    try fs.addRealPath("/repo/FOO.ts", "/shared/actual.ts");
+    return fs;
+}
+
+fn testThreeCaseRootAliasAllocations(allocator: std.mem.Allocator) !void {
+    var fs = try caseRootGroupFileSystem();
+    defer fs.deinit();
+    try fs.addRealPath("/repo/foo.ts", "/shared/actual.ts");
+    var roots = [_][]const u8{ "/repo/Foo.ts", "/repo/FOO.ts", "/repo/foo.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(allocator, fs.fs(), &roots)) == null);
+    for (roots) |path| try std.testing.expectEqualStrings("/repo/foo.ts", path);
+}
+
+test "tsc_main: three case aliases retain one authored input across every allocation failure" {
+    try testThreeCaseRootAliasAllocations(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testThreeCaseRootAliasAllocations, .{});
+}
+
+test "tsc_main: case alias groups retain distinct authored roots in either order" {
+    var fs = try caseRootGroupFileSystem();
+    defer fs.deinit();
+    for ([_][3][]const u8{
+        .{ "/repo/Foo.ts", "/repo/FOO.ts", "/repo/foo.ts" },
+        .{ "/repo/foo.ts", "/repo/Foo.ts", "/repo/FOO.ts" },
+    }, 0..) |seed, order| {
+        var roots = seed;
+        const mismatch = (try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &roots)) orelse return error.TestExpectedSome;
+        const expected_index: usize = if (order == 0) 2 else 1;
+        try std.testing.expectEqual(expected_index, mismatch.file_index);
+        try std.testing.expectEqual(@as(usize, 0), mismatch.existing_file_index);
+        try std.testing.expectEqualStrings(seed[expected_index], mismatch.file_name);
+        try std.testing.expectEqualStrings(seed[0], mismatch.existing_file_name);
+        for (roots, seed) |normalized, authored| {
+            try std.testing.expectEqualStrings(if (std.mem.eql(u8, authored, "/repo/foo.ts")) authored else "/repo/FOO.ts", normalized);
+        }
+    }
+}
+
+test "tsc_main: exact duplicates after case alias normalization reuse retained input" {
+    var fs = try caseRootGroupFileSystem();
+    defer fs.deinit();
+    var roots = [_][]const u8{ "/repo/Foo.ts", "/repo/FOO.ts", "/repo/Foo.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &roots)) == null);
+    for (roots) |path| try std.testing.expectEqualStrings("/repo/Foo.ts", path);
+}
+
+test "tsc_main: case aliases retain authored import context instead of symlink target" {
+    var fs = try caseRootGroupFileSystem();
+    defer fs.deinit();
+    var roots = [_][]const u8{ "/repo/Foo.ts", "/repo/FOO.ts" };
+    try std.testing.expect((try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &roots)) == null);
+    try std.testing.expectEqualStrings("/repo", std.fs.path.dirname(roots[0]).?);
+    try std.testing.expectEqualStrings("/repo/FOO.ts", roots[0]);
+    try std.testing.expectEqualStrings(roots[0], roots[1]);
+}
+
+test "tsc_main: duplicate case roots retain the latest authored spelling in either order" {
+    var fs = try caseRootGroupFileSystem();
+    defer fs.deinit();
+    for ([_][2][]const u8{
+        .{ "/repo/Foo.ts", "/repo/FOO.ts" },
+        .{ "/repo/FOO.ts", "/repo/Foo.ts" },
+    }) |seed| {
+        var roots = seed;
+        try std.testing.expect((try prepareCaseOnlyInputFiles(std.testing.allocator, fs.fs(), &roots)) == null);
+        for (roots) |path| try std.testing.expectEqualStrings(seed[1], path);
+    }
+}
+
+test "tsc_main: output directories retain project and command-line path origins" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("/repo/project/out", (try resolveOutputDirectory(a, "/repo/project/tsconfig.json", "out", null)).?);
+    try std.testing.expectEqualStrings("/repo/types", (try resolveOutputDirectory(a, "/repo/project/tsconfig.json", "../types", null)).?);
+    try std.testing.expectEqualStrings("/shared/output", (try resolveOutputDirectory(a, "/repo/project/tsconfig.json", "/shared/output", null)).?);
+    try std.testing.expectEqualStrings("caller-output", (try resolveOutputDirectory(a, "/repo/project/tsconfig.json", "out", "caller-output")).?);
+    try std.testing.expectEqualStrings("project/out", (try resolveOutputDirectory(a, "project/tsconfig.json", "out", null)).?);
+    try std.testing.expect((try resolveOutputDirectory(a, "/repo/project/tsconfig.json", null, null)) == null);
 }

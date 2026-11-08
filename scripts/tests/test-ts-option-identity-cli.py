@@ -27,9 +27,21 @@ SOURCE = "export const value: number = 1;\n"
 def cases() -> list[dict]:
     rows = []
 
-    def add(name, flags, *, emitted=(), codes=(), status=0, options=None, files=None, alternate=False):
+    def add(name, flags, *, emitted=(), codes=(), status=0, options=None, files=None, alternate=False, presentation=None):
         rows.append(dict(name=name, flags=flags, emitted=list(emitted), codes=list(codes), status=status,
-                         options=options or {}, files=files or {"main.ts": SOURCE}, alternate=alternate))
+                         options=options or {}, files=files or {"main.ts": SOURCE}, alternate=alternate, presentation=presentation))
+
+    # Native reference controls distinguish the diagnostic reporter from
+    # the effective-config summary, rather than checking overall ANSI presence.
+    for config_pretty, cli_pretty, diagnostic_pretty, summary_pretty in (
+        (False, None, False, False), (False, False, False, False), (False, True, True, True),
+        (True, None, False, True), (True, False, False, False), (True, True, True, True),
+    ):
+        flags = [] if cli_pretty is None else ["--pretty", str(cli_pretty).lower()]
+        label = f"pretty-{str(config_pretty).lower()}-{str(cli_pretty).lower()}"
+        add(label, flags, options={"pretty": config_pretty}, codes=(2322,), status=1,
+            files={"main.ts": "export const value: number = 'wrong';\n"},
+            presentation=dict(diagnostic_pretty=diagnostic_pretty, summary_pretty=summary_pretty))
 
     add("no-emit-true", ["--noEmit", "true"])
     add("no-emit-false", ["--noEmit", "false"], emitted=("main.js",))
@@ -77,11 +89,12 @@ def invoke(command: list[str], directory: Path) -> dict:
 
 def diagnostic_positions(output: str, directory: Path) -> list:
     positions = []
-    for line in output.splitlines():
+    for line in re.sub(r"\x1b\[[0-9;]*m", "", output).splitlines():
         code = re.search(r"error TS(\d+):", line)
         if not code:
             continue
-        location = re.match(r"(.+?)\((\d+),(\d+)\): error TS", line)
+        location = (re.match(r"(.+?)\((\d+),(\d+)\): error TS", line) or
+                    re.match(r"(.+?):(\d+):(\d+) - error TS", line))
         if location:
             filename = location[1].replace(str(directory) + os.sep, "")
             positions.append([filename, int(location[2]), int(location[3]), int(code[1])])
@@ -126,13 +139,26 @@ def main() -> None:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(source)
                 before = hashes(directory)
-                result = invoke([str(executable), "-p", "tsconfig.json", "--pretty", "false", *case["flags"]], directory)
+                flags = ["-p", "tsconfig.json"]
+                if case["presentation"] is None:
+                    flags += ["--pretty", "false"]
+                result = invoke([str(executable), *flags, *case["flags"]], directory)
                 after = hashes(directory)
                 result.update(case=case["name"], engine=engine, input_hashes=before,
                               unchanged=all(after.get(name) == digest for name, digest in before.items()),
                               emitted=sorted(after.keys() - before.keys()),
                               diagnostics=diagnostic_positions(result["stdout"], directory))
+                result["presentation"] = None
+                if case["presentation"] is not None:
+                    clean = re.sub(r"\x1b\[[0-9;]*m", "", result["stdout"])
+                    header = next((line for line in clean.splitlines() if re.search(r"error TS\d+:", line)), "")
+                    result["presentation"] = dict(
+                        diagnostic_pretty=re.match(r".+?:\d+:\d+ - error TS", header) is not None,
+                        summary_pretty=any(re.match(r"Found \d+ error", line) for line in clean.splitlines()),
+                    )
                 summary["observations"].append(result)
+                if case["presentation"] is not None:
+                    assert result["presentation"] == case["presentation"], result
                 assert not result["timed_out"] and not result["stderr"] and result["unchanged"], result
                 assert result["exit"] == case["status"], result
                 assert result["emitted"] == sorted(case["emitted"]), result
@@ -143,7 +169,7 @@ def main() -> None:
                     assert (directory / name).stat().st_size > 0, result
                 paired.append(result)
             if len(paired) == 2:
-                for key in ("input_hashes", "exit", "diagnostics", "emitted"):
+                for key in ("input_hashes", "exit", "diagnostics", "emitted", "presentation"):
                     assert paired[0][key] == paired[1][key], (key, paired)
         summary["passed"] = True
         print(f"Option identity contracts passed: {len(cases())} cases, {len(summary['observations'])} observations")

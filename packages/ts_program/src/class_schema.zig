@@ -587,6 +587,7 @@ pub const Builder = struct {
             if (entry.found_existing) continue;
             switch (expr.*) {
                 .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol, .object, .class_value, .indexed_object => {},
+                .template_literal => |template| try pending.appendSlice(self.gpa, template.types),
                 .builtin_reference => |builtin| try pending.appendSlice(self.gpa, builtin.arguments),
                 .array, .readonly_array => |element| try pending.append(self.gpa, element),
                 .tuple => |elements| for (elements) |element| try pending.append(self.gpa, element.type),
@@ -622,6 +623,7 @@ pub const Builder = struct {
             if (entry.found_existing) continue;
             switch (expr.*) {
                 .primitive, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol, .polymorphic_this => {},
+                .template_literal => |template| try pending.appendSlice(self.gpa, template.types),
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(self.gpa, element),
                 .object => |members| for (members) |member| {
                     if (member.key) |key| try pending.append(self.gpa, key);
@@ -2035,8 +2037,18 @@ pub const Builder = struct {
             },
             .template_literal_type => {
                 const texts = hir.templateLiteralTypeTexts(&c.hir, node);
-                if (hir.templateLiteralTypeTypes(&c.hir, node).len != 0 or texts.len != 1) return self.expression(.unsupported);
-                return self.lower(context, texts[0]);
+                const types = hir.templateLiteralTypeTypes(&c.hir, node);
+                if (texts.len != types.len + 1) return self.expression(.unsupported);
+                if (types.len == 0) return self.lower(context, texts[0]);
+                const text_parts = try self.arena.alloc([]const u8, texts.len);
+                for (texts, text_parts) |text, *part| {
+                    const lowered = try self.lower(context, text);
+                    if (lowered.* != .string) return self.expression(.unsupported);
+                    part.* = lowered.string;
+                }
+                const type_parts = try self.arena.alloc(*const schema.Expression, types.len);
+                for (types, type_parts) |typ, *part| part.* = try self.lower(context, typ);
+                return self.expression(.{ .template_literal = .{ .texts = text_parts, .types = type_parts } });
             },
             .literal_string => {
                 const raw = c.interner.get(hir.literalStringOf(&c.hir, node).value);

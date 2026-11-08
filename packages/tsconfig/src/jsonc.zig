@@ -28,14 +28,26 @@ pub const SourceLocation = struct {
     column: u32,
 };
 
+/// Half-open byte extent in the original JSONC source, before unescaping.
+pub const Span = struct {
+    start: u32,
+    end: u32,
+};
+
 pub const Value = union(enum) {
     null_,
     bool_: bool,
     number: f64,
     string: []const u8,
-    array: []Value,
+    array: Array,
     object: Object,
     invalid: Invalid,
+
+    pub const Array = struct {
+        items: []Value,
+        /// Parsed elements have one span each. Constructed values may omit it.
+        spans: []const Span = &.{},
+    };
 
     pub const Object = struct {
         /// Keys and values held in parallel arrays. Order is preserved
@@ -100,7 +112,14 @@ pub const Value = union(enum) {
 
     pub fn asArray(self: Value) ?[]Value {
         return switch (self) {
-            .array => |a| a,
+            .array => |a| a.items,
+            else => null,
+        };
+    }
+
+    pub fn arraySpan(self: Value, index: usize) ?Span {
+        return switch (self) {
+            .array => |a| if (index < a.items.len and index < a.spans.len) a.spans[index] else null,
             else => null,
         };
     }
@@ -387,6 +406,8 @@ const Parser = struct {
 
         var items: std.ArrayListUnmanaged(Value) = .empty;
         errdefer items.deinit(self.arena);
+        var spans: std.ArrayListUnmanaged(Span) = .empty;
+        errdefer spans.deinit(self.arena);
 
         while (true) {
             self.skipWhitespace();
@@ -398,8 +419,10 @@ const Parser = struct {
                 self.pos += 1;
                 break;
             }
+            const start = self.pos;
             const v = try self.parseValue();
             try items.append(self.arena, v);
+            try spans.append(self.arena, .{ .start = start, .end = self.pos });
             self.skipWhitespace();
             if (self.peek() == ',') {
                 self.pos += 1;
@@ -417,7 +440,10 @@ const Parser = struct {
             self.report("expected ',' or ']' in array");
             return error.UnexpectedCharacter;
         }
-        return Value{ .array = try items.toOwnedSlice(self.arena) };
+        return Value{ .array = .{
+            .items = try items.toOwnedSlice(self.arena),
+            .spans = try spans.toOwnedSlice(self.arena),
+        } };
     }
 
     fn parseString(self: *Parser) ParseError![]const u8 {
@@ -522,6 +548,16 @@ fn isDigit(c: u8) bool {
     return c >= '0' and c <= '9';
 }
 
+fn parseHexCodeUnit(raw: []const u8) ParseError!u16 {
+    if (raw.len < 4) return error.InvalidEscape;
+    var unit: u16 = 0;
+    for (raw[0..4]) |c| {
+        const digit = std.fmt.charToDigit(c, 16) catch return error.InvalidEscape;
+        unit = (unit << 4) | digit;
+    }
+    return unit;
+}
+
 fn unescape(arena: std.mem.Allocator, raw: []const u8) ParseError![]const u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(arena);
@@ -547,12 +583,22 @@ fn unescape(arena: std.mem.Allocator, raw: []const u8) ParseError![]const u8 {
             'b' => try out.append(arena, 0x08),
             'f' => try out.append(arena, 0x0C),
             'u' => {
-                if (i + 4 > raw.len) return error.InvalidEscape;
-                const hex = raw[i .. i + 4];
+                var cp: u21 = try parseHexCodeUnit(raw[i..]);
                 i += 4;
-                const cp = std.fmt.parseInt(u21, hex, 16) catch return error.InvalidEscape;
+                // JSON escapes represent UTF16 code units. Combine adjacent
+                // surrogate pairs; retain unpaired units in WTF8, as the
+                // scanner does for JavaScript string values.
+                if (std.unicode.utf16IsHighSurrogate(@intCast(cp)) and
+                    i + 6 <= raw.len and raw[i] == '\\' and raw[i + 1] == 'u')
+                {
+                    const low = try parseHexCodeUnit(raw[i + 2 ..]);
+                    if (std.unicode.utf16IsLowSurrogate(low)) {
+                        cp = std.unicode.utf16DecodeSurrogatePair(&.{ @intCast(cp), low }) catch unreachable;
+                        i += 6;
+                    }
+                }
                 var buf: [4]u8 = undefined;
-                const len = std.unicode.utf8Encode(cp, &buf) catch return error.InvalidEscape;
+                const len = std.unicode.wtf8Encode(cp, &buf) catch return error.InvalidEscape;
                 try out.appendSlice(arena, buf[0..len]);
             },
             else => return error.InvalidEscape,
@@ -666,6 +712,28 @@ test "jsonc: simple object with strings and numbers" {
     const o = v.asObject().?;
     try t.expectEqualStrings("home", o.get("name").?.asString().?);
     try t.expectApproxEqRel(@as(f64, 1.5), o.get("version").?.asNumber().?, 1e-9);
+}
+
+test "jsonc: Unicode escapes retain UTF16 code units and combine surrogate pairs" {
+    const cases = .{
+        .{ "\\ud801\\udc00", "\u{10400}" },
+        .{ "\\uDBFF\\uDFFF", "\u{10ffff}" },
+        .{ "\\ud800", "\xed\xa0\x80" },
+        .{ "\\udc00", "\xed\xb0\x80" },
+        .{ "\\ud800\\u0041", "\xed\xa0\x80A" },
+        .{ "\\ud800A", "\xed\xa0\x80A" },
+        .{ "\\udc00\\ud800", "\xed\xb0\x80\xed\xa0\x80" },
+        .{ "\\ud800\\ud800\\udc00", "\xed\xa0\x80\u{10000}" },
+    };
+    inline for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const source = "[\"" ++ case[0] ++ "\"]";
+        const value = try parseString(source, arena.allocator());
+        try t.expectEqualStrings(case[1], value.asArray().?[0].asString().?);
+        const span = value.arraySpan(0) orelse return error.TestExpectedSome;
+        try t.expectEqualStrings("\"" ++ case[0] ++ "\"", source[span.start..span.end]);
+    }
 }
 
 test "jsonc: line comments are skipped" {
@@ -896,4 +964,24 @@ test "jsonc: real tsconfig fragment" {
     const paths = co.get("paths").?.asObject().?;
     const at_slash = paths.get("@/*").?.asArray().?;
     try t.expectEqualStrings("src/*", at_slash[0].asString().?);
+}
+
+test "jsonc: array spans retain escaped lexemes and ignore comment decoys" {
+    inline for (.{
+        .{ "{\n  \"files\": [\n    \"globals.d.ts\",\n    \"src/\\u0066oo.ts\",\n    \"src/Foo.ts\"\n  ]\n}", @as(u32, 39), @as(u32, 56), "\"src/\\u0066oo.ts\"" },
+        .{ "{\n  \"files\": [\n    // \"src/foo.ts\" is only a comment\n    \"globals.d.ts\",\n    \"src/foo.ts\",\n    \"src/Foo.ts\"\n  ]\n}", @as(u32, 77), @as(u32, 89), "\"src/foo.ts\"" },
+    }) |case| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const result = try parse(t.allocator, arena.allocator(), case[0]);
+        defer t.allocator.free(result.diagnostics);
+        try t.expectEqual(@as(usize, 0), result.diagnostics.len);
+        const files = result.value.asObject().?.get("files").?;
+        try t.expectEqual(@as(usize, 3), files.asArray().?.len);
+        try t.expectEqualStrings("src/foo.ts", files.asArray().?[1].asString().?);
+        const span = files.arraySpan(1) orelse return error.TestExpectedSome;
+        try t.expectEqualDeep(Span{ .start = case[1], .end = case[2] }, span);
+        try t.expectEqualStrings(case[3], case[0][span.start..span.end]);
+        try t.expect(files.arraySpan(3) == null);
+    }
 }

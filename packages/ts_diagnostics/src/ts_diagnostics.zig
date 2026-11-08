@@ -58,8 +58,15 @@ pub const ChainEntry = struct {
 /// (e.g. "'x' was imported here.", "and here."). Rendered as an indented
 /// line beneath the primary header — the location followed by the
 /// message, matching typescript-go's `FormatDiagnosticWithColorAndContext`
-/// related-info loop. `line`/`col` are pre-resolved by the caller (which
-/// owns the file sources, possibly cross-file).
+/// related-info loop. A source span determines its own line and UTF16 column;
+/// `line`/`col` remain the fallback for callers without source bytes.
+/// Source bytes remain owned by the caller for the duration of formatting.
+pub const SourceSpan = struct {
+    source: []const u8,
+    start: u32,
+    length: u32,
+};
+
 pub const Related = struct {
     /// File the anchor points into. Empty renders the location-less
     /// message only.
@@ -69,6 +76,8 @@ pub const Related = struct {
     code: u32 = 0,
     code_prefix: Diagnostic.CodePrefix = .TS,
     message: []const u8,
+    /// Borrowed source and byte extent for an optional related source frame.
+    source_span: ?SourceSpan = null,
 };
 
 pub const Diagnostic = struct {
@@ -123,27 +132,161 @@ pub fn formatDefault(gpa: std.mem.Allocator, d: Diagnostic) ![]u8 {
     return try buf.toOwnedSlice(gpa);
 }
 
-/// Append a diagnostic's related-information anchors, each on its own
-/// line indented two spaces: `  path/file.ts(line,col): message`.
-/// Mirrors typescript-go's related-info loop in
-/// `FormatDiagnosticWithColorAndContext` (location + flattened message;
-/// the TSxxxx code is intentionally not shown on related lines, as in
-/// tsc's terminal output). No-op for an empty list.
+/// Append pretty related-information locations using TypeScript's colon
+/// coordinates. Plain formatting intentionally omits these anchors.
 fn writeRelatedInfo(
     buf: *std.ArrayListUnmanaged(u8),
     gpa: std.mem.Allocator,
     related: []const Related,
+    color: bool,
 ) !void {
     for (related) |r| {
         try buf.append(gpa, '\n');
         try buf.appendSlice(gpa, "  ");
         if (r.file.len > 0) {
+            const location: FrameLocation = if (r.source_span) |span|
+                sourceSpanLocation(span)
+            else
+                .{ .line = r.line, .col = r.col };
+            if (color) try buf.appendSlice(gpa, "\x1b[96m");
             try buf.appendSlice(gpa, r.file);
+            if (color) try buf.appendSlice(gpa, "\x1b[0m");
             var nbuf: [32]u8 = undefined;
-            try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "({d},{d}): ", .{ r.line, r.col }));
+            try buf.append(gpa, ':');
+            if (color) try buf.appendSlice(gpa, "\x1b[93m");
+            try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{location.line}));
+            if (color) try buf.appendSlice(gpa, "\x1b[0m");
+            try buf.append(gpa, ':');
+            if (color) try buf.appendSlice(gpa, "\x1b[93m");
+            try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{location.col}));
+            if (color) try buf.appendSlice(gpa, "\x1b[0m");
+            try buf.appendSlice(gpa, " - ");
         }
         try buf.appendSlice(gpa, r.message);
+        if (r.source_span) |span| try writeRelatedSourceFrame(buf, gpa, span, color);
     }
+}
+
+fn utf16Width(bytes: []const u8) usize {
+    const view = std.unicode.Utf8View.init(bytes) catch return bytes.len;
+    var iterator = view.iterator();
+    var width: usize = 0;
+    while (iterator.nextCodepoint()) |cp| width += if (cp > 0xffff) @as(usize, 2) else 1;
+    return width;
+}
+
+/// Match the Unicode White_Space set used by the native writer's IsSpace.
+fn trimSourceDisplaySpace(bytes: []const u8) []const u8 {
+    const view = std.unicode.Utf8View.init(bytes) catch return std.mem.trimEnd(u8, bytes, " \t\r");
+    var iterator = view.iterator();
+    var offset: usize = 0;
+    var end: usize = 0;
+    while (iterator.nextCodepointSlice()) |slice| {
+        const cp = std.unicode.utf8Decode(slice) catch unreachable;
+        offset += slice.len;
+        const is_space = switch (cp) {
+            0x9...0xd, 0x20, 0x85, 0xa0, 0x1680, 0x2000...0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000 => true,
+            else => false,
+        };
+        if (!is_space) end = offset;
+    }
+    return bytes[0..end];
+}
+
+/// ECMAScript line boundaries: CRLF is one break, and CR, LF, LS and PS
+/// each start the next line. Offsets stay in the original source bytes.
+fn sourceLineBounds(source: []const u8, start: usize) struct { end: usize, next: usize } {
+    var end = start;
+    while (end < source.len) : (end += 1) {
+        if (source[end] == '\r') return .{
+            .end = end,
+            .next = end + if (end + 1 < source.len and source[end + 1] == '\n') @as(usize, 2) else 1,
+        };
+        if (source[end] == '\n') return .{ .end = end, .next = end + 1 };
+        if (std.mem.startsWith(u8, source[end..], "\u{2028}") or
+            std.mem.startsWith(u8, source[end..], "\u{2029}")) return .{ .end = end, .next = end + 3 };
+    }
+    return .{ .end = source.len, .next = source.len };
+}
+
+const FrameLocation = struct { line: usize, col: usize };
+
+fn sourceSpanLocation(span: SourceSpan) FrameLocation {
+    const start = @min(@as(usize, span.start), span.source.len);
+    var line: usize = 1;
+    var line_start: usize = 0;
+    while (line_start < start) {
+        const bounds = sourceLineBounds(span.source, line_start);
+        if (bounds.next == bounds.end or bounds.next > start) break;
+        line += 1;
+        line_start = bounds.next;
+    }
+    return .{ .line = line, .col = utf16Width(span.source[line_start..start]) + 1 };
+}
+
+fn writeRelatedSourceFrame(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    span: SourceSpan,
+    color: bool,
+) !void {
+    const start = @min(@as(usize, span.start), span.source.len);
+    const end = @min(start +| span.length, span.source.len);
+    var first_line: usize = 1;
+    var last_line: usize = 1;
+    var scan: usize = 0;
+    while (scan < end) {
+        const bounds = sourceLineBounds(span.source, scan);
+        if (bounds.next == bounds.end or bounds.next > end) break;
+        last_line += 1;
+        if (bounds.next <= start) first_line += 1;
+        scan = bounds.next;
+    }
+    var nbuf: [32]u8 = undefined;
+    const gutter_width = @max((try std.fmt.bufPrint(&nbuf, "{d}", .{last_line})).len, if (last_line - first_line >= 4) @as(usize, 3) else 1);
+    var line: usize = 1;
+    var line_start: usize = 0;
+    while (line <= last_line) : (line += 1) {
+        const bounds = sourceLineBounds(span.source, line_start);
+        defer line_start = bounds.next;
+        if (line < first_line) continue;
+        if (last_line - first_line >= 4 and line > first_line + 1 and line < last_line - 1) {
+            if (line == first_line + 2) {
+                try buf.appendSlice(gpa, "\n    ");
+                if (color) try buf.appendSlice(gpa, "\x1b[7m");
+                try buf.appendNTimes(gpa, ' ', gutter_width - 3);
+                try buf.appendSlice(gpa, "...");
+                if (color) try buf.appendSlice(gpa, "\x1b[0m");
+                try buf.append(gpa, ' ');
+            }
+            continue;
+        }
+        // Locations within a CRLF still count the original CR byte. Retain
+        // terminators for position arithmetic and trim only displayed text.
+        const raw_text = span.source[line_start..bounds.next];
+        const text = trimSourceDisplaySpace(raw_text);
+        const number = try std.fmt.bufPrint(&nbuf, "{d}", .{line});
+        try buf.appendSlice(gpa, "\n    ");
+        if (color) try buf.appendSlice(gpa, "\x1b[7m");
+        try buf.appendNTimes(gpa, ' ', gutter_width - number.len);
+        try buf.appendSlice(gpa, number);
+        if (color) try buf.appendSlice(gpa, "\x1b[0m");
+        try buf.append(gpa, ' ');
+        for (text) |ch| try buf.append(gpa, if (ch == '\t') ' ' else ch);
+        try buf.appendSlice(gpa, "\n    ");
+        if (color) try buf.appendSlice(gpa, "\x1b[7m");
+        try buf.appendNTimes(gpa, ' ', gutter_width);
+        if (color) try buf.appendSlice(gpa, "\x1b[0m");
+        try buf.append(gpa, ' ');
+        if (color) try buf.appendSlice(gpa, "\x1b[96m");
+        const first_byte = if (line == first_line) @min(start - line_start, raw_text.len) else 0;
+        const last_byte = if (line == last_line) @min(end - line_start, raw_text.len) else text.len;
+        try buf.appendNTimes(gpa, ' ', utf16Width(raw_text[0..first_byte]));
+        const width = utf16Width(raw_text[first_byte..@max(first_byte, last_byte)]);
+        try buf.appendNTimes(gpa, '~', if (span.length == 0) @max(width, 1) else width);
+        if (color) try buf.appendSlice(gpa, "\x1b[0m");
+    }
+    try buf.append(gpa, '\n');
 }
 
 /// Append a diagnostic's nested elaboration chain in tsc's flattened
@@ -211,8 +354,10 @@ pub fn formatPretty(
     try writeMessageChain(&buf, gpa, d.chain, 1);
     try buf.append(gpa, '\n');
 
+    var wrote_source_frame = false;
     if (source) |src| {
         if (extractLine(src, d.line)) |line_text| {
+            wrote_source_frame = true;
             try buf.append(gpa, '\n');
             var nbuf: [16]u8 = undefined;
             try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d:>4}  ", .{d.line}));
@@ -232,8 +377,10 @@ pub fn formatPretty(
         }
     }
 
-    // Related-info anchors render after the source excerpt (tsc order).
-    try writeRelatedInfo(&buf, gpa, d.related);
+    // A location-less header has no source-frame separator. Related frames
+    // retain their own spacing after a primary source excerpt.
+    if (d.related.len > 0 and !wrote_source_frame) buf.items.len -= 1;
+    try writeRelatedInfo(&buf, gpa, d.related, color);
 
     return try buf.toOwnedSlice(gpa);
 }
@@ -536,7 +683,7 @@ test "formatPretty: related-info renders after the source excerpt" {
     defer T.allocator.free(out);
     // The related anchor comes after the squiggly underline block.
     const tilde = std.mem.indexOf(u8, out, "~") orelse return error.TestUnexpectedResult;
-    const related = std.mem.indexOf(u8, out, "  b.ts(1,1): 'X' was imported here.") orelse return error.TestUnexpectedResult;
+    const related = std.mem.indexOf(u8, out, "  b.ts:1:1 - 'X' was imported here.") orelse return error.TestUnexpectedResult;
     try T.expect(related > tilde);
 }
 
@@ -731,4 +878,143 @@ test "codes.categoryLabel: matches tsc verb" {
     try T.expectEqualStrings("Warning", codes.categoryLabel(.warning));
     try T.expectEqualStrings("Suggestion", codes.categoryLabel(.suggestion));
     try T.expectEqualStrings("Message", codes.categoryLabel(.message));
+}
+
+// Literal frame retained from the pinned TypeScript 7.0.2 root-casing probe.
+test "formatPretty: related source frame uses its own source and extent" {
+    const source = "{\n  \"files\": [\n\n    \"src/foo.ts\",\n    \"src/Foo.ts\"\n  ]\n}";
+    const d: Diagnostic = .{
+        .file = "",
+        .line = 0,
+        .col = 0,
+        .code = 1149,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Casing conflict.",
+        .span_len = 0,
+        .related = &.{.{
+            .file = "tsconfig.json",
+            .line = 4,
+            .col = 5,
+            .message = "File is matched by 'files' list specified here.",
+            .source_span = .{ .source = source, .start = 20, .length = 12 },
+        }},
+    };
+    const plain = try formatPretty(T.allocator, d, null, false);
+    defer T.allocator.free(plain);
+    try T.expectEqualStrings("error TS1149: Casing conflict.\n" ++
+        "  tsconfig.json:4:5 - File is matched by 'files' list specified here.\n" ++
+        "    4     \"src/foo.ts\",\n" ++
+        "          ~~~~~~~~~~~~\n", plain);
+    const colored = try formatPretty(T.allocator, d, null, true);
+    defer T.allocator.free(colored);
+    try T.expect(std.mem.indexOf(u8, colored, "  \x1b[96mtsconfig.json\x1b[0m:\x1b[93m4\x1b[0m:\x1b[93m5\x1b[0m - File is matched by 'files' list specified here.\n" ++
+        "    \x1b[7m4\x1b[0m     \"src/foo.ts\",\n" ++
+        "    \x1b[7m \x1b[0m \x1b[96m    ~~~~~~~~~~~~\x1b[0m") != null);
+    const default = try formatDefault(T.allocator, d);
+    defer T.allocator.free(default);
+    try T.expectEqualStrings("error TS1149: Casing conflict.", default);
+}
+
+test "formatPretty: related frames recognize ECMAScript line boundaries" {
+    inline for (.{
+        .{ "a\rb", @as(u32, 2) },
+        .{ "a\r\nb", @as(u32, 3) },
+        .{ "a\u{2028}b", @as(u32, 4) },
+        .{ "a\u{2029}b", @as(u32, 4) },
+    }) |case| {
+        const d: Diagnostic = .{
+            .file = "",
+            .line = 0,
+            .col = 0,
+            .code = 1149,
+            .code_prefix = .TS,
+            .severity = .err,
+            .message = "Conflict.",
+            .span_len = 0,
+            .related = &.{.{
+                .file = "config.json",
+                .line = 2,
+                .col = 1,
+                .message = "Here.",
+                .source_span = .{ .source = case[0], .start = case[1], .length = 1 },
+            }},
+        };
+        const out = try formatPretty(T.allocator, d, null, false);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings("error TS1149: Conflict.\n" ++
+            "  config.json:2:1 - Here.\n    2 b\n      ~\n", out);
+    }
+}
+
+test "formatPretty: related frames trim display whitespace without trimming spans" {
+    inline for (.{
+        .{ "x  ", @as(u32, 2), @as(u32, 3), "  config.json:1:3 - Here.\n    1 x\n        ~\n" },
+        .{ "x\u{a0}", @as(u32, 0), @as(u32, 1), "  config.json:1:1 - Here.\n    1 x\n      ~\n" },
+    }) |case| {
+        const d: Diagnostic = .{
+            .file = "",
+            .line = 0,
+            .col = 0,
+            .code = 1149,
+            .code_prefix = .TS,
+            .severity = .err,
+            .message = "Conflict.",
+            .span_len = 0,
+            .related = &.{.{
+                .file = "config.json",
+                .line = 1,
+                .col = case[2],
+                .message = "Here.",
+                .source_span = .{ .source = case[0], .start = case[1], .length = 1 },
+            }},
+        };
+        const out = try formatPretty(T.allocator, d, null, false);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings("error TS1149: Conflict.\n" ++ case[3], out);
+    }
+}
+
+test "formatPretty: related byte spans determine their UTF16 location" {
+    const d: Diagnostic = .{
+        .file = "",
+        .line = 0,
+        .col = 0,
+        .code = 1149,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Conflict.",
+        .span_len = 0,
+        .related = &.{.{
+            .file = "config.json",
+            .message = "Here.",
+            .source_span = .{ .source = "a\r\n\u{1f600}x", .start = 7, .length = 1 },
+        }},
+    };
+    const out = try formatPretty(T.allocator, d, null, false);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("error TS1149: Conflict.\n" ++
+        "  config.json:2:3 - Here.\n    2 \u{1f600}x\n        ~\n", out);
+}
+
+test "formatPretty: related zero-width span inside CRLF retains its byte position" {
+    const d: Diagnostic = .{
+        .file = "",
+        .line = 0,
+        .col = 0,
+        .code = 1149,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Conflict.",
+        .span_len = 0,
+        .related = &.{.{
+            .file = "config.json",
+            .message = "Here.",
+            .source_span = .{ .source = "a\r\nb", .start = 2, .length = 0 },
+        }},
+    };
+    const out = try formatPretty(T.allocator, d, null, false);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("error TS1149: Conflict.\n" ++
+        "  config.json:1:3 - Here.\n    1 a\n        ~\n", out);
 }
