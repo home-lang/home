@@ -800,6 +800,40 @@ pub fn build(b: *std.Build) void {
         run_home_tool_interop_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_interop_smoke.addArgs(&.{ "run", "interop_entry.ts" });
         home_tool_smoke_step.dependOn(&run_home_tool_interop_smoke.step);
+        const run_home_tool_imports_smoke = b.addRunArtifact(home_tool_exe);
+        run_home_tool_imports_smoke.setCwd(b.path("packages/runtime/test/tool_modules/package_imports"));
+        run_home_tool_imports_smoke.addArgs(&.{ "run", "entry.cjs" });
+        home_tool_smoke_step.dependOn(&run_home_tool_imports_smoke.step);
+        const run_home_tool_eval_exit = b.addRunArtifact(home_tool_exe);
+        run_home_tool_eval_exit.addArgs(&.{ "eval", "process.exitCode = 23;" });
+        run_home_tool_eval_exit.expectExitCode(23);
+        home_tool_smoke_step.dependOn(&run_home_tool_eval_exit.step);
+        inline for (.{
+            .{ "Promise.resolve().then(function() { process.exitCode = 19; });", 19 },
+            .{ "process.nextTick(function() { process.exitCode = 17; });", 17 },
+        }) |case| {
+            const run_home_tool_deferred_exit = b.addRunArtifact(home_tool_exe);
+            run_home_tool_deferred_exit.addArgs(&.{ "eval", case[0] });
+            run_home_tool_deferred_exit.expectExitCode(case[1]);
+            home_tool_smoke_step.dependOn(&run_home_tool_deferred_exit.step);
+        }
+        inline for (.{ .{ "23", 23 }, .{ "-1", 255 }, .{ "256", 0 }, .{ "257", 1 } }) |case| {
+            const run_home_tool_exit = b.addRunArtifact(home_tool_exe);
+            run_home_tool_exit.setCwd(b.path("packages/runtime/test/tool_modules"));
+            run_home_tool_exit.addArgs(&.{ "run", "natural_exit.cjs", case[0] });
+            run_home_tool_exit.expectExitCode(case[1]);
+            run_home_tool_exit.expectStdOutEqual("OK home-tool natural exit\n");
+            home_tool_smoke_step.dependOn(&run_home_tool_exit.step);
+        }
+        const run_home_tool_exit_listener = b.addRunArtifact(home_tool_exe);
+        run_home_tool_exit_listener.addArgs(&.{ "eval", "process.exitCode = 5; process.on('exit', function(code) { if (code !== 5) throw new Error('wrong exit event code'); process.exitCode = 7; console.log('OK exit listener'); });" });
+        run_home_tool_exit_listener.expectExitCode(7);
+        run_home_tool_exit_listener.expectStdOutEqual("OK exit listener\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_exit_listener.step);
+        const run_home_tool_exit_throw = b.addRunArtifact(home_tool_exe);
+        run_home_tool_exit_throw.addArgs(&.{ "eval", "process.on('exit', function() { throw new Error('exit listener witness'); });" });
+        run_home_tool_exit_throw.expectExitCode(1);
+        home_tool_smoke_step.dependOn(&run_home_tool_exit_throw.step);
     } else {
         const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);
