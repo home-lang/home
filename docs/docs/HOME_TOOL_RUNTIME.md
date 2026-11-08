@@ -106,6 +106,24 @@ source scope, so an import or local declaration named `module` cannot collide
 with the CommonJS wrapper. Ordinary source identifiers retain their meaning,
 and the wrapper still receives five arguments.
 
+The tool's ESM-to-CommonJS host profile also evaluates acyclic top-level-await
+module graphs. Static import/re-export edges come from parsed HIR; dependencies
+finish before an importing body runs, while independent siblings can evaluate
+when an earlier dependency is suspended. A fresh static-import accessor remains
+separate from explicit source `require()`, which rejects async graphs with
+`ERR_REQUIRE_ASYNC_MODULE`. Raw CommonJS exports and namespaces with a `then`
+export are not assimilated as evaluation promises. Sync CommonJS cycles retain
+the existing partial-exports behavior.
+
+The native runner protects a private completion closure across the engine's
+microtask checkpoint and checks it before natural exit. Rejections (including
+`throw undefined`) fail; an unsettled entry fails with
+`ERR_HOME_UNSETTLED_MODULE`. This is not a complete ESM implementation: async
+cycles are explicitly refused with `ERR_HOME_ASYNC_MODULE_CYCLE`, the existing
+CommonJS lowering does not provide full ESM live-binding/TDZ/namespace semantics,
+and dynamic import and event-loop-backed I/O require separate implementations.
+No await is stripped and no external JavaScript runtime evaluates these modules.
+
 After successful evaluation, the runner emits the natural process `exit` event
 and returns the effective `process.exitCode` to the caller. Exit-listener code
 changes are honored, and a thrown exit listener fails the command. Smoke gates

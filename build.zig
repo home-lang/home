@@ -862,6 +862,34 @@ pub fn build(b: *std.Build) void {
         run_home_tool_yaml.addArgs(&.{ "run", "yaml_entry.cjs" });
         run_home_tool_yaml.expectStdOutEqual("OK home-tool native YAML parsing\n");
         home_tool_smoke_step.dependOn(&run_home_tool_yaml.step);
+        const run_home_tool_async = b.addRunArtifact(home_tool_exe);
+        run_home_tool_async.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_async.addArgs(&.{ "run", "async/order.mjs" });
+        run_home_tool_async.expectStdOutEqual("OK home-tool async module evaluation\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_async.step);
+        for ([_][2][]const u8{
+            .{ "siblings.mjs", "OK home-tool independent async siblings\n" },
+            .{ "for-await.mjs", "OK home-tool top-level for await\n" },
+        }) |case| {
+            const positive = b.addRunArtifact(home_tool_exe);
+            positive.setCwd(b.path("packages/runtime/test/tool_modules/async"));
+            positive.addArgs(&.{ "run", case[0] });
+            positive.expectStdOutEqual(case[1]);
+            home_tool_smoke_step.dependOn(&positive.step);
+        }
+        const run_home_tool_sync_async = b.addRunArtifact(home_tool_exe);
+        run_home_tool_sync_async.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_sync_async.addArgs(&.{ "run", "async/sync-require.cjs" });
+        run_home_tool_sync_async.expectStdOutEqual("OK home-tool rejects synchronous async graph\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_sync_async.step);
+        for ([_][]const u8{ "rejected.mjs", "undefined.mjs", "pending.mjs", "dependency-rejected.mjs", "cycle-a.mjs", "cjs-await.cjs" }) |case| {
+            const negative = b.addRunArtifact(home_tool_exe);
+            negative.setCwd(b.path("packages/runtime/test/tool_modules/async"));
+            negative.addArgs(&.{ "run", case });
+            negative.expectExitCode(1);
+            negative.expectStdOutEqual("");
+            home_tool_smoke_step.dependOn(&negative.step);
+        }
     } else {
         const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);

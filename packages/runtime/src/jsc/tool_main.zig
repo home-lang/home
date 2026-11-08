@@ -42,6 +42,7 @@ fn runSource(
     source_url: []const u8,
     argv: []const []const u8,
     print_result: bool,
+    module_completion: bool,
 ) !u8 {
     var engine = try tool_runtime.Engine.init(allocator);
     defer engine.deinit();
@@ -63,6 +64,24 @@ fn runSource(
             evaluation.exception_message orelse "uncaught exception",
         });
         return 1;
+    }
+    if (module_completion) {
+        // JSEvaluateScript performs the backend's microtask checkpoint. Keep
+        // the returned private completion closure alive while checking that
+        // the entry actually fulfilled (including rejection with undefined).
+        const completion = evaluation.value orelse return error.MissingModuleCompletion;
+        tool_runtime.extern_fns.JSValueProtect(ctx, completion);
+        defer tool_runtime.extern_fns.JSValueUnprotect(ctx, completion);
+        const function = tool_runtime.extern_fns.JSValueToObject(ctx, completion, null) orelse return error.InvalidModuleCompletion;
+        if (!tool_runtime.extern_fns.JSObjectIsFunction(ctx, function)) return error.InvalidModuleCompletion;
+        var exception: ?*tool_runtime.opaques.JSValue = null;
+        _ = tool_runtime.extern_fns.JSObjectCallAsFunction(ctx, function, null, 0, null, &exception);
+        if (exception) |thrown| {
+            const message = try tool_runtime.evaluate.valueToUtf8(allocator, ctx, thrown);
+            defer allocator.free(message);
+            std.debug.print("home-tool ({s}): {s}\n", .{ build_options.js_engine, message });
+            return 1;
+        }
     }
     if (print_result) {
         if (evaluation.value) |value| {
@@ -94,7 +113,7 @@ pub fn main(init: std.process.Init) !void {
         const emitted = try emitTypeScript(allocator, input, false);
         defer allocator.free(emitted);
         const argv = [_][]const u8{ "home-tool", "eval" };
-        const code = try runSource(allocator, emitted, "home:tool-eval", &argv, flag != null);
+        const code = try runSource(allocator, emitted, "home:tool-eval", &argv, flag != null, false);
         if (code != 0) std.process.exit(code);
         return;
     }
@@ -107,7 +126,7 @@ pub fn main(init: std.process.Init) !void {
         try argv.append(allocator, path);
         while (iterator.next()) |arg| try argv.append(allocator, arg);
 
-        const code = try runSource(allocator, "Home.runModule(process.argv[1]);", path, argv.items, false);
+        const code = try runSource(allocator, "Home.startModule(process.argv[1]);", path, argv.items, false, true);
         if (code != 0) std.process.exit(code);
         return;
     }

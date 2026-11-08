@@ -199,6 +199,9 @@ pub const Options = struct {
     /// absent from all source scopes and bound to the real module record by
     /// the host, so an ES module may declare its own `module` identifier.
     commonjs_module_binding: ?[]const u8 = null,
+    /// Host-only static import accessor. The host links/evaluates dependencies
+    /// first; explicit source require() remains synchronous and unchanged.
+    commonjs_import_binding: ?[]const u8 = null,
     /// `esModuleInterop` — when true and module_kind is commonjs,
     /// inject `__importDefault` / `__importStar` helper calls so
     /// `import x from "y"` works against CJS modules without
@@ -8242,6 +8245,13 @@ pub const Printer = struct {
         try self.writeSemi();
     }
 
+    fn printStaticImport(self: *Printer, module: []const u8) !void {
+        try self.write(self.options.commonjs_import_binding orelse "require");
+        try self.write("(\"");
+        try self.write(module);
+        try self.write("\")");
+    }
+
     fn printImportCjs(self: *Printer, node: NodeId, imp: hir_mod.ImportPayload) !void {
         const module_str = self.interner.get(imp.module);
         const named = hir_mod.importNamed(self.hir, node);
@@ -8250,9 +8260,7 @@ pub const Printer = struct {
         const has_named = named.len > 0;
         // Pure side-effect import: `import "x"` → `require("x")`.
         if (!has_default and !has_namespace and !has_named) {
-            try self.write("require(\"");
-            try self.write(module_str);
-            try self.write("\")");
+            try self.printStaticImport(module_str);
             try self.writeSemi();
             return;
         }
@@ -8265,13 +8273,11 @@ pub const Printer = struct {
             try self.printExpression(imp.default_binding);
             try self.write(" = ");
             if (self.options.es_module_interop) {
-                try self.write("__importDefault(require(\"");
-                try self.write(module_str);
-                try self.write("\")).default");
+                try self.write("__importDefault(");
+                try self.printStaticImport(module_str);
+                try self.write(").default");
             } else {
-                try self.write("require(\"");
-                try self.write(module_str);
-                try self.write("\")");
+                try self.printStaticImport(module_str);
             }
             try self.writeSemi();
             return;
@@ -8283,13 +8289,11 @@ pub const Printer = struct {
             try self.printExpression(imp.namespace_binding);
             try self.write(" = ");
             if (self.options.es_module_interop) {
-                try self.write("__importStar(require(\"");
-                try self.write(module_str);
-                try self.write("\"))");
+                try self.write("__importStar(");
+                try self.printStaticImport(module_str);
+                try self.write(")");
             } else {
-                try self.write("require(\"");
-                try self.write(module_str);
-                try self.write("\")");
+                try self.printStaticImport(module_str);
             }
             try self.writeSemi();
             return;
@@ -8308,18 +8312,16 @@ pub const Printer = struct {
                     try self.write(self.interner.get(sp.local));
                 }
             }
-            try self.write(" } = require(\"");
-            try self.write(module_str);
-            try self.write("\")");
+            try self.write(" } = ");
+            try self.printStaticImport(module_str);
             try self.writeSemi();
             return;
         }
         // Mixed default + named (or default + namespace): bind
         // a temporary, then destructure. Conservative — uses one
         // require but multiple statements.
-        try self.write("const _mod = require(\"");
-        try self.write(module_str);
-        try self.write("\")");
+        try self.write("const _mod = ");
+        try self.printStaticImport(module_str);
         try self.writeSemi();
         if (has_default) {
             try self.write("const ");
@@ -8468,22 +8470,21 @@ pub const Printer = struct {
                 try self.write(self.options.commonjs_module_binding orelse "module");
                 try self.write(".exports.");
                 try self.write(alias);
-                try self.write(" = require(\"");
-                try self.write(re_export_module);
-                try self.write("\")");
+                try self.write(" = ");
+                try self.printStaticImport(re_export_module);
                 try self.writeSemi();
             } else {
                 // `export * from "m"` → copy own enumerable keys, skipping
                 // `default` (mirrors tsc's `__exportStar` semantics).
-                try self.write("Object.keys(require(\"");
-                try self.write(re_export_module);
-                try self.write("\")).forEach(function (k) { if (k !== \"default\" && !Object.prototype.hasOwnProperty.call(");
+                try self.write("Object.keys(");
+                try self.printStaticImport(re_export_module);
+                try self.write(").forEach(function (k) { if (k !== \"default\" && !Object.prototype.hasOwnProperty.call(");
                 try self.write(self.options.commonjs_module_binding orelse "module");
                 try self.write(".exports, k)) Object.defineProperty(");
                 try self.write(self.options.commonjs_module_binding orelse "module");
-                try self.write(".exports, k, { enumerable: true, get: function () { return require(\"");
-                try self.write(re_export_module);
-                try self.write("\")[k]; } }); })");
+                try self.write(".exports, k, { enumerable: true, get: function () { return ");
+                try self.printStaticImport(re_export_module);
+                try self.write("[k]; } }); })");
                 try self.writeSemi();
             }
             return;
@@ -8503,9 +8504,9 @@ pub const Printer = struct {
                 try self.write(self.options.commonjs_module_binding orelse "module");
                 try self.write(".exports.");
                 try self.write(self.interner.get(sp.local));
-                try self.write(" = require(\"");
-                try self.write(re_export_module);
-                try self.write("\").");
+                try self.write(" = ");
+                try self.printStaticImport(re_export_module);
+                try self.write(".");
                 try self.write(self.interner.get(sp.imported));
                 try self.writeSemi();
             }
@@ -16738,4 +16739,18 @@ test "emit: ambiguous-else wrap keeps else bound to outer if (Bun parity)" {
     // else belongs to `if (b)`. Verify the structure is preserved.
     try T.expect(std.mem.indexOf(u8, out, "if (a)") != null);
     try T.expect(std.mem.indexOf(u8, out, "else") != null);
+}
+
+test "commonjs host static import accessor leaves source require synchronous" {
+    const out = try emitWithOpts(
+        "import x from \"a\"; import * as ns from \"b\"; import { y } from \"c\"; import \"d\"; export * from \"e\"; export { z } from \"f\"; const explicit = require(\"g\");",
+        .{ .module_kind = .commonjs, .commonjs_import_binding = "__host_import" },
+    );
+    defer std.testing.allocator.free(out);
+    for ([_][]const u8{ "a", "b", "c", "d", "e", "f" }) |name| {
+        const call = try std.fmt.allocPrint(std.testing.allocator, "__host_import(\"{s}\")", .{name});
+        defer std.testing.allocator.free(call);
+        try std.testing.expect(std.mem.indexOf(u8, out, call) != null);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, out, "require(\"g\")") != null);
 }

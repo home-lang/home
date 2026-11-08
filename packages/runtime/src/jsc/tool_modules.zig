@@ -213,10 +213,43 @@ fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_pat
     return null;
 }
 
-fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8, meta_binding: *?[]u8, module_binding: *?[]u8, is_esm: *bool) ?[]u8 {
+// Await belongs to module evaluation only outside a function's body/parameters.
+// Inspect HIR ancestry rather than source text (strings, comments and method
+// computed names are not function bodies).
+fn hasTopLevelAwait(hir: *const hir_mod.Hir) bool {
+    for (hir.kinds.items, 0..) |kind, index| {
+        const node: hir_mod.NodeId = @intCast(index);
+        if (kind != .await_expr and !(kind == .for_of_stmt and hir_mod.forInOf(hir, node).is_await)) continue;
+        var child = node;
+        var parent = hir.parentOf(child);
+        var in_function = false;
+        while (parent != hir_mod.none_node_id) : ({
+            child = parent;
+            parent = hir.parentOf(parent);
+        }) {
+            switch (hir.kindOf(parent)) {
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const function = hir_mod.fnDeclOf(hir, parent);
+                    if (child == function.body or hir.kindOf(child) == .parameter) {
+                        in_function = true;
+                        break;
+                    }
+                },
+                else => {},
+            }
+        }
+        if (!in_function) return true;
+    }
+    return false;
+}
+
+fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8, meta_binding: *?[]u8, module_binding: *?[]u8, import_binding: *?[]u8, is_esm: *bool, top_await: *bool, static_imports: *?[]u8) ?[]u8 {
     meta_binding.* = null;
     module_binding.* = null;
+    import_binding.* = null;
     is_esm.* = false;
+    top_await.* = false;
+    static_imports.* = null;
     if (std.mem.eql(u8, std.fs.path.extension(path), ".json"))
         return allocator.dupe(u8, source) catch null;
     const is_tsx = std.mem.endsWith(u8, path, ".tsx");
@@ -232,16 +265,28 @@ fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8
         compilation.deinit();
         allocator.destroy(compilation);
     }
+    var imports: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer imports.deinit(allocator);
+    top_await.* = hasTopLevelAwait(&compilation.hir);
+    const extension = std.fs.path.extension(path);
+    is_esm.* = top_await.* and !std.mem.eql(u8, extension, ".cjs") and !std.mem.eql(u8, extension, ".cts");
     if (compilation.root != hir_mod.none_node_id) {
         for (hir_mod.blockStmts(&compilation.hir, compilation.root)) |statement| {
-            if ((compilation.hir.kindOf(statement) == .import_decl and !hir_mod.importOf(&compilation.hir, statement).is_require_equals) or
-                (compilation.hir.kindOf(statement) == .export_decl and !hir_mod.exportOf(&compilation.hir, statement).is_export_equals))
-            {
+            if (compilation.hir.kindOf(statement) == .import_decl) {
+                const imp = hir_mod.importOf(&compilation.hir, statement);
+                if (imp.is_require_equals) continue;
                 is_esm.* = true;
-                break;
+                if (!imp.is_type_only) imports.append(allocator, compilation.interner.get(imp.module)) catch return null;
+            } else if (compilation.hir.kindOf(statement) == .export_decl) {
+                const ex = hir_mod.exportOf(&compilation.hir, statement);
+                if (ex.is_export_equals) continue;
+                is_esm.* = true;
+                const target = compilation.interner.get(ex.module);
+                if (!ex.is_type_only and target.len != 0) imports.append(allocator, target) catch return null;
             }
         }
     }
+    static_imports.* = std.json.Stringify.valueAlloc(allocator, imports.items, .{}) catch return null;
     if (compilation.has_syntactic_parse_diagnostics) {
         for (compilation.diagnostics.items) |diagnostic| {
             if (diagnostic.is_syntactic) {
@@ -272,6 +317,15 @@ fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8
             }
         }
         options.emit.commonjs_module_binding = module_binding.*;
+        suffix = 0;
+        while (true) : (suffix += 1) {
+            const name = std.fmt.bufPrint(&buffer, "__home_static_import_{d}", .{suffix}) catch return null;
+            if (compilation.interner.lookup(name) == null) {
+                import_binding.* = allocator.dupe(u8, name) catch return null;
+                break;
+            }
+        }
+        options.emit.commonjs_import_binding = import_binding.*;
     }
     return ts_driver.emitPreparedSource(compilation, options.emit) catch null;
 }
@@ -309,10 +363,15 @@ fn resolveModuleNative(
     defer allocator.free(source);
     var meta_binding: ?[]u8 = null;
     var module_binding: ?[]u8 = null;
+    var import_binding: ?[]u8 = null;
+    defer if (import_binding) |name| allocator.free(name);
     var is_esm = false;
+    var top_await = false;
+    var static_imports: ?[]u8 = null;
+    defer if (static_imports) |json| allocator.free(json);
     defer if (meta_binding) |name| allocator.free(name);
     defer if (module_binding) |name| allocator.free(name);
-    const emitted = emitModule(allocator, source, path, &meta_binding, &module_binding, &is_esm) orelse return extern_fns.JSValueMakeNull(c);
+    const emitted = emitModule(allocator, source, path, &meta_binding, &module_binding, &import_binding, &is_esm, &top_await, &static_imports) orelse return extern_fns.JSValueMakeNull(c);
     defer allocator.free(emitted);
 
     const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
@@ -320,111 +379,15 @@ fn resolveModuleNative(
     setProperty(c, object, "source", stringValue(c, emitted));
     if (meta_binding) |name| setProperty(c, object, "metaBinding", stringValue(c, name));
     if (module_binding) |name| setProperty(c, object, "moduleBinding", stringValue(c, name));
+    if (import_binding) |name| setProperty(c, object, "importBinding", stringValue(c, name));
     setProperty(c, object, "esModule", extern_fns.JSValueMakeBoolean(c, is_esm));
+    setProperty(c, object, "topLevelAwait", extern_fns.JSValueMakeBoolean(c, top_await));
+    if (static_imports) |json| setProperty(c, object, "staticImports", stringValue(c, json));
     setProperty(c, object, "format", stringValue(c, if (std.mem.eql(u8, std.fs.path.extension(path), ".json")) "json" else "commonjs"));
     return @ptrCast(object);
 }
 
-const install_glue =
-    \\(function() {
-    \\  var resolveNative = globalThis.__home_tool_resolve_module;
-    \\  var builtins = globalThis.__home_tool_builtins || Object.create(null);
-    \\  delete globalThis.__home_tool_builtins;
-    \\  function isBuiltin(request) { return Object.prototype.hasOwnProperty.call(builtins, request); }
-    \\  var cache = Object.create(null);
-    \\  var mainModule = null;
-    // The CommonJS emitter's default contract uses ambient interop helpers.
-    // Keep ESM exports intact and wrap real CommonJS values, including primitives.
-    \\  globalThis.__importDefault = function(value) {
-    \\    return value && value.__esModule ? value : { default: value };
-    \\  };
-    \\  globalThis.__importStar = function(value) {
-    \\    if (value && value.__esModule) return value;
-    \\    var namespace = {};
-    \\    if (value !== null && value !== undefined) Object.keys(Object(value)).forEach(function(key) {
-    \\      if (key === "default") return;
-    \\      var descriptor = Object.getOwnPropertyDescriptor(Object(value), key);
-    \\      if (!descriptor || "get" in descriptor || descriptor.writable || descriptor.configurable) {
-    \\        descriptor = { enumerable: true, get: function() { return value[key]; } };
-    \\      }
-    \\      Object.defineProperty(namespace, key, descriptor);
-    \\    });
-    \\    Object.defineProperty(namespace, "default", { enumerable: true, value: value });
-    \\    return namespace;
-    \\  };
-    \\  function fileURL(path) { return "file://" + path.split("/").map(encodeURIComponent).join("/"); }
-    \\  function makeRequire(parentPath) {
-    \\    function localRequire(request) {
-    \\      if (typeof request !== "string") throw new TypeError("Module id must be a string");
-    \\      return load(request, parentPath, false);
-    \\    }
-    \\    localRequire.resolve = function(request) {
-    \\      if (typeof request !== "string") throw new TypeError("Module id must be a string");
-    \\      if (isBuiltin(request)) return request;
-    \\      var resolved = resolveNative(request, parentPath, true);
-    \\      if (resolved === null) throw new Error("cannot resolve module " + request + " from " + parentPath);
-    \\      return resolved.path;
-    \\    };
-    \\    localRequire.cache = cache;
-    \\    Object.defineProperty(localRequire, "main", { get: function() { return mainModule; } });
-    \\    return localRequire;
-    \\  }
-    \\  function load(specifier, parentPath, asMain) {
-    \\    specifier = String(specifier);
-    \\    if (isBuiltin(specifier)) return builtins[specifier];
-    \\    var payload = resolveNative(String(specifier), String(parentPath || ""));
-    \\    if (payload === null) throw new Error("cannot resolve module " + specifier + (parentPath ? " from " + parentPath : ""));
-    \\    if (Object.prototype.hasOwnProperty.call(cache, payload.path)) return cache[payload.path].exports;
-    \\    var module = { id: payload.path, filename: payload.path, loaded: false, exports: {}, parent: null, children: [] };
-    \\    if (payload.esModule) Object.defineProperty(module.exports, "__esModule", { value: true });
-    \\    cache[payload.path] = module;
-    \\    if (asMain) mainModule = module;
-    \\    if (payload.format === "json") {
-    \\      module.exports = JSON.parse(payload.source);
-    \\      module.loaded = true;
-    \\      return module.exports;
-    \\    }
-    \\    var slash = payload.path.lastIndexOf("/");
-    \\    var directory = slash < 0 ? "." : payload.path.slice(0, slash);
-    \\    var localRequire = makeRequire(payload.path);
-    \\    module.require = localRequire;
-    // ECMA-262 import.meta Evaluation creates one extensible, null-prototype
-    // object per module. The host supplies real file metadata and main identity.
-    \\    var metadata = Object.create(null);
-    \\    metadata.url = fileURL(payload.path);
-    \\    metadata.path = payload.path;
-    \\    metadata.dir = directory;
-    \\    metadata.file = payload.path.slice(slash + 1);
-    \\    metadata.dirname = directory;
-    \\    metadata.filename = payload.path;
-    \\    metadata.env = process.env;
-    \\    metadata.main = !!asMain;
-    \\    metadata.require = localRequire;
-    // Capture metadata outside the CommonJS wrapper so its five arguments keep
-    // the same observable shape as modules without import.meta.
-    \\    var wrapper = (0, eval)("(function(" + payload.metaBinding + ", module) { return function(exports, require, " + (payload.moduleBinding || "module") + ", __filename, __dirname) {\n" + payload.source + "\n}; })")(metadata, module);
-    \\    wrapper(module.exports, localRequire, module, payload.path, directory);
-    \\    module.loaded = true;
-    \\    return module.exports;
-    \\  }
-    \\  Home.resolveModule = function(specifier, parentPath) {
-    \\    specifier = String(specifier);
-    \\    if (isBuiltin(specifier)) return specifier;
-    \\    var resolved = resolveNative(String(specifier), String(parentPath || ""), true);
-    \\    if (resolved === null) throw new Error("cannot resolve module " + specifier);
-    \\    return resolved.path;
-    \\  };
-    \\  Home.createRequire = function(parentPath) {
-    \\    if (typeof parentPath !== "string" || parentPath.charAt(0) !== "/" || parentPath.indexOf("\0") !== -1) throw new TypeError("Home require referrer must be an absolute POSIX filename");
-    \\    if (parentPath.charAt(parentPath.length - 1) === "/") parentPath += "__home_require__.js";
-    \\    return makeRequire(parentPath);
-    \\  };
-    \\  Home.require = makeRequire("");
-    \\  Home.runModule = function(specifier) { return load(specifier, "", true); };
-    \\  globalThis.require = Home.require;
-    \\  delete globalThis.__home_tool_resolve_module;
-    \\})();
-;
+const install_glue = @embedFile("tool_modules.js");
 
 pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
     callback.registerCallback(ctx, global, "__home_tool_resolve_module", resolveModuleNative);
