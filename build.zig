@@ -829,6 +829,12 @@ pub fn build(b: *std.Build) void {
             timer_step.dependOn(&run_timer.step);
         }
         home_tool_smoke_step.dependOn(timer_step);
+        const run_readdir = b.addSystemCommand(&.{"python3"});
+        run_readdir.addFileArg(b.path("packages/runtime/test/tool_readdir_fixture.py"));
+        run_readdir.addArtifactArg(home_tool_exe);
+        run_readdir.addFileArg(b.path("packages/runtime/test/tool_modules/fs_readdir.mjs"));
+        run_readdir.expectStdOutEqual("OK actual directory names, seven entry predicates, symlinks, mutations and OS errors\n");
+        home_tool_smoke_step.dependOn(&run_readdir.step);
         const tool_file_tests = b.addTest(.{
             .name = "home-tool-file-io-tests",
             .root_module = b.createModule(.{

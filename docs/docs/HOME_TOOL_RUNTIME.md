@@ -116,6 +116,22 @@ absent: the tool still needs actual input streams and an I/O event loop. The
 existing process.stdout.write writes bytes but does not yet implement Node's
 write callbacks; the helpers do not invent successful callback completion for it.
 
+`fs.readdirSync` and `fs/promises.readdir` enumerate the actual native directory.
+The default returns UTF-8 names; withFileTypes:true returns entry objects with
+name, parentPath and all seven file-kind predicates. Symlinks retain their own
+kind, including broken links; unknown directory-entry types use a no-follow
+stat relative to the open directory. Each call observes current filesystem
+contents and preserves actual OS failures. Native enumeration is synchronous
+even for the Promise facade. This bounded profile accepts string paths, UTF-8
+encoding and boolean withFileTypes; recursive:true, alternate encodings and
+unknown options are refused. Names must be valid UTF-8, with at most 100,000
+entries and 8 MiB of name bytes; a limit/error fails the entire listing. This
+does not expose the full Dirent constructor, opendir or callback API. A required
+common witness creates real files, directories, symlinks, a FIFO and a Unix
+socket using Python only for native fixture preparation, then executes all JS
+operations on the selected Home artifact. Native allocation-failure probes
+also verify partial-list ownership.
+
 The `util`/`node:util` adapter supplies stripVTControlCharacters for primitive
 strings using Node's CSI/terminated-OSC recognizer. It removes actual terminal
 control sequences, including colon-delimited SGR and Unicode/newline OSC data;

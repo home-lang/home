@@ -99,6 +99,35 @@ fn mkdir(path: []const u8, recursive: bool, depth: usize) anyerror!?[]const u8 {
     return path;
 }
 
+const DirectoryEntry = struct { name: []const u8, kind: std.Io.File.Kind };
+
+fn readDirectory(allocator: std.mem.Allocator, root: std.Io.Dir, path: []const u8, with_types: bool) ![]DirectoryEntry {
+    var directory = try root.openDir(io, path, .{ .iterate = true });
+    defer directory.close(io);
+    var entries: std.ArrayList(DirectoryEntry) = .empty;
+    errdefer {
+        for (entries.items) |entry| allocator.free(entry.name);
+        entries.deinit(allocator);
+    }
+    var bytes: usize = 0;
+    var iterator = directory.iterate();
+    while (try iterator.next(io)) |entry| {
+        // This bounded UTF-8 profile never returns an invented replacement
+        // filename or a silently truncated listing.
+        if (!std.unicode.utf8ValidateSlice(entry.name)) return error.Unsupported;
+        bytes += entry.name.len;
+        if (entries.items.len >= 100_000 or bytes > tool_file_max) return error.StreamTooLong;
+        var kind = entry.kind;
+        // Some filesystems return DT_UNKNOWN. Resolve that entry relative to
+        // the open directory, without following even broken symbolic links.
+        if (with_types and kind == .unknown) kind = (try directory.statFile(io, entry.name, .{ .follow_symlinks = false })).kind;
+        const name = try allocator.dupe(u8, entry.name);
+        errdefer allocator.free(name);
+        try entries.append(allocator, .{ .name = name, .kind = kind });
+    }
+    return entries.toOwnedSlice(allocator);
+}
+
 fn operation(
     ctx: ?*types.JSContextRef,
     function: ?*types.JSObject,
@@ -162,6 +191,16 @@ fn operation(
             encoded[index * 2 + 1] = digits[byte & 0xf];
         }
         set(c, object, "hex", text(c, encoded));
+    } else if (std.mem.eql(u8, op, "readdir")) {
+        const entries = readDirectory(allocator, .cwd(), path, recursive) catch |err| return failure(c, object, err);
+        defer {
+            for (entries) |entry| allocator.free(entry.name);
+            allocator.free(entries);
+        }
+        const encoded = std.json.Stringify.valueAlloc(allocator, entries, .{}) catch |err| return failure(c, object, err);
+        defer allocator.free(encoded);
+        const result = text(c, encoded) orelse return failure(c, object, error.OutOfMemory);
+        set(c, object, "entriesJSON", result);
     } else if (std.mem.eql(u8, op, "mkdir")) {
         const first = mkdir(path, recursive, 0) catch |err| return failure(c, object, err);
         if (recursive) if (first) |created| set(c, object, "created", text(c, created));
@@ -197,6 +236,30 @@ fn operation(
 
 pub fn install(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
     callback.registerCallback(ctx, global, "__home_tool_fs_operation", operation);
+}
+
+test "native directory names and kinds release partial allocations" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    try temporary.dir.writeFile(io, .{ .sub_path = "actual.txt", .data = "bytes" });
+    try temporary.dir.createDir(io, "nested", .default_dir);
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator, directory: std.Io.Dir) !void {
+            const entries = try readDirectory(allocator, directory, ".", true);
+            defer {
+                for (entries) |entry| allocator.free(entry.name);
+                allocator.free(entries);
+            }
+            try std.testing.expectEqual(@as(usize, 2), entries.len);
+            for (entries) |entry| {
+                if (std.mem.eql(u8, entry.name, "actual.txt")) try std.testing.expectEqual(.file, entry.kind) else {
+                    try std.testing.expectEqualStrings("nested", entry.name);
+                    try std.testing.expectEqual(.directory, entry.kind);
+                }
+            }
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{temporary.dir});
 }
 
 test "tool file UTF-8 decoder matches the Node byte-pair oracle" {

@@ -149,7 +149,56 @@
     }
     return result;
   }
+  class DirectoryEntry {
+    constructor(name, kind, parentPath) {
+      this.name = name;
+      this.parentPath = parentPath;
+      directoryKinds.set(this, kind);
+    }
+    isFile() {
+      return directoryKinds.get(this) === 'file';
+    }
+    isDirectory() {
+      return directoryKinds.get(this) === 'directory';
+    }
+    isSymbolicLink() {
+      return directoryKinds.get(this) === 'sym_link';
+    }
+    isBlockDevice() {
+      return directoryKinds.get(this) === 'block_device';
+    }
+    isCharacterDevice() {
+      return directoryKinds.get(this) === 'character_device';
+    }
+    isFIFO() {
+      return directoryKinds.get(this) === 'named_pipe';
+    }
+    isSocket() {
+      return directoryKinds.get(this) === 'unix_domain_socket';
+    }
+  }
+  const directoryKinds = new WeakMap();
+  function readDirectory(path, options) {
+    path = stringPath(path);
+    options = typeof options === 'string' ? { encoding: options } : fsOptions(options === null ? undefined : options, ['encoding', 'withFileTypes', 'recursive']);
+    const encoding = options.encoding;
+    const withTypes = options.withFileTypes;
+    const recursive = options.recursive;
+    if (encoding != null && (typeof encoding !== 'string' || !['utf8', 'utf-8'].includes(encoding.toLowerCase()))) unsupported('Home readdir supports UTF-8 names only');
+    if (withTypes !== undefined && typeof withTypes !== 'boolean') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'readdir withFileTypes must be a boolean');
+    if (recursive !== undefined && typeof recursive !== 'boolean') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'readdir recursive must be a boolean');
+    if (recursive === true) unsupported('Home readdir recursive enumeration is not implemented');
+    const encoded = fsOperation('readdir', path, withTypes === true, false).entriesJSON;
+    if (typeof encoded !== 'string') throw new Error('Native directory enumeration returned no entries');
+    return JSON.parse(encoded).map(entry => withTypes ? new DirectoryEntry(entry.name, entry.kind, path) : entry.name);
+  }
+  fs.readdirSync = function(path, options) {
+    return readDirectory(path, options);
+  };
   const fsPromises = {
+    readdir: async function(path, options) {
+      return readDirectory(path, options);
+    },
     writeFile: async function(path, data, options) {
       path = stringPath(path);
       if (typeof data !== 'string' && !fsIsView(data)) {
