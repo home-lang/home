@@ -608,3 +608,14 @@ unref lifetime semantics, numeric signals and other spawn options remain
 explicitly unsupported. Unsupported options are refused before process creation.
 `Home.spawnSync` remains a distinct blocking operation. This surface does not
 implement Bun.build, a test scheduler or general Bun subprocess compatibility.
+
+
+### Canonical paths
+
+`fs.realpathSync` resolves lexical dots to an absolute path before calling the
+native canonicalizer. Its `.native` method and `fs.promises.realpath` pass the
+original path to the OS, preserving physical symlink/parent traversal and actual
+filesystem errors. Results reflect symlink mutations instead of a path cache.
+This bounded surface supports string paths and UTF-8 results; Buffer/URL paths,
+Buffer/other encoded results and non-UTF-8 native names are explicitly refused.
+The filesystem call blocks the tool thread even through the Promise facade.

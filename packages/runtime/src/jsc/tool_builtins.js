@@ -268,9 +268,26 @@
     if (typeof path === 'number') fdOperation('write', path, data);
     else fsOperation('writeFile', path, data, flag, mode);
   }
+  function realPath(path, options, legacy) {
+    path = stringPath(path);
+    options = options == null ? {} : typeof options === 'string' ? { encoding: options } : fsOptions(options, ['encoding']);
+    if (options.encoding != null && (typeof options.encoding !== 'string' || !['utf8', 'utf-8'].includes(options.encoding.toLowerCase()))) unsupported('Home realpath supports UTF-8 string results only');
+    // Node's legacy sync facade resolves lexical dots before physical links.
+    // Native and promised realpath pass the actual path to the OS instead.
+    return fsOperation('realpath', legacy ? posixPath.resolve(path) : path).path;
+  }
+  fs.realpathSync = function(path, options) {
+    return realPath(path, options, true);
+  };
+  fs.realpathSync.native = function(path, options) {
+    return realPath(path, options, false);
+  };
   fs.writeFileSync = writeFile;
   const fsPromises = {
     constants: fsConstants,
+    realpath: async function(path, options) {
+      return realPath(path, options, false);
+    },
     access: async function(path, mode) {
       accessFile(path, mode);
     },

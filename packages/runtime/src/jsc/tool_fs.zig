@@ -345,7 +345,12 @@ fn operation(
         if (!std.math.isFinite(mode) or mode < 0 or mode > 0o7777 or @trunc(mode) != mode) return failure(c, object, error.Unsupported);
         permissions = .fromMode(@intFromFloat(mode));
     }
-    if (std.mem.eql(u8, op, "access")) {
+    if (std.mem.eql(u8, op, "realpath")) {
+        const canonical = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| return failure(c, object, err);
+        defer allocator.free(canonical);
+        if (!std.unicode.utf8ValidateSlice(canonical)) return failure(c, object, error.Unsupported);
+        set(c, object, "path", text(c, canonical));
+    } else if (std.mem.eql(u8, op, "access")) {
         if (count < 3 or !api.JSValueIsNumber(c, args[2])) return failure(c, object, error.Unsupported);
         const mode = api.JSValueToNumber(c, args[2], exception);
         if (!std.math.isFinite(mode) or mode < 0 or mode > 7 or @trunc(mode) != mode) return failure(c, object, error.Unsupported);

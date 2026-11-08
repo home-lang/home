@@ -835,6 +835,12 @@ pub fn build(b: *std.Build) void {
         run_readdir.addFileArg(b.path("packages/runtime/test/tool_modules/fs_readdir.mjs"));
         run_readdir.expectStdOutEqual("OK actual directory names, seven entry predicates, symlinks, mutations and OS errors\n");
         home_tool_smoke_step.dependOn(&run_readdir.step);
+        const run_realpath = b.addSystemCommand(&.{"python3"});
+        run_realpath.addFileArg(b.path("packages/runtime/test/tool_realpath_fixture.py"));
+        run_realpath.addArtifactArg(home_tool_exe);
+        run_realpath.addFileArg(b.path("packages/runtime/test/tool_modules/fs_realpath.mjs"));
+        run_realpath.expectStdOutEqual("OK actual canonical paths, symlink traversal/mutation, native alias, errno and promise rejections\n");
+        home_tool_smoke_step.dependOn(&run_realpath.step);
         const run_access = b.addSystemCommand(&.{"python3"});
         run_access.addFileArg(b.path("packages/runtime/test/tool_access_fixture.py"));
         run_access.addArtifactArg(home_tool_exe);
