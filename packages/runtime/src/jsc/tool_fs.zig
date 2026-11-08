@@ -13,6 +13,17 @@ fn readToolFile(dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator)
     return dir.readFileAlloc(io, path, allocator, .limited(tool_file_max + 1));
 }
 
+fn decodeToolText(allocator: std.mem.Allocator, bytes: []const u8) ![]u16 {
+    const valid = std.unicode.utf8ValidateSlice(bytes);
+    // The stdlib formatter implements WHATWG maximal-subpart replacement.
+    // Keep BOM handling in the file facade, alongside its Blob text contract.
+    const normalized = if (valid) bytes else try std.fmt.allocPrint(allocator, "{f}", .{std.unicode.fmtUtf8(bytes)});
+    defer if (!valid) allocator.free(normalized);
+    const chars = try std.unicode.utf8ToUtf16LeAlloc(allocator, normalized);
+    for (chars) |*char| char.* = std.mem.littleToNative(u16, char.*);
+    return chars;
+}
+
 pub fn string(ctx: *types.JSContextRef, value: ?*types.JSValue, allocator: std.mem.Allocator) ?[]u8 {
     const js_string = api.JSValueToStringCopy(ctx, value, null) orelse return null;
     defer api.JSStringRelease(js_string);
@@ -129,9 +140,20 @@ fn operation(
         };
         defer allocator.free(contents);
         std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = contents }) catch |err| return failure(c, object, err);
-    } else if (std.mem.eql(u8, op, "readFile") or std.mem.eql(u8, op, "readToolFile")) {
-        const contents = (if (std.mem.eql(u8, op, "readToolFile")) readToolFile(.cwd(), path, allocator) else std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited)) catch |err| return failure(c, object, err);
+    } else if (std.mem.eql(u8, op, "readFile") or std.mem.eql(u8, op, "readToolFile") or std.mem.eql(u8, op, "readToolTextFile")) {
+        const bounded = !std.mem.eql(u8, op, "readFile");
+        const contents = (if (bounded) readToolFile(.cwd(), path, allocator) else std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited)) catch |err| return failure(c, object, err);
         defer allocator.free(contents);
+        set(c, object, "byteLength", api.JSValueMakeNumber(c, @floatFromInt(contents.len)));
+        if (std.mem.eql(u8, op, "readToolTextFile")) {
+            const chars = decodeToolText(allocator, contents) catch |err| return failure(c, object, err);
+            defer allocator.free(chars);
+            const js_string = api.JSStringCreateWithCharacters(chars.ptr, chars.len) orelse return failure(c, object, error.OutOfMemory);
+            defer api.JSStringRelease(js_string);
+            const value = api.JSValueMakeString(c, js_string) orelse return failure(c, object, error.OutOfMemory);
+            set(c, object, "text", value);
+            return @ptrCast(object);
+        }
         const encoded = allocator.alloc(u8, contents.len * 2) catch return failure(c, object, error.OutOfMemory);
         defer allocator.free(encoded);
         const digits = "0123456789abcdef";
@@ -175,6 +197,33 @@ fn operation(
 
 pub fn install(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
     callback.registerCallback(ctx, global, "__home_tool_fs_operation", operation);
+}
+
+test "tool file UTF-8 decoder matches the Node byte-pair oracle" {
+    const reference = @import("tool_file_text_reference");
+    const parsed = try std.json.parseFromSlice(struct { node: []const u8, pairs: usize, text: []const u8 }, std.testing.allocator, reference.expected, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 65536), parsed.value.pairs);
+    const expected = try std.unicode.utf8ToUtf16LeAlloc(std.testing.allocator, parsed.value.text);
+    defer std.testing.allocator.free(expected);
+    for (expected) |*char| char.* = std.mem.littleToNative(u16, char.*);
+    const actual = try decodeToolText(std.testing.allocator, reference.bytes);
+    defer std.testing.allocator.free(actual);
+    try std.testing.expectEqualSlices(u16, expected, actual);
+}
+
+test "tool file UTF-8 decoder releases partial allocations on failure" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const actual = try decodeToolText(allocator, "\xef\xbb\xbf\x00\xf0\x9f\x9f\xa2\xed\xa0\x80suffix\xf0\x9f\x92");
+            defer allocator.free(actual);
+            try std.testing.expect(actual.len > 4);
+            try std.testing.expectEqual(@as(u16, 0xfeff), actual[0]);
+            try std.testing.expectEqual(@as(u16, 0), actual[1]);
+            try std.testing.expectEqual(@as(u16, 0xfffd), actual[actual.len - 1]);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{});
 }
 
 test "tool file reads preserve exact bytes at the inclusive limit and refuse larger files" {

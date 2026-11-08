@@ -1,5 +1,5 @@
 // A readonly filesystem-backed profile; this does not impersonate a Web Blob.
-globalThis.__home_tool_file_factory = function(fsOperation, Buffer, decodeUtf8Hex) {
+globalThis.__home_tool_file_factory = function(fsOperation, Buffer) {
   'use strict';
   const files = new WeakMap();
   const maxBytes = 8 * 1024 * 1024;
@@ -38,26 +38,26 @@ globalThis.__home_tool_file_factory = function(fsOperation, Buffer, decodeUtf8He
     state.metadata = metadata;
     return metadata;
   }
-  function read(file) {
+  function read(file, asText = false) {
     const state = stateFor(file);
     const metadata = inspect(state);
     if (metadata && metadata.kind !== 'file' && metadata.kind !== 'directory') unsupported();
     if (metadata && metadata.size > maxBytes)
       fail('ERR_BUFFER_TOO_LARGE', 'Home file reads are limited to 8 MiB', RangeError);
-    let hex;
+    let result;
     try {
       // Missing paths/directories still perform the real OS read and preserve
       // its failure. No empty Buffer or successful missing-file read is made.
-      hex = fsOperation('readToolFile', state.path, false, false).hex;
+      result = fsOperation(asText ? 'readToolTextFile' : 'readToolFile', state.path, false, false);
     }
     catch (error) {
       error.syscall = error.code === 'EISDIR' ? 'read' : 'open';
       throw error;
     }
     inspect(state);
-    if (hex.length / 2 > maxBytes)
+    if (result.byteLength > maxBytes)
       fail('ERR_BUFFER_TOO_LARGE', 'Home file reads are limited to 8 MiB', RangeError);
-    return hex;
+    return asText ? result.text : result.hex;
   }
   function FileSource(path) {
     files.set(this, { path, observed: false, metadata: null });
@@ -67,11 +67,10 @@ globalThis.__home_tool_file_factory = function(fsOperation, Buffer, decodeUtf8He
     return metadata !== null && metadata.kind === 'file';
   };
   function text(file) {
-    // Decode the actual native bytes once. Text reads must not round-trip
-    // through publicly mutable Buffer methods or rebuild their hex string.
-    const value = decodeUtf8Hex(read(file));
+    const value = read(file, true);
+    if (typeof value !== 'string') throw new Error('Native file read returned no text');
     // Blob text decoding consumes one initial UTF-8 BOM. Node readFile keeps
-    // it, so the shared Buffer decoder deliberately leaves this to the file.
+    // it, so the native decoder deliberately leaves this to the file.
     return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
   }
   FileSource.prototype.text = async function() {

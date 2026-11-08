@@ -587,7 +587,7 @@
   delete globalThis.__home_tool_glob;
   const markdownApi = globalThis.__home_tool_markdown_api;
   delete globalThis.__home_tool_markdown_api;
-  const bunApi = { markdown: markdownApi, Glob: globFactory(nativeGlob), YAML: { parse: Home.parseYAML }, file: fileFactory(fsOperation, bufferApi.Buffer, decodeUtf8) };
+  const bunApi = { markdown: markdownApi, Glob: globFactory(nativeGlob), YAML: { parse: Home.parseYAML }, file: fileFactory(fsOperation, bufferApi.Buffer) };
   Object.defineProperty(bunApi, 'argv', { value: process.argv, writable: true, enumerable: true, configurable: false });
   globalThis.Bun = bunApi;
   builtins.bun = bunApi;

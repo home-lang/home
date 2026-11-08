@@ -809,7 +809,14 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             }),
         });
+        tool_file_tests.root_module.addAnonymousImport("tool_file_text_reference", .{
+            .root_source_file = b.path("packages/runtime/test/tool_file_text_reference.zig"),
+        });
         home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_file_tests).step);
+        const run_file_utf8_native = b.addRunArtifact(home_tool_exe);
+        run_file_utf8_native.addArgs(&.{ "run", "packages/runtime/test/tool_modules/bun_file_utf8_native.mjs" });
+        run_file_utf8_native.expectStdOutEqual("OK actual file UTF-8 matches 65536 byte pairs and multibyte boundaries\n");
+        home_tool_smoke_step.dependOn(&run_file_utf8_native.step);
         const tool_glob_matcher_tests = b.addTest(.{ .name = "home-tool-glob-matcher-tests", .root_module = tool_glob_matcher_pkg });
         home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_glob_matcher_tests).step);
         const tool_glob_walk_tests = b.addTest(.{

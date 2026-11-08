@@ -191,6 +191,10 @@ arrayBuffer, size and existing-file lastModified use actual native stat/read
 operations. Byte reads preserve all bytes and return independent managed data;
 text consumes one UTF-8 BOM and replaces invalid UTF-8, and JSON parsing rejects
 invalid data. Missing paths and directory reads retain actual filesystem errors.
+Text and JSON reads use native WHATWG UTF-8 decoding and a length-bearing UTF-16
+result. They retain embedded NULs and supplementary characters without the
+hexadecimal transport used for raw byte reads. The common gate checks every
+two-byte input combination against a pinned Node-generated decoder oracle.
 The methods return real promises; their underlying OS operations are synchronous.
 
 Reads are limited to 8 MiB in the native reader, including an exact-limit test
