@@ -490,7 +490,11 @@
   };
   const accountHomedir = globalThis.__home_tool_account_homedir;
   delete globalThis.__home_tool_account_homedir;
+  const osProcess = process;
   const osApi = {
+    platform: function() {
+      return osProcess.platform;
+    },
     homedir: function() {
       if (Object.prototype.hasOwnProperty.call(process.env, 'HOME')) {
         if (typeof process.env.HOME !== 'string') unsupported('Home os.homedir requires a string HOME environment value');

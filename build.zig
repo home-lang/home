@@ -849,6 +849,11 @@ pub fn build(b: *std.Build) void {
         run_bun_env.setEnvironmentVariable("ECOSYSTEM_ENV_WITNESS", "native-witness");
         run_bun_env.expectStdOutEqual("OK actual OS environment aliases, descriptor, mutation and native child forwarding\n");
         home_tool_smoke_step.dependOn(&run_bun_env.step);
+        const run_os_platform = b.addRunArtifact(home_tool_exe);
+        run_os_platform.addArg("run");
+        run_os_platform.addFileArg(b.path("packages/runtime/test/tool_modules/os_platform.mjs"));
+        run_os_platform.expectStdOutEqual("OK native OS platform source, aliases and Node process-property semantics\n");
+        home_tool_smoke_step.dependOn(&run_os_platform.step);
         inline for (.{
             .{ "contextual_type_assignment.mjs", "OK actual contextual type assignments across blocks and exported function bodies\n" },
             .{ "contextual_type_alias.ts", "OK actual type aliases erase without consuming contextual assignments\n" },

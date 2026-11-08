@@ -309,7 +309,13 @@ Home's ESM lowering currently lacks implicit strict assignment errors. The
 readonly-property witness uses explicit strict code; that separate semantic
 gap remains outside the supported profile.
 
-The `os`/`node:os` adapter implements POSIX `homedir`: it honors string HOME
+The `os`/`node:os` adapter supplies platform from the original native process
+object. Reads follow that object's current platform property, matching Node 26
+under property redefinition; replacing globalThis.process keeps the original
+binding. Bun 1.4.4 retains its native platform constant in that experiment, and
+the reference difference remains explicit.
+
+The adapter also implements POSIX `homedir`: it honors string HOME
 values (including empty strings), then queries the real current-user account
 via reentrant `getpwuid_r` when HOME is absent, on macOS/Linux. Native lookup
 failure throws. Other os APIs remain absent. Node is the oracle for mutable HOME
