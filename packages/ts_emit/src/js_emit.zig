@@ -8089,7 +8089,7 @@ pub const Printer = struct {
         // A qualified name (`namespace A.B.C`) desugars to nested IIFEs.
         // The parser interns the dotted text as one identifier name.
         const full = if (self.hir.kindOf(n.name) == .identifier)
-            self.interner.get(hir_mod.identifierOf(self.hir, n.name).name)
+            self.interner.get(n.raw_name orelse hir_mod.identifierOf(self.hir, n.name).name)
         else
             "";
         var parts: [16][]const u8 = undefined;
@@ -8197,7 +8197,7 @@ pub const Printer = struct {
             try self.write("const ");
             try self.printExpression(imp.default_binding);
             try self.write(" = require(\"");
-            try self.write(self.interner.get(imp.module));
+            try self.write(self.interner.get(imp.raw_module orelse imp.module));
             try self.write("\")");
             try self.writeSemi();
             return;
@@ -8237,13 +8237,13 @@ pub const Printer = struct {
         }
         if (any_local) try self.write(" from ");
         try self.write("\"");
-        try self.write(self.interner.get(imp.module));
+        try self.write(self.interner.get(imp.raw_module orelse imp.module));
         try self.write("\"");
         try self.writeSemi();
     }
 
     fn printImportCjs(self: *Printer, node: NodeId, imp: hir_mod.ImportPayload) !void {
-        const module_str = self.interner.get(imp.module);
+        const module_str = self.interner.get(imp.raw_module orelse imp.module);
         const named = hir_mod.importNamed(self.hir, node);
         const has_default = imp.default_binding != hir_mod.none_node_id;
         const has_namespace = imp.namespace_binding != hir_mod.none_node_id;
@@ -8393,7 +8393,7 @@ pub const Printer = struct {
                 try self.write(alias);
             }
             try self.write(" from \"");
-            try self.write(self.interner.get(ex.module));
+            try self.write(self.interner.get(ex.raw_module orelse ex.module));
             try self.write("\"");
             try self.writeSemi();
             return;
@@ -8411,7 +8411,7 @@ pub const Printer = struct {
             }
         }
         try self.write(" }");
-        const empty_id = self.interner.get(ex.module);
+        const empty_id = self.interner.get(ex.raw_module orelse ex.module);
         if (empty_id.len > 0) {
             try self.write(" from \"");
             try self.write(empty_id);
@@ -8460,7 +8460,7 @@ pub const Printer = struct {
             return;
         }
         // `export * [as ns] from "m"` — namespace re-export.
-        const re_export_module = self.interner.get(ex.module);
+        const re_export_module = self.interner.get(ex.raw_module orelse ex.module);
         if (ex.is_namespace) {
             const alias = self.interner.get(ex.namespace_alias);
             if (alias.len > 0) {

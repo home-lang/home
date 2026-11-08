@@ -19,6 +19,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ts_driver = @import("ts_driver");
+const ts_lexer = @import("ts_lexer");
 const ts_resolver = @import("ts_resolver");
 const ts_cache = @import("ts_cache");
 const tsconfig_mod = @import("tsconfig");
@@ -73,85 +74,102 @@ const OwnerMutex = struct {
     }
 };
 
-/// Why a file is part of the program — mirrors tsgo's
-/// `FileIncludeReason` (the subset Home can determine today). Drives the
-/// `--explainFiles` line for each file. Root-file provenance is supplied
-/// by the CLI layer (which knows how the path was specified); the
-/// program records the transitive reason here while building the edge
-/// graph, so `--explainFiles` can render TS1393/TS1400/TS1402/TS1405
-/// plus compilerOptions type/lib entries, and diagnostics can attach
-/// the corresponding related-information anchors.
-pub const IncludeKind = enum {
-    root,
-    import,
-    reference_file,
-    type_reference,
-    lib_reference,
-    imported_helper,
-    jsx_runtime_import,
-    compiler_type_reference,
-    implicit_type_reference,
-    compiler_lib_reference,
-    default_lib_reference,
-};
+pub const inclusion_requests = @import("inclusion_requests.zig");
+pub const IncludeKind = inclusion_requests.IncludeKind;
+pub const IncludeReason = inclusion_requests.IncludeReason;
 
-pub const IncludeReason = struct {
-    kind: IncludeKind = .root,
-    /// For non-root reasons: the file id that pulled this one in (the
-    /// importer, or the file containing the triple-slash directive).
-    importer: FileId = 0,
-    /// The reference text as written: for `.import` the module specifier
-    /// quoted to match tsgo's `referenceLocation.text()`; for
-    /// triple-slash references the bare target text. Owned by the program.
-    specifier_text: []const u8 = "",
-    /// tsc package identity for node_modules imports/type-reference
-    /// directives when the resolver found one. Owned by the program when
-    /// non-empty.
-    package_id: []const u8 = "",
-    /// Emitted declaration output path that redirected to this source file
-    /// through project-reference resolution. Owned by the program when non-empty.
-    project_reference_output: []const u8 = "",
-    /// Byte offset of the import/reference specifier in the importer.
-    /// Used for related-information anchors.
-    specifier_pos: u32 = 0,
+test "Program: escaped call module references use cooked literal values" {
+    const source = "export const one = require('./sh\\u0061red'); export const two = import(`./sh\\u0061red`);";
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer fs.deinit();
+    try fs.addFile("/entry.js", source);
+    try fs.addFile("/shared.ts", "export const shared = 1;");
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, fs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/entry.js", source);
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(.{ .bind_only = true, .allow_js = true }));
+    const target = program.lookupPath("/shared.ts").?;
+    var view = try program.inclusions.view(std.testing.allocator);
+    defer view.deinit();
+    try std.testing.expectEqual(@as(usize, 2), view.forTarget(target).len);
+}
 
-    pub fn relatedDiagnosticCode(self: IncludeReason) ?u32 {
-        const code_file_included_via_import_here: u32 = 1399;
-        const code_file_included_via_reference_here: u32 = 1401;
-        const code_file_included_via_type_reference_here: u32 = 1404;
-        const code_file_included_via_lib_reference_here: u32 = 1406;
-        const code_file_is_entry_point_of_type_library_specified_here: u32 = 1419;
-        const code_file_is_library_specified_here: u32 = 1423;
-        const code_file_is_default_library_for_target_specified_here: u32 = 1426;
-        return switch (self.kind) {
-            .import => code_file_included_via_import_here,
-            .reference_file => code_file_included_via_reference_here,
-            .type_reference => code_file_included_via_type_reference_here,
-            .lib_reference => code_file_included_via_lib_reference_here,
-            .compiler_type_reference => code_file_is_entry_point_of_type_library_specified_here,
-            .compiler_lib_reference => code_file_is_library_specified_here,
-            .default_lib_reference => code_file_is_default_library_for_target_specified_here,
-            .root, .imported_helper, .jsx_runtime_import, .implicit_type_reference => null,
-        };
+test "Program: escaped ambient module names share the semantic import identity" {
+    const declarations = "declare module 'kit\\u002dname' { export const value: number; }";
+    for ([_][]const u8{
+        "import { value } from 'kit-name'; export const result = value;",
+        "import { value } from 'kit\\u002dname'; export const result = value;",
+    }) |source| {
+        var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer fs.deinit();
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, fs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/ambient.d.ts", declarations);
+        const entry = try program.add("/entry.ts", source);
+        try program.compileAll(.{ .no_emit = true });
+        try expectCompilationLacksDiagnosticCode(program.files.items[entry].compilation.?, 2307);
     }
+}
 
-    pub fn relatedDiagnosticMessage(self: IncludeReason) ?[]const u8 {
-        return switch (self.kind) {
-            .import => "File is included via import here.",
-            .reference_file => "File is included via reference here.",
-            .type_reference => "File is included via type library reference here.",
-            .lib_reference => "File is included via library reference here.",
-            .compiler_type_reference => "File is entry point of type library specified here.",
-            .compiler_lib_reference => "File is library specified here.",
-            .default_lib_reference => "File is default library for target specified here.",
-            .root, .imported_helper, .jsx_runtime_import, .implicit_type_reference => null,
-        };
+test "Program: all import sites survive topology deduplication and refresh" {
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer fs.deinit();
+    const first = "import { shared as one } from './shared'; import { shared as two } from './shared'; export const a = one + two;";
+    const second = "import { shared } from './shared'; export const b = shared;";
+    try fs.addFile("/a.ts", first);
+    try fs.addFile("/b.ts", second);
+    try fs.addFile("/shared.ts", "export const shared = 1;");
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, fs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    const a = try program.add("/a.ts", first);
+    _ = try program.add("/b.ts", second);
+    _ = try program.loadImportClosure(.{ .bind_only = true });
+    const shared = program.lookupPath("/shared.ts").?;
+    {
+        var view = try program.inclusions.view(std.testing.allocator);
+        defer view.deinit();
+        try std.testing.expectEqual(@as(usize, 3), view.forTarget(shared).len);
+        try std.testing.expectEqual(@as(usize, 2), view.forImporter(a).len);
+        try std.testing.expectEqual(@as(usize, 1), program.files.items[a].imports.items.len);
     }
+    _ = try program.updateSource("/a.ts", "export const a = 0;");
+    _ = try program.loadImportClosure(.{ .bind_only = true });
+    var view = try program.inclusions.view(std.testing.allocator);
+    defer view.deinit();
+    try std.testing.expectEqual(@as(usize, 1), view.forTarget(shared).len);
+    try std.testing.expectEqual(@as(usize, 0), view.forImporter(a).len);
+}
 
-    pub fn specifierSpanLen(self: IncludeReason) u32 {
-        return @intCast(@min(self.specifier_text.len, std.math.maxInt(u32)));
+test "Program: reference sites include existing targets and do not accumulate across closure passes" {
+    var fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer fs.deinit();
+    const source = "/// <reference path='./shared.ts' />\nimport { shared } from './shared'; export const a = shared;";
+    try fs.addFile("/a.ts", source);
+    try fs.addFile("/b.ts", source);
+    try fs.addFile("/shared.ts", "export const shared = 1;");
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, fs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/a.ts", source);
+    _ = try program.add("/b.ts", source);
+    const shared = try program.add("/shared.ts", "export const shared = 1;");
+    for (0..2) |_| {
+        _ = try program.loadImportClosure(.{ .bind_only = true });
+        var view = try program.inclusions.view(std.testing.allocator);
+        defer view.deinit();
+        try std.testing.expectEqual(@as(usize, 4), view.forTarget(shared).len);
+        for (view.forTarget(shared), [_]IncludeKind{ .reference_file, .import, .reference_file, .import }) |id, kind| {
+            try std.testing.expectEqual(kind, program.inclusions.get(id).?.reason.kind);
+        }
     }
-};
+}
 
 fn findIncludeSpecifierPosition(source: []const u8, specifier_text: []const u8) u32 {
     if (specifier_text.len == 0) return 0;
@@ -226,9 +244,9 @@ pub const File = struct {
     node_modules_depth: u32,
     /// Resolver-derived implied Node format for ambiguous extensions.
     package_type_module: bool,
-    /// First-seen reason this file is in the program. `null` until set
-    /// by `resolveImports` (for imported files); root files are
-    /// classified by the CLI layer at `--explainFiles` time.
+    /// First-reason compatibility projection borrowing registry-owned strings.
+    /// All authored inclusion sites live in Program.inclusions. Root provenance
+    /// is supplied by the CLI, independently of this projection.
     include_reason: ?IncludeReason = null,
     /// Package-ID deduplication redirect target. When two physical
     /// node_modules files have the same package identity, tsgo keeps the
@@ -420,6 +438,7 @@ pub const Program = struct {
     by_package_id: std.StringHashMapUnmanaged(FileId),
     deduplicate_packages: bool,
     no_resolve: bool = false,
+    inclusions: inclusion_requests.Registry,
     resolver: *ts_resolver.Resolver,
     /// Stored sources keyed by path (we own the dupes).
     sources: std.HashMapUnmanaged([]const u8, []const u8, ts_resolver.FileNameContext, 80),
@@ -435,6 +454,7 @@ pub const Program = struct {
             .by_path = .empty,
             .by_package_id = .empty,
             .deduplicate_packages = true,
+            .inclusions = inclusion_requests.Registry.init(.{ .case_sensitive = resolver.fs.use_case_sensitive_file_names }),
             .resolver = resolver,
             .sources = .empty,
         };
@@ -446,15 +466,11 @@ pub const Program = struct {
             self.dropCompilation(f);
             f.imports.deinit(self.gpa);
             f.include_edges.deinit(self.gpa);
-            if (f.include_reason) |ir| {
-                if (ir.specifier_text.len != 0) self.gpa.free(ir.specifier_text);
-                if (ir.package_id.len != 0) self.gpa.free(ir.package_id);
-                if (ir.project_reference_output.len != 0) self.gpa.free(ir.project_reference_output);
-            }
             self.gpa.free(f.path);
             self.gpa.destroy(f);
         }
         self.files.deinit(self.gpa);
+        self.inclusions.deinit(self.gpa);
         self.owners.deinit();
         if (self.strings) |*strings| strings.deinit();
 
@@ -1859,14 +1875,14 @@ pub const Program = struct {
         self.deduplicate_packages = options.deduplicate_packages;
         if (options.bind_only) {
             try self.prepareFiles(options);
-            try self.resolveImports();
+            try self.resolveImports(options);
             return;
         }
         try self.prepareFiles(options);
         // Checked CommonJS owner types must exist before a requiring consumer
         // is checked. The bound graph is complete at this point, so establish
         // dependency order without reparsing or a second checker pass.
-        try self.resolveImports();
+        try self.resolveImports(options);
         const compilation_order = try self.dependencyOrder();
         defer self.gpa.free(compilation_order);
         var globals = try self.collectBoundGlobals();
@@ -2130,7 +2146,7 @@ pub const Program = struct {
         self.deduplicate_packages = options.deduplicate_packages;
         if (options.bind_only) {
             try self.prepareFiles(options);
-            try self.resolveImports();
+            try self.resolveImports(options);
             for (self.files.items) |file| {
                 if (file.redirect_target != null) continue;
                 const compilation = file.compilation orelse continue;
@@ -2139,7 +2155,7 @@ pub const Program = struct {
             return;
         }
         try self.prepareFiles(options);
-        try self.resolveImports();
+        try self.resolveImports(options);
         const compilation_order = try self.dependencyOrder();
         defer self.gpa.free(compilation_order);
         var globals = try self.collectBoundGlobals();
@@ -4411,13 +4427,13 @@ pub const Program = struct {
         self.deduplicate_packages = options.deduplicate_packages;
         if (options.bind_only) {
             try self.compileFilesParallel(options, workers);
-            try self.resolveImports();
+            try self.resolveImports(options);
             return;
         }
         var bind_options = options;
         bind_options.bind_only = true;
         try self.compileFilesParallel(bind_options, workers);
-        try self.resolveImports();
+        try self.resolveImports(options);
         var globals = try self.collectBoundGlobals();
         defer globals.deinit(self.gpa);
         self.prepareSourceMarkers();
@@ -4714,7 +4730,12 @@ pub const Program = struct {
 
     /// Walk every compiled file's import declarations and resolve
     /// each to a FileId, populating the adjacency list.
-    fn resolveImports(self: *Program) ProgramError!void {
+    fn resolveImports(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        // Rebuild source-site reasons from the current bound sources. Compiler
+        // roots and injected requests have their own closure lifetime.
+        for (self.files.items) |file| file.include_reason = null;
+        self.inclusions.clear(self.gpa, .reference);
+        self.restorePrimaryIncludeReasons();
         var targets: std.AutoHashMapUnmanaged(FileId, void) = .empty;
         defer targets.deinit(self.gpa);
         var specifiers: std.ArrayListUnmanaged(StaticModuleReference) = .empty;
@@ -4731,6 +4752,7 @@ pub const Program = struct {
             // bail mid-parse). blockStmts asserts kind == .block_stmt,
             // so skip resolution for malformed roots.
             if (c.hir.kindOf(root) != .block_stmt) continue;
+            try self.recordBoundReferenceReasons(f, options);
             specifiers.clearRetainingCapacity();
             try appendStaticModuleReferences(self.gpa, c, &specifiers);
             for (specifiers.items) |reference| {
@@ -4746,55 +4768,99 @@ pub const Program = struct {
                 // the LSP will pick it up when the file is added.
                 if (self.by_path.getContext(res.path, self.file_name_context)) |target_id| {
                     if (!self.files.items[target_id].present) continue;
+                    const quoted = if (reference.position) |start| blk: {
+                        if (reference.token_end) |end| {
+                            if (start < end and end <= f.source.len) break :blk try self.gpa.dupe(u8, f.source[start..end]);
+                        }
+                        break :blk try quotedSpecifier(self.gpa, module_name);
+                    } else try quotedSpecifier(self.gpa, module_name);
+                    defer self.gpa.free(quoted);
+                    try self.recordIncludeReason(target_id, res.path, .{
+                        .kind = .import,
+                        .importer = f.id,
+                        .specifier_text = quoted,
+                        .package_id = res.package_id orelse "",
+                        .project_reference_output = res.project_reference_output orelse "",
+                        .specifier_pos = reference.position orelse findIncludeSpecifierPosition(f.source, quoted),
+                    });
+                    // Topology is unique by target; inclusion is unique by
+                    // authored site, so record it before deduplicating edges.
                     const seen = try targets.getOrPut(self.gpa, target_id);
-                    if (seen.found_existing) continue;
-                    try f.imports.append(self.gpa, target_id);
-                    // Record *why* the target is in the program, for
-                    // `--explainFiles` (TS1393). First importer wins,
-                    // matching tsgo's first-add reason ordering. The
-                    // specifier is quoted to mirror tsgo's source-slice
-                    // reference text; Home's interner drops the original
-                    // quotes, so we normalize to double quotes.
-                    const target = self.files.items[target_id];
-                    // An automatic visible-`@types` scan can discover the
-                    // same declaration before a real source import does.
-                    // Upstream explains that file through the concrete
-                    // import, which carries the importer, source span and
-                    // package identity; replace only the weaker implicit
-                    // reason and preserve every explicit/root reason.
-                    const replace_implicit = if (target.include_reason) |reason|
-                        reason.kind == .implicit_type_reference
-                    else
-                        false;
-                    if (target.include_reason == null or replace_implicit) {
-                        if (replace_implicit) self.clearIncludeReason(target);
-                        const package_id = if (res.package_id) |id| try self.gpa.dupe(u8, id) else "";
-                        errdefer if (package_id.len != 0) self.gpa.free(package_id);
-                        const project_reference_output = if (res.project_reference_output) |output| try self.gpa.dupe(u8, output) else "";
-                        errdefer if (project_reference_output.len != 0) self.gpa.free(project_reference_output);
-                        const quoted = try std.fmt.allocPrint(self.gpa, "\"{s}\"", .{module_name});
-                        errdefer self.gpa.free(quoted);
-                        target.include_reason = .{
-                            .kind = .import,
-                            .importer = f.id,
-                            .specifier_text = quoted,
-                            .package_id = package_id,
-                            .project_reference_output = project_reference_output,
-                            .specifier_pos = reference.position orelse findIncludeSpecifierPosition(f.source, quoted),
-                        };
-                    }
+                    if (!seen.found_existing) try f.imports.append(self.gpa, target_id);
                 }
             }
         }
     }
 
-    fn clearIncludeReason(self: *Program, file: *File) void {
-        if (file.include_reason) |reason| {
-            if (reason.specifier_text.len != 0) self.gpa.free(reason.specifier_text);
-            if (reason.package_id.len != 0) self.gpa.free(reason.package_id);
-            if (reason.project_reference_output.len != 0) self.gpa.free(reason.project_reference_output);
-        }
+    fn clearIncludeReason(_: *Program, file: *File) void {
+        // A compatibility projection. Its strings belong to the registry.
         file.include_reason = null;
+    }
+
+    fn restorePrimaryIncludeReasons(self: *Program) void {
+        for (self.inclusions.entries) |list| for (list.items) |entry| {
+            const id = entry.target_id orelse continue;
+            const target = self.files.items[id];
+            if (target.present and target.include_reason == null) target.include_reason = entry.reason;
+        };
+    }
+
+    fn recordIncludeReason(self: *Program, target_id: FileId, file_name: []const u8, reason: IncludeReason) ProgramError!void {
+        const id = try self.inclusions.record(self.gpa, .{ .file_name = file_name, .target_id = target_id, .reason = reason });
+        const target = self.files.items[target_id];
+        if (target.include_reason == null or (target.include_reason.?.kind == .implicit_type_reference and reason.kind == .import)) {
+            target.include_reason = self.inclusions.get(id).?.reason;
+        }
+    }
+
+    fn recordBoundReferenceReasons(self: *Program, file: *File, options: ts_driver.CompileOptions) ProgramError!void {
+        const compilation = file.compilation orelse return;
+        const ReferenceKind = @TypeOf(compilation.references.items[0].kind);
+        for ([_]ReferenceKind{ .path, .types, .lib }) |family| {
+            for (compilation.references.items) |reference| {
+                if (reference.kind != family) continue;
+                const kind: IncludeKind = switch (reference.kind) {
+                    .path => .reference_file,
+                    .types => .type_reference,
+                    .lib => .lib_reference,
+                };
+                if (kind == .lib_reference) {
+                    if (noLibEnabled(options)) continue;
+                } else if (noResolveEnabled(options)) continue;
+                var package_id: []const u8 = "";
+                var project_output: []const u8 = "";
+                const path = switch (reference.kind) {
+                    .path => try self.joinReferencePath(file.path, reference.name),
+                    .lib => try self.resolveLibReferencePath(file.path, reference.name, options.default_library_path) orelse continue,
+                    .types => blk: {
+                        const resolution = if (reference.resolution_mode) |mode|
+                            self.resolver.resolveTypeReferenceDirectiveWithMode(reference.name, file.path, switch (mode) {
+                                .import => .import,
+                                .require => .require,
+                            })
+                        else
+                            self.resolver.resolveTypeReferenceDirective(reference.name, file.path);
+                        const result = resolution catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            else => continue,
+                        };
+                        package_id = result.package_id orelse "";
+                        project_output = result.project_reference_output orelse "";
+                        break :blk try self.gpa.dupe(u8, result.path);
+                    },
+                };
+                defer self.gpa.free(path);
+                const target = self.lookupPath(path) orelse continue;
+                try self.recordIncludeReason(target, path, .{
+                    .kind = kind,
+                    .importer = file.id,
+                    .specifier_text = reference.name,
+                    .specifier_pos = reference.pos,
+                    .package_id = package_id,
+                    .project_reference_output = project_output,
+                });
+            }
+        }
     }
 
     fn markReachableFile(self: *const Program, reached: []bool, queue: []FileId, queued: *usize, id: FileId) void {
@@ -4862,6 +4928,7 @@ pub const Program = struct {
         order: u32,
         /// Opening quote position when represented by a real expression node.
         position: ?u32 = null,
+        token_end: ?u32 = null,
     };
 
     /// Collect the same static one-literal-argument `require` shape used by
@@ -4870,13 +4937,24 @@ pub const Program = struct {
     /// specifiers as dependencies.
     fn appendStaticModuleReferences(
         gpa: std.mem.Allocator,
-        c: *const ts_driver.Compilation,
+        c: *ts_driver.Compilation,
         out: *std.ArrayListUnmanaged(StaticModuleReference),
     ) !void {
         if (c.hir.kindOf(c.root) != .block_stmt) return;
         for (hir_mod_ns.blockStmts(&c.hir, c.root)) |statement| {
             if (staticModuleSpecifier(c, statement)) |specifier| {
-                try out.append(gpa, .{ .specifier = specifier, .order = c.hir.spanOf(statement).start });
+                const position, const token_end = switch (c.hir.kindOf(statement)) {
+                    .import_decl => blk: {
+                        const payload = hir_mod_ns.importOf(&c.hir, statement);
+                        break :blk .{ payload.module_specifier_pos, payload.module_specifier_end };
+                    },
+                    .export_decl => blk: {
+                        const payload = hir_mod_ns.exportOf(&c.hir, statement);
+                        break :blk .{ payload.module_specifier_pos, payload.module_specifier_end };
+                    },
+                    else => unreachable,
+                };
+                try out.append(gpa, .{ .specifier = specifier, .order = c.hir.spanOf(statement).start, .position = position, .token_end = token_end });
             }
         }
         var node: hir_mod_ns.NodeId = 1;
@@ -4887,6 +4965,7 @@ pub const Program = struct {
                     .specifier = c.interner.get(module),
                     .order = c.hir.spanOf(node).start,
                     .position = ref.import_module_pos,
+                    .token_end = ref.import_module_end,
                 });
                 continue;
             }
@@ -4905,12 +4984,13 @@ pub const Program = struct {
             if (!dynamic_import and (callee != call.callee or !std.mem.eql(u8, callee_name, "require"))) continue;
             const arguments = hir_mod_ns.callArgs(&c.hir, node);
             if (arguments.len == 0 or (!dynamic_import and arguments.len != 1)) continue;
-            const specifier = staticStringLiteralLike(c, arguments[0]) orelse continue;
+            const specifier = (try staticStringLiteralLike(gpa, c, arguments[0])) orelse continue;
             if (specifier.len == 0) continue;
             try out.append(gpa, .{
                 .specifier = specifier,
                 .order = c.hir.spanOf(arguments[0]).start,
                 .position = c.hir.spanOf(arguments[0]).start,
+                .token_end = c.hir.spanOf(arguments[0]).end,
             });
         }
         std.mem.sort(StaticModuleReference, out.items, {}, struct {
@@ -4920,13 +5000,21 @@ pub const Program = struct {
         }.lessThan);
     }
 
-    fn staticStringLiteralLike(c: *const ts_driver.Compilation, node: hir_mod_ns.NodeId) ?[]const u8 {
-        if (c.hir.kindOf(node) == .literal_string)
-            return c.interner.get(hir_mod_ns.literalStringOf(&c.hir, node).value);
-        if (c.hir.kindOf(node) != .template_literal or hir_mod_ns.templateLiteralExprs(&c.hir, node).len != 0) return null;
-        const texts = hir_mod_ns.templateLiteralTexts(&c.hir, node);
-        if (texts.len != 1 or c.hir.kindOf(texts[0]) != .literal_string) return null;
-        return c.interner.get(hir_mod_ns.literalStringOf(&c.hir, texts[0]).value);
+    fn staticStringLiteralLike(gpa: std.mem.Allocator, c: *ts_driver.Compilation, node: hir_mod_ns.NodeId) ProgramError!?[]const u8 {
+        const raw = if (c.hir.kindOf(node) == .literal_string)
+            c.interner.get(hir_mod_ns.literalStringOf(&c.hir, node).value)
+        else blk: {
+            if (c.hir.kindOf(node) != .template_literal or hir_mod_ns.templateLiteralExprs(&c.hir, node).len != 0) return null;
+            const texts = hir_mod_ns.templateLiteralTexts(&c.hir, node);
+            if (texts.len != 1 or c.hir.kindOf(texts[0]) != .literal_string) return null;
+            break :blk c.interner.get(hir_mod_ns.literalStringOf(&c.hir, texts[0]).value);
+        };
+        if (std.mem.indexOfScalar(u8, raw, '\\') == null and std.mem.indexOfScalar(u8, raw, '\r') == null) return raw;
+        var cooked: std.ArrayListUnmanaged(u8) = .empty;
+        defer cooked.deinit(gpa);
+        try ts_lexer.appendCookedStringText(gpa, raw, &cooked);
+        const id = c.interner.intern(cooked.items) catch return error.OutOfMemory;
+        return c.interner.get(id);
     }
 
     /// Expand the program to the transitive closure of imports, reading
@@ -4980,6 +5068,10 @@ pub const Program = struct {
             file.compiler_root = false;
             file.compiler_library_root = false;
         }
+        for (self.files.items) |file| file.include_reason = null;
+        self.inclusions.clear(self.gpa, .reference);
+        self.inclusions.clear(self.gpa, .compiler);
+        self.inclusions.clear(self.gpa, .injected);
         var added: usize = 0;
         added += try self.loadCompilerOptionIncludes(options);
         added += try self.loadCompilerInjectedImports(options);
@@ -5163,9 +5255,14 @@ pub const Program = struct {
         };
         const admission = try self.admitResolvedImport(importer.node_modules_depth, res, options);
         if (admission.target_id) |target_id| try self.appendIncludeEdge(importer, target_id, kind);
-        if (!admission.added) return 0;
-        try self.recordReferenceIncludeReasonWithProjectOutput(admission.target_id.?, kind, importer.id, specifier_text, res.package_id orelse "", res.project_reference_output orelse "", 0);
-        return 1;
+        if (admission.target_id) |target| try self.recordIncludeReason(target, res.path, .{
+            .kind = kind,
+            .importer = importer.id,
+            .specifier_text = specifier_text,
+            .package_id = res.package_id orelse "",
+            .project_reference_output = res.project_reference_output orelse "",
+        });
+        return if (admission.added) 1 else 0;
     }
 
     fn compilerOptionsUsesAutomaticJsxRuntime(options: ts_driver.CompileOptions) bool {
@@ -5211,9 +5308,8 @@ pub const Program = struct {
                 };
                 const admission = try self.admitResolvedImport(0, res, options);
                 if (admission.target_id) |target_id| self.files.items[target_id].compiler_root = true;
-                if (!admission.added) continue;
-                try self.recordReferenceIncludeReason(admission.target_id.?, .compiler_type_reference, 0, type_name, res.package_id orelse "", 0);
-                added += 1;
+                if (admission.target_id) |target| try self.recordReferenceIncludeReason(target, .compiler_type_reference, 0, type_name, res.package_id orelse "", 0);
+                if (admission.added) added += 1;
             }
         } else if (!self.no_resolve) {
             added += try self.loadImplicitTypeLibraries(cfg, containing_file, options);
@@ -5238,9 +5334,8 @@ pub const Program = struct {
                     self.files.items[id].compiler_root = true;
                     self.files.items[id].compiler_library_root = true;
                 }
-                if (target_id == null) continue;
-                try self.recordReferenceIncludeReason(target_id.?, .compiler_lib_reference, 0, lib_name, "", 0);
-                added += 1;
+                if (self.lookupPath(candidate)) |id| try self.recordReferenceIncludeReason(id, .compiler_lib_reference, 0, lib_name, "", 0);
+                if (target_id != null) added += 1;
             }
         } else {
             const default_lib = defaultLibNameForTarget(cfg.compiler_options.target);
@@ -5257,10 +5352,8 @@ pub const Program = struct {
                 self.files.items[id].compiler_root = true;
                 self.files.items[id].compiler_library_root = true;
             }
-            if (target_id) |id| {
-                try self.recordReferenceIncludeReason(id, .default_lib_reference, 0, default_lib.target_name, "", 0);
-                added += 1;
-            }
+            if (self.lookupPath(candidate)) |id| try self.recordReferenceIncludeReason(id, .default_lib_reference, 0, default_lib.target_name, "", 0);
+            if (target_id != null) added += 1;
         }
         return added;
     }
@@ -5298,9 +5391,8 @@ pub const Program = struct {
             };
             const admission = try self.admitResolvedImport(0, res, options);
             if (admission.target_id) |target_id| self.files.items[target_id].compiler_root = true;
-            if (!admission.added) continue;
-            try self.recordReferenceIncludeReason(admission.target_id.?, .implicit_type_reference, 0, type_name, res.package_id orelse "", 0);
-            added += 1;
+            if (admission.target_id) |target| try self.recordReferenceIncludeReason(target, .implicit_type_reference, 0, type_name, res.package_id orelse "", 0);
+            if (admission.added) added += 1;
         }
         return added;
     }
@@ -5578,16 +5670,14 @@ pub const Program = struct {
         project_reference_output: []const u8,
         pos: u32,
     ) ProgramError!void {
-        const target = self.files.items[target_id];
-        if (target.include_reason != null) return;
-        target.include_reason = .{
+        try self.recordIncludeReason(target_id, self.files.items[target_id].path, .{
             .kind = kind,
             .importer = importer,
-            .specifier_text = try self.gpa.dupe(u8, text),
-            .package_id = if (package_id.len == 0) "" else try self.gpa.dupe(u8, package_id),
-            .project_reference_output = if (project_reference_output.len == 0) "" else try self.gpa.dupe(u8, project_reference_output),
+            .specifier_text = text,
+            .package_id = package_id,
+            .project_reference_output = project_reference_output,
             .specifier_pos = pos,
-        };
+        });
     }
 
     fn resolveLibReferencePath(
@@ -7285,7 +7375,7 @@ test "Program: checking skips declaration schemas without file dependencies" {
     _ = try program.add("/owner.ts", source);
     try program.prepareNameStore();
     try program.prepareFiles(.{ .bind_only = true });
-    try program.resolveImports();
+    try program.resolveImports(.{});
 
     var checking_graph = try program.collectProgramDeclarationsForChecking();
     defer checking_graph.deinit();
@@ -12846,7 +12936,7 @@ test "Program: imported file records TS1393 include reason (specifier + importer
     try T.expect(b.include_reason != null);
     try T.expectEqual(IncludeKind.import, b.include_reason.?.kind);
     try T.expectEqual(a_id, b.include_reason.?.importer);
-    try T.expectEqualStrings("\"./b\"", b.include_reason.?.specifier_text);
+    try T.expectEqualStrings("'./b'", b.include_reason.?.specifier_text);
     try T.expectEqual(@as(?u32, 1399), b.include_reason.?.relatedDiagnosticCode());
     try T.expectEqualStrings("File is included via import here.", b.include_reason.?.relatedDiagnosticMessage().?);
     try T.expectEqual(@as(u32, 18), b.include_reason.?.specifier_pos);
@@ -12972,7 +13062,7 @@ test "Program: explicit node_modules roots retain depth zero and admit one depen
     const reason = program.fileById(m1_id).include_reason orelse return error.TestUnexpectedResult;
     try T.expectEqual(IncludeKind.import, reason.kind);
     try T.expectEqual(root_id, reason.importer);
-    try T.expectEqualStrings("\"m1\"", reason.specifier_text);
+    try T.expectEqualStrings("'m1'", reason.specifier_text);
 }
 
 test "Program: shallower node_modules route reprocesses previously elided descendants" {
@@ -13048,7 +13138,7 @@ test "Program: node_modules import records package-id include reason (TS1394)" {
     try T.expect(dep.include_reason != null);
     try T.expectEqual(IncludeKind.import, dep.include_reason.?.kind);
     try T.expectEqual(a_id, dep.include_reason.?.importer);
-    try T.expectEqualStrings("\"dep\"", dep.include_reason.?.specifier_text);
+    try T.expectEqualStrings("'dep'", dep.include_reason.?.specifier_text);
     try T.expectEqualStrings("dep/index.d.ts@1.2.3", dep.include_reason.?.package_id);
     try T.expectEqual(@as(?u32, 1399), dep.include_reason.?.relatedDiagnosticCode());
 }
@@ -13095,7 +13185,7 @@ test "Program: duplicate package-id redirect survives source update and recompil
     try T.expect(redirect.include_reason != null);
     try T.expectEqual(IncludeKind.import, redirect.include_reason.?.kind);
     try T.expectEqual(nested_id, redirect.include_reason.?.importer);
-    try T.expectEqualStrings("\"pkg\"", redirect.include_reason.?.specifier_text);
+    try T.expectEqualStrings("'pkg'", redirect.include_reason.?.specifier_text);
     try T.expectEqualStrings("pkg/index.d.ts@1.0.0", redirect.include_reason.?.package_id);
 
     const package_id = "pkg/index.d.ts@1.0.0";
@@ -13221,7 +13311,7 @@ test "Program: project-reference output import records redirected output (TS1428
     try T.expect(source.include_reason != null);
     try T.expectEqual(IncludeKind.import, source.include_reason.?.kind);
     try T.expectEqual(importer_id, source.include_reason.?.importer);
-    try T.expectEqualStrings("\"@this/package\"", source.include_reason.?.specifier_text);
+    try T.expectEqualStrings("'@this/package'", source.include_reason.?.specifier_text);
     try T.expectEqualStrings("", source.include_reason.?.package_id);
     try T.expectEqualStrings("/types/index.d.ts", source.include_reason.?.project_reference_output);
 }
@@ -13401,7 +13491,7 @@ test "Program: imported sibling @types declaration supersedes JavaScript impleme
     const declaration = program.fileById(declaration_id);
     const reason = declaration.include_reason orelse return error.TestUnexpectedResult;
     try T.expectEqual(IncludeKind.import, reason.kind);
-    try T.expectEqualStrings("\"m4\"", reason.specifier_text);
+    try T.expectEqualStrings("'m4'", reason.specifier_text);
     try T.expectEqualStrings("m4/entry.d.ts@1.0.0", reason.package_id);
 
     const root_id = program.lookupPath("/proj/root.ts") orelse return error.TestUnexpectedResult;
@@ -16223,7 +16313,7 @@ test "Program: static module closure includes re-export leaves and checks their 
         const reason = p.files.items[leaf].include_reason.?;
         try T.expectEqual(IncludeKind.import, reason.kind);
         try T.expectEqual(middle, reason.importer);
-        try T.expectEqualStrings("\"./leaf\"", reason.specifier_text);
+        try T.expectEqualStrings("'./leaf'", reason.specifier_text);
         try T.expectEqualStrings("./leaf", p.files.items[middle].source[reason.specifier_pos + 1 ..][0..6]);
     }
 }
@@ -16249,9 +16339,9 @@ test "Program: static require closure follows nested and transitive JavaScript d
     try T.expectEqualSlices(FileId, &.{leaf}, p.files.items[middle].imports.items);
     try T.expect(p.reaches(entry, leaf));
     try expectCompilationHasDiagnosticCode(p.files.items[leaf].compilation.?, 2322);
-    try T.expectEqualStrings("\"./middle\"", p.files.items[middle].include_reason.?.specifier_text);
+    try T.expectEqualStrings("'./middle'", p.files.items[middle].include_reason.?.specifier_text);
     try T.expectEqual(@as(u32, 33), p.files.items[middle].include_reason.?.specifier_pos);
-    try T.expectEqualStrings("\"./leaf\"", p.files.items[leaf].include_reason.?.specifier_text);
+    try T.expectEqualStrings("`./leaf`", p.files.items[leaf].include_reason.?.specifier_text);
     try T.expectEqual(@as(u32, 25), p.files.items[leaf].include_reason.?.specifier_pos);
 }
 

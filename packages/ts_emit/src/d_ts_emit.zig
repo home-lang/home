@@ -392,7 +392,7 @@ pub const Emitter = struct {
         const n = hir_mod.namespaceOf(self.hir, node);
         if (self.namespace_depth == 0) try self.write("declare ");
         try self.write("namespace ");
-        try self.emitIdentifier(n.name);
+        if (n.raw_name) |raw| try self.write(self.interner.get(raw)) else try self.emitIdentifier(n.name);
         try self.write(" {");
         const body = hir_mod.namespaceBody(self.hir, node);
         if (body.len == 0) {
@@ -465,7 +465,7 @@ pub const Emitter = struct {
         }
         if (any) try self.write(" from ");
         try self.write("\"");
-        try self.write(self.interner.get(imp.module));
+        try self.write(self.interner.get(imp.raw_module orelse imp.module));
         try self.write("\";");
     }
 
@@ -490,7 +490,7 @@ pub const Emitter = struct {
             }
         }
         try self.write(" }");
-        const m = self.interner.get(ex.module);
+        const m = self.interner.get(ex.raw_module orelse ex.module);
         if (m.len > 0) {
             try self.write(" from \"");
             try self.write(m);
@@ -552,7 +552,7 @@ pub const Emitter = struct {
                 if (r.import_module) |module| {
                     try self.write("import(");
                     try self.write(&.{r.import_module_quote});
-                    try self.write(self.interner.get(module));
+                    try self.write(self.interner.get(r.import_module_raw orelse module));
                     try self.write(&.{r.import_module_quote});
                     try self.write(")");
                     if (r.import_qualified) try self.write(".");

@@ -2010,20 +2010,20 @@ fn printImportIncludeReasonLine(
     gpa: std.mem.Allocator,
     program: *const ts_program.Program,
     reason: ts_program.IncludeReason,
-) void {
+) error{OutOfMemory}!void {
     const importer_path = program.files.items[reason.importer].path;
     const message = if (reason.package_id.len != 0)
         std.fmt.allocPrint(
             gpa,
             "  Imported via {s} from file '{s}' with packageId '{s}'",
             .{ reason.specifier_text, importer_path, reason.package_id },
-        ) catch return
+        ) catch |err| return err
     else
         std.fmt.allocPrint(
             gpa,
             "  Imported via {s} from file '{s}'",
             .{ reason.specifier_text, importer_path },
-        ) catch return;
+        ) catch |err| return err;
     defer gpa.free(message);
     printStdout("{s}\n", .{message});
 }
@@ -2081,13 +2081,150 @@ fn sourceFileDisplayOrder(gpa: std.mem.Allocator, program: *const ts_program.Pro
 /// the compilation, mirroring tsc's `ExplainFiles`. Root (input) files use
 /// the provenance-derived reason; transitively-added files use their recorded
 /// import/reference reason.
+fn printIncludeReasonLine(gpa: std.mem.Allocator, program: *const ts_program.Program, ir: ts_program.IncludeReason) error{OutOfMemory}!void {
+    switch (ir.kind) {
+        .import => {
+            try printImportIncludeReasonLine(gpa, program, ir);
+        },
+        .imported_helper => {
+            const importer_path = program.files.items[ir.importer].path;
+            const msg = if (ir.package_id.len != 0)
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Imported via {s} from file '{s}' with packageId '{s}' to import 'importHelpers' as specified in compilerOptions",
+                    .{ ir.specifier_text, importer_path, ir.package_id },
+                ) catch |err| return err
+            else
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Imported via {s} from file '{s}' to import 'importHelpers' as specified in compilerOptions",
+                    .{ ir.specifier_text, importer_path },
+                ) catch |err| return err;
+            defer gpa.free(msg);
+            printStdout("{s}\n", .{msg});
+        },
+        .jsx_runtime_import => {
+            const importer_path = program.files.items[ir.importer].path;
+            const msg = if (ir.package_id.len != 0)
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Imported via {s} from file '{s}' with packageId '{s}' to import 'jsx' and 'jsxs' factory functions",
+                    .{ ir.specifier_text, importer_path, ir.package_id },
+                ) catch |err| return err
+            else
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Imported via {s} from file '{s}' to import 'jsx' and 'jsxs' factory functions",
+                    .{ ir.specifier_text, importer_path },
+                ) catch |err| return err;
+            defer gpa.free(msg);
+            printStdout("{s}\n", .{msg});
+        },
+        .reference_file => {
+            const referencing_path = program.files.items[ir.importer].path;
+            const msg = std.fmt.allocPrint(
+                gpa,
+                "  Referenced via '{s}' from file '{s}'",
+                .{ ir.specifier_text, referencing_path },
+            ) catch |err| return err;
+            defer gpa.free(msg);
+            printStdout("{s}\n", .{msg});
+        },
+        .type_reference => {
+            const referencing_path = program.files.items[ir.importer].path;
+            const msg = if (ir.package_id.len != 0)
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Type library referenced via '{s}' from file '{s}' with packageId '{s}'",
+                    .{ ir.specifier_text, referencing_path, ir.package_id },
+                ) catch |err| return err
+            else
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Type library referenced via '{s}' from file '{s}'",
+                    .{ ir.specifier_text, referencing_path },
+                ) catch |err| return err;
+            defer gpa.free(msg);
+            printStdout("{s}\n", .{msg});
+        },
+        .lib_reference => {
+            const referencing_path = program.files.items[ir.importer].path;
+            const msg = std.fmt.allocPrint(
+                gpa,
+                "  Library referenced via '{s}' from file '{s}'",
+                .{ ir.specifier_text, referencing_path },
+            ) catch |err| return err;
+            defer gpa.free(msg);
+            printStdout("{s}\n", .{msg});
+        },
+        .compiler_type_reference => {
+            const msg = if (ir.package_id.len != 0)
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Entry point of type library '{s}' specified in compilerOptions with packageId '{s}'",
+                    .{ ir.specifier_text, ir.package_id },
+                ) catch |err| return err
+            else
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Entry point of type library '{s}' specified in compilerOptions",
+                    .{ir.specifier_text},
+                ) catch |err| return err;
+            defer gpa.free(msg);
+            printStdout("{s}\n", .{msg});
+        },
+        .implicit_type_reference => {
+            const msg = if (ir.package_id.len != 0)
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Entry point for implicit type library '{s}' with packageId '{s}'",
+                    .{ ir.specifier_text, ir.package_id },
+                ) catch |err| return err
+            else
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Entry point for implicit type library '{s}'",
+                    .{ir.specifier_text},
+                ) catch |err| return err;
+            defer gpa.free(msg);
+            printStdout("{s}\n", .{msg});
+        },
+        .compiler_lib_reference => {
+            const msg = std.fmt.allocPrint(
+                gpa,
+                "  Library '{s}' specified in compilerOptions",
+                .{ir.specifier_text},
+            ) catch |err| return err;
+            defer gpa.free(msg);
+            printStdout("{s}\n", .{msg});
+        },
+        .default_lib_reference => {
+            const msg = if (ir.specifier_text.len != 0)
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Default library for target '{s}'",
+                    .{ir.specifier_text},
+                ) catch |err| return err
+            else
+                std.fmt.allocPrint(
+                    gpa,
+                    "  Default library",
+                    .{},
+                ) catch |err| return err;
+            defer gpa.free(msg);
+            printStdout("{s}\n", .{msg});
+        },
+        .root => {},
+    }
+}
+
 fn printExplainFiles(
     gpa: std.mem.Allocator,
     fs: ts_resolver.FileSystem,
     program: *const ts_program.Program,
     root: RootInclusion,
     module: ?tsconfig_mod.Module,
-) void {
+) error{OutOfMemory}!void {
     // The file-inclusion reason codes this renders (referenced here so the
     // status scanner credits them as emitted).
     const code_root_specified: u32 = 1427;
@@ -2170,204 +2307,21 @@ fn printExplainFiles(
     _ = code_cjs_package_type_not_module;
     _ = code_cjs_package_no_type;
     _ = code_cjs_package_not_found;
-    const order = sourceFileDisplayOrder(gpa, program) catch return;
+    var inclusions = try program.inclusions.view(gpa);
+    defer inclusions.deinit();
+    const order = try sourceFileDisplayOrder(gpa, program);
     defer gpa.free(order);
     for (order) |file_id| {
         const f = program.files.items[file_id];
         printStdout("{s}\n", .{explainFileDisplayPath(f)});
         const is_root = f.root_input;
-        if (is_root) {
-            // A file can independently be an include root and the target of
-            // an import. TypeScript reports both reasons (for example an
-            // explicitly included package entry imported by `root.ts`).
-            if (f.include_reason) |reason| {
-                if (reason.kind == .import) printImportIncludeReasonLine(gpa, program, reason);
-            }
-        } else {
-            // A non-root file is here because something pulled it in —
-            // an import (TS1393) or a `/// <reference path>` directive
-            // (TS1400). tsgo prints one line per include reason; Home
-            // records the first puller.
-            if (f.include_reason) |ir| {
-                switch (ir.kind) {
-                    .import => {
-                        printImportIncludeReasonLine(gpa, program, ir);
-                        printProjectReferenceOutputExplain(f);
-                        printRedirectExplain(program, f);
-                        printNodeFormatExplain(gpa, fs, f, module);
-                        continue;
-                    },
-                    .imported_helper => {
-                        const importer_path = program.files.items[ir.importer].path;
-                        const msg = if (ir.package_id.len != 0)
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Imported via {s} from file '{s}' with packageId '{s}' to import 'importHelpers' as specified in compilerOptions",
-                                .{ ir.specifier_text, importer_path, ir.package_id },
-                            ) catch return
-                        else
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Imported via {s} from file '{s}' to import 'importHelpers' as specified in compilerOptions",
-                                .{ ir.specifier_text, importer_path },
-                            ) catch return;
-                        defer gpa.free(msg);
-                        printStdout("{s}\n", .{msg});
-                        printProjectReferenceOutputExplain(f);
-                        printRedirectExplain(program, f);
-                        printNodeFormatExplain(gpa, fs, f, module);
-                        continue;
-                    },
-                    .jsx_runtime_import => {
-                        const importer_path = program.files.items[ir.importer].path;
-                        const msg = if (ir.package_id.len != 0)
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Imported via {s} from file '{s}' with packageId '{s}' to import 'jsx' and 'jsxs' factory functions",
-                                .{ ir.specifier_text, importer_path, ir.package_id },
-                            ) catch return
-                        else
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Imported via {s} from file '{s}' to import 'jsx' and 'jsxs' factory functions",
-                                .{ ir.specifier_text, importer_path },
-                            ) catch return;
-                        defer gpa.free(msg);
-                        printStdout("{s}\n", .{msg});
-                        printProjectReferenceOutputExplain(f);
-                        printRedirectExplain(program, f);
-                        printNodeFormatExplain(gpa, fs, f, module);
-                        continue;
-                    },
-                    .reference_file => {
-                        const referencing_path = program.files.items[ir.importer].path;
-                        const msg = std.fmt.allocPrint(
-                            gpa,
-                            "  Referenced via '{s}' from file '{s}'",
-                            .{ ir.specifier_text, referencing_path },
-                        ) catch return;
-                        defer gpa.free(msg);
-                        printStdout("{s}\n", .{msg});
-                        printProjectReferenceOutputExplain(f);
-                        printRedirectExplain(program, f);
-                        printNodeFormatExplain(gpa, fs, f, module);
-                        continue;
-                    },
-                    .type_reference => {
-                        const referencing_path = program.files.items[ir.importer].path;
-                        const msg = if (ir.package_id.len != 0)
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Type library referenced via '{s}' from file '{s}' with packageId '{s}'",
-                                .{ ir.specifier_text, referencing_path, ir.package_id },
-                            ) catch return
-                        else
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Type library referenced via '{s}' from file '{s}'",
-                                .{ ir.specifier_text, referencing_path },
-                            ) catch return;
-                        defer gpa.free(msg);
-                        printStdout("{s}\n", .{msg});
-                        printProjectReferenceOutputExplain(f);
-                        printRedirectExplain(program, f);
-                        printNodeFormatExplain(gpa, fs, f, module);
-                        continue;
-                    },
-                    .lib_reference => {
-                        const referencing_path = program.files.items[ir.importer].path;
-                        const msg = std.fmt.allocPrint(
-                            gpa,
-                            "  Library referenced via '{s}' from file '{s}'",
-                            .{ ir.specifier_text, referencing_path },
-                        ) catch return;
-                        defer gpa.free(msg);
-                        printStdout("{s}\n", .{msg});
-                        printProjectReferenceOutputExplain(f);
-                        printRedirectExplain(program, f);
-                        printNodeFormatExplain(gpa, fs, f, module);
-                        continue;
-                    },
-                    .compiler_type_reference => {
-                        const msg = if (ir.package_id.len != 0)
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Entry point of type library '{s}' specified in compilerOptions with packageId '{s}'",
-                                .{ ir.specifier_text, ir.package_id },
-                            ) catch return
-                        else
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Entry point of type library '{s}' specified in compilerOptions",
-                                .{ir.specifier_text},
-                            ) catch return;
-                        defer gpa.free(msg);
-                        printStdout("{s}\n", .{msg});
-                        printProjectReferenceOutputExplain(f);
-                        printRedirectExplain(program, f);
-                        printNodeFormatExplain(gpa, fs, f, module);
-                        continue;
-                    },
-                    .implicit_type_reference => {
-                        const msg = if (ir.package_id.len != 0)
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Entry point for implicit type library '{s}' with packageId '{s}'",
-                                .{ ir.specifier_text, ir.package_id },
-                            ) catch return
-                        else
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Entry point for implicit type library '{s}'",
-                                .{ir.specifier_text},
-                            ) catch return;
-                        defer gpa.free(msg);
-                        printStdout("{s}\n", .{msg});
-                        printProjectReferenceOutputExplain(f);
-                        printRedirectExplain(program, f);
-                        printNodeFormatExplain(gpa, fs, f, module);
-                        continue;
-                    },
-                    .compiler_lib_reference => {
-                        const msg = std.fmt.allocPrint(
-                            gpa,
-                            "  Library '{s}' specified in compilerOptions",
-                            .{ir.specifier_text},
-                        ) catch return;
-                        defer gpa.free(msg);
-                        printStdout("{s}\n", .{msg});
-                        printProjectReferenceOutputExplain(f);
-                        printRedirectExplain(program, f);
-                        printNodeFormatExplain(gpa, fs, f, module);
-                        continue;
-                    },
-                    .default_lib_reference => {
-                        const msg = if (ir.specifier_text.len != 0)
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Default library for target '{s}'",
-                                .{ir.specifier_text},
-                            ) catch return
-                        else
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Default library",
-                                .{},
-                            ) catch return;
-                        defer gpa.free(msg);
-                        printStdout("{s}\n", .{msg});
-                        printProjectReferenceOutputExplain(f);
-                        printRedirectExplain(program, f);
-                        printNodeFormatExplain(gpa, fs, f, module);
-                        continue;
-                    },
-                    .root => {},
-                }
-            }
-            // No recorded edge (partial program / resolution gap): fall
-            // back to the generic root-specified reason rather than
-            // fabricating a puller.
-            printStdout("  {s}\n", .{(ts_diagnostics.codes.lookup(code_root_specified) orelse unreachable).message});
+        const reasons = inclusions.forTarget(file_id);
+        for (reasons) |id| {
+            const reason = program.inclusions.get(id).?.reason;
+            if (reason.kind != .root) try printIncludeReasonLine(gpa, program, reason);
+        }
+        if (!is_root) {
+            if (reasons.len == 0) printStdout("  {s}\n", .{(ts_diagnostics.codes.lookup(code_root_specified) orelse unreachable).message});
             printProjectReferenceOutputExplain(f);
             printRedirectExplain(program, f);
             printNodeFormatExplain(gpa, fs, f, module);
@@ -2377,7 +2331,7 @@ fn printExplainFiles(
             // "Matched by include pattern '{0}' in '{1}'."
             const cfg_base = std.fs.path.basename(root.config_path);
             const spec = matchingRootIncludeSpec(root, f.path);
-            const msg = std.fmt.allocPrint(gpa, "  Matched by include pattern '{s}' in '{s}'", .{ spec, cfg_base }) catch return;
+            const msg = std.fmt.allocPrint(gpa, "  Matched by include pattern '{s}' in '{s}'", .{ spec, cfg_base }) catch |err| return err;
             defer gpa.free(msg);
             printStdout("{s}\n", .{msg});
         } else {
@@ -4665,7 +4619,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             }
         }
         const explain_module = if (loaded_cfg) |c| c.compiler_options.module else null;
-        printExplainFiles(gpa, resolver_fs.fs(), &program, root_incl, explain_module);
+        try printExplainFiles(gpa, resolver_fs.fs(), &program, root_incl, explain_module);
     }
 
     // Resolve `sourceMap` from CLI or tsconfig. CLI wins.

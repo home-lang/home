@@ -152,6 +152,14 @@ jobs:
             --home zig-out/bin/home-tsc \
             --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
             --output "$RUNNER_TEMP/home-ts-option-identity-contracts"
+      - name: Compare authored file inclusion sites
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-inclusion-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
+            --output "$RUNNER_TEMP/home-ts-inclusion-contracts"
       - name: Retain reference and Home observations
         if: always()
         uses: actions/upload-artifact@v4
@@ -172,5 +180,6 @@ jobs:
             ${{ runner.temp }}/home-ts-global-owner-contracts
             ${{ runner.temp }}/home-ts-list-files-contracts
             ${{ runner.temp }}/home-ts-option-identity-contracts
+            ${{ runner.temp }}/home-ts-inclusion-contracts
           if-no-files-found: ignore
           retention-days: 14

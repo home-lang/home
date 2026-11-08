@@ -664,6 +664,8 @@ pub const EnumPayload = struct {
 
 pub const NamespacePayload = struct {
     name: NodeId,
+    /// Escaped ambient module text retained for source-preserving emission.
+    raw_name: ?StringId = null,
     /// Children pool slice: statements / nested decls.
     body_start: u32,
     body_len: u32,
@@ -676,10 +678,13 @@ pub const NamespacePayload = struct {
 pub const ImportPayload = struct {
     /// Module specifier as an interned string.
     module: StringId,
+    /// Authored escaped contents for emission; module is the semantic value.
+    raw_module: ?StringId = null,
     /// Source position of the module string literal's opening quote. Keeping
     /// the parser's token position lets diagnostics report on the actual
     /// module specifier instead of rediscovering it from statement text.
     module_specifier_pos: ?u32 = null,
+    module_specifier_end: ?u32 = null,
     /// `none_node_id` if no default-import binding (`import x from "m"`).
     default_binding: NodeId,
     /// `none_node_id` if no namespace import (`import * as ns from "m"`).
@@ -721,6 +726,11 @@ pub const ExportPayload = struct {
     named_len: u32,
     /// `string_interner.empty_id` if this isn't a re-export.
     module: StringId,
+    /// Authored escaped contents for emission; module is the semantic value.
+    raw_module: ?StringId = null,
+    /// Exact module token range, including authored quotes and escapes.
+    module_specifier_pos: ?u32 = null,
+    module_specifier_end: ?u32 = null,
     is_type_only: bool,
     is_default: bool,
     /// `export * from "m"` / `export * as ns from "m"`. When set,
@@ -831,7 +841,9 @@ pub const TypeRefPayload = struct {
     /// Keep this distinct from a lexical type named `Type`, including when
     /// the module string is empty or the exported name is `unknown`.
     import_module: ?StringId = null,
+    import_module_raw: ?StringId = null,
     import_module_pos: u32 = 0,
+    import_module_end: ?u32 = null,
     import_name_pos: u32 = 0,
     import_module_quote: u8 = '"',
     import_qualified: bool = false,

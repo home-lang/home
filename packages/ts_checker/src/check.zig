@@ -31330,7 +31330,7 @@ pub const Checker = struct {
     }
 
     fn staticModuleSpecifier(self: *Checker, node: NodeId) CheckError!?hir_mod.StringId {
-        if (self.hir.kindOf(node) == .literal_string) return hir_mod.literalStringOf(self.hir, node).value;
+        if (self.hir.kindOf(node) == .literal_string) return try self.literalStringCookedId(node);
         if (self.hir.kindOf(node) == .template_literal and hir_mod.templateLiteralExprs(self.hir, node).len == 0)
             return self.templateLiteralConcreteString(node);
         return null;
@@ -61425,8 +61425,8 @@ pub const Checker = struct {
             break :blk std.mem.eql(u8, self.string_interner.get(id.name), "require");
         };
         if (!is_loader) return;
-        const lit = hir_mod.literalStringOf(self.hir, args[0]);
-        const spec = self.string_interner.get(lit.value);
+        const specifier = (try self.staticModuleSpecifier(args[0])) orelse return;
+        const spec = self.string_interner.get(specifier);
         if (!std.mem.startsWith(u8, spec, ".")) return;
         if (!(std.mem.endsWith(u8, spec, ".ts") or
             std.mem.endsWith(u8, spec, ".tsx") or
@@ -61446,13 +61446,13 @@ pub const Checker = struct {
     }
 
     fn checkBareRequireCallImport(self: *Checker, callee: NodeId, args: []const NodeId) CheckError!void {
-        if (args.len == 0 or self.hir.kindOf(args[0]) != .literal_string) return;
+        if (args.len == 0) return;
         if (self.hir.kindOf(callee) != .identifier) return;
         if (self.calleeIdentifierIsParenthesized(callee)) return;
         const id = hir_mod.identifierOf(self.hir, callee);
         if (!std.mem.eql(u8, self.string_interner.get(id.name), "require")) return;
-        const lit = hir_mod.literalStringOf(self.hir, args[0]);
-        const spec = self.string_interner.get(lit.value);
+        const specifier = (try self.staticModuleSpecifier(args[0])) orelse return;
+        const spec = self.string_interner.get(specifier);
         if (std.mem.startsWith(u8, spec, ".") or std.mem.startsWith(u8, spec, "/")) {
             _ = try self.checkVirtualRelativeModuleImport(args[0], spec);
             return;
@@ -66295,14 +66295,14 @@ pub const Checker = struct {
         if (self.calleeIdentifierIsParenthesized(callee)) return null;
         const id = hir_mod.identifierOf(self.hir, callee);
         if (!std.mem.eql(u8, self.string_interner.get(id.name), "require")) return null;
-        if (args.len == 0 or self.hir.kindOf(args[0]) != .literal_string) return null;
-        const lit = hir_mod.literalStringOf(self.hir, args[0]);
-        const spec = self.string_interner.get(lit.value);
+        if (args.len == 0) return null;
+        const specifier = (try self.staticModuleSpecifier(args[0])) orelse return null;
+        const spec = self.string_interner.get(specifier);
         if (!std.mem.startsWith(u8, spec, ".")) return null;
-        if (try self.virtualExportAssignmentExpressionType(callee, lit.value)) |export_t| return export_t;
-        if (try self.virtualExportAssignmentTargetStaticType(callee, lit.value)) |export_t| return export_t;
+        if (try self.virtualExportAssignmentExpressionType(callee, specifier)) |export_t| return export_t;
+        if (try self.virtualExportAssignmentTargetStaticType(callee, specifier)) |export_t| return export_t;
         if (try self.virtualCommonJsModuleExportObjectType(callee, spec)) |commonjs_t| return commonjs_t;
-        return try self.moduleNamespaceTypeForSpecifier(lit.value, callee);
+        return try self.moduleNamespaceTypeForSpecifier(specifier, callee);
     }
 
     fn virtualCommonJsExportedClassInstanceType(self: *Checker, anchor: NodeId, spec: []const u8) CheckError!?TypeId {
@@ -121125,8 +121125,7 @@ pub const Checker = struct {
                             try self.report(args[0], TsCodes.dynamic_import_specifier_must_be_string, msg);
                         }
                         if (reported_second_arg_module_error and self.hir.kindOf(args[0]) == .literal_string) {
-                            const lit = hir_mod.literalStringOf(self.hir, args[0]);
-                            const spec = self.string_interner.get(lit.value);
+                            const spec = self.string_interner.get(try self.literalStringCookedId(args[0]));
                             if (!std.mem.startsWith(u8, spec, ".") and
                                 !self.referenceLibProvidesBareModule(spec) and
                                 !(try self.isKnownAmbientModuleName(args[0], spec)))

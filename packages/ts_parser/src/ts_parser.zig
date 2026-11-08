@@ -1108,6 +1108,24 @@ pub const Parser = struct {
         return self.interner.intern(inner) catch error.OutOfMemory;
     }
 
+    /// Module identities use cooked literal values. Keep raw contents separate
+    /// for emission, and token ranges separate for source diagnostics.
+    fn cookModuleSpecifier(self: *Parser, module: *hir_mod.StringId, raw_module: *?hir_mod.StringId) ParseError!void {
+        const raw = self.interner.get(module.*);
+        if (std.mem.indexOfScalar(u8, raw, '\\') == null) return;
+        var cooked: std.ArrayListUnmanaged(u8) = .empty;
+        defer cooked.deinit(self.gpa);
+        try ts_lexer.appendCookedStringText(self.gpa, raw, &cooked);
+        const value = self.interner.intern(cooked.items) catch return error.OutOfMemory;
+        raw_module.* = module.*;
+        module.* = value;
+    }
+
+    fn cookImportSpecifier(self: *Parser, node: NodeId) ParseError!void {
+        const payload = &self.hir.import_payloads.items[self.hir.payloads.items[node]];
+        try self.cookModuleSpecifier(&payload.module, &payload.raw_module);
+    }
+
     /// TS2439: an import/export-from declaration inside an ambient
     /// external module body cannot reference its target through a
     /// relative module name. Mirrors upstream tsc's grammar check on
@@ -9103,15 +9121,19 @@ pub const Parser = struct {
             self.peek().kind != .open_brace;
         if (ambient_bodyless) {
             try self.consumeStatementTerminator();
-            const name_id_b = try self.internStringLiteral(name_tok);
+            var name_id_b = try self.internStringLiteral(name_tok);
+            var raw_name: ?hir_mod.StringId = null;
+            try self.cookModuleSpecifier(&name_id_b, &raw_name);
             const name_node_b = try self.builder.addIdentifier(.{ .start = name_tok.span.start, .end = name_end }, name_id_b);
-            return try self.builder.addNamespaceWithContext(
+            const node = try self.builder.addNamespaceWithContext(
                 .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                 name_node_b,
                 &.{},
                 true,
                 true,
             );
+            self.hir.namespace_payloads.items[self.hir.payloads.items[node]].raw_name = raw_name;
+            return node;
         }
         const ns_body_open = try self.expect(.open_brace, "'{' to open namespace body");
         const old_in_string_named_module = self.in_string_named_module;
@@ -9156,18 +9178,22 @@ pub const Parser = struct {
             }
             break :blk close.span.start;
         };
-        const name_id = if (name_tok.kind == .string_literal)
+        var name_id = if (name_tok.kind == .string_literal)
             try self.internStringLiteral(name_tok)
         else
             self.interner.intern(self.source[name_tok.span.start..name_end]) catch return error.OutOfMemory;
+        var raw_name: ?hir_mod.StringId = null;
+        if (name_tok.kind == .string_literal) try self.cookModuleSpecifier(&name_id, &raw_name);
         const name_node = try self.builder.addIdentifier(.{ .start = name_tok.span.start, .end = name_end }, name_id);
-        return try self.builder.addNamespaceWithContext(
+        const node = try self.builder.addNamespaceWithContext(
             .{ .start = start.span.start, .end = close_end },
             name_node,
             body.items,
             self.ambient_depth > 0 or self.isAmbientContextAt(start.span.start) or name_tok.kind == .string_literal,
             name_tok.kind == .string_literal,
         );
+        self.hir.namespace_payloads.items[self.hir.payloads.items[node]].raw_name = raw_name;
+        return node;
     }
 
     fn parseImportDeclaration(self: *Parser) ParseError!NodeId {
@@ -9325,6 +9351,7 @@ pub const Parser = struct {
             _ = self.advance(); // =
             var module_id = self.interner.intern("") catch return error.OutOfMemory;
             var module_specifier_pos: ?u32 = null;
+            var module_specifier_end: ?u32 = null;
             var import_equals = hir_mod.none_node_id;
             var is_require_equals = false;
             if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren and self.peekAt(2).kind == .string_literal) {
@@ -9334,6 +9361,7 @@ pub const Parser = struct {
                 const mod_tok = self.advance();
                 module_id = try self.internStringLiteral(mod_tok);
                 module_specifier_pos = mod_tok.span.start;
+                module_specifier_end = mod_tok.span.end;
                 // TS1147: `import name = require("…")` inside an internal
                 // namespace is illegal. tsc fires at the module-specifier
                 // string-literal token. Ambient string-named modules
@@ -9374,6 +9402,8 @@ pub const Parser = struct {
                 is_type_only,
             );
             self.hir.import_payloads.items[self.hir.payloads.items[import_node]].module_specifier_pos = module_specifier_pos;
+            self.hir.import_payloads.items[self.hir.payloads.items[import_node]].module_specifier_end = module_specifier_end;
+            try self.cookImportSpecifier(import_node);
             if (is_require_equals) {
                 if (self.module_augmentation_depth > 0) {
                     try self.reportCodeAt(start.span.start, start.line, 2667, "Imports are not permitted in module augmentations. Consider moving them to the enclosing external module.");
@@ -9402,6 +9432,8 @@ pub const Parser = struct {
                 is_type_only,
             );
             self.hir.import_payloads.items[self.hir.payloads.items[import_node]].module_specifier_pos = mod_tok.span.start;
+            self.hir.import_payloads.items[self.hir.payloads.items[import_node]].module_specifier_end = mod_tok.span.end;
+            try self.cookImportSpecifier(import_node);
             return import_node;
         }
 
@@ -9669,6 +9701,11 @@ pub const Parser = struct {
             null
         else
             mod_tok.span.start;
+        self.hir.import_payloads.items[self.hir.payloads.items[import_node]].module_specifier_end = if (mod_tok.span.start == mod_tok.span.end)
+            null
+        else
+            mod_tok.span.end;
+        try self.cookImportSpecifier(import_node);
         if (is_deferred) {
             const payload = &self.hir.import_payloads.items[self.hir.payloads.items[import_node]];
             payload.is_deferred = true;
@@ -10293,12 +10330,14 @@ pub const Parser = struct {
             _ = try self.expectClosingMatch(.close_brace, "'}' to close named exports", named_exports_open.span.start, "{", "}");
             var module_id = empty_string;
             var module_tok_start: u32 = 0;
+            var module_tok_end: u32 = 0;
             var module_tok_line: u32 = 0;
             var has_module_specifier = false;
             if (self.match(.kw_from)) {
                 const mod_tok = try self.expect(.string_literal, "module specifier");
                 module_id = try self.internStringLiteral(mod_tok);
                 module_tok_start = mod_tok.span.start;
+                module_tok_end = mod_tok.span.end;
                 module_tok_line = mod_tok.line;
                 has_module_specifier = true;
                 try self.reportAmbientRelativeModuleIfNeededAt(mod_tok, start.span.start, start.line);
@@ -10328,7 +10367,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(start.span.start, start.line, 1194, "Export declarations are not permitted in a namespace.");
                 }
             }
-            return try self.builder.addExport(
+            const export_node = try self.builder.addExport(
                 .{ .start = start.span.start, .end = end_pos },
                 hir_mod.none_node_id,
                 named.items,
@@ -10336,6 +10375,13 @@ pub const Parser = struct {
                 is_type_only,
                 false,
             );
+            if (has_module_specifier) {
+                const payload = &self.hir.export_payloads.items[self.hir.payloads.items[export_node]];
+                payload.module_specifier_pos = module_tok_start;
+                payload.module_specifier_end = module_tok_end;
+                try self.cookModuleSpecifier(&payload.module, &payload.raw_module);
+            }
+            return export_node;
         }
 
         // export * [as ns] from "m";
@@ -10373,7 +10419,7 @@ pub const Parser = struct {
             if (self.namespace_depth > 0 and !self.in_string_named_module and !self.moduleElementContextIsIllegal()) {
                 try self.reportCodeAt(mod_tok.span.start, mod_tok.line, 1194, "Export declarations are not permitted in a namespace.");
             }
-            return try self.builder.addExportFullWithNamespaceAliasPos(
+            const export_node = try self.builder.addExportFullWithNamespaceAliasPos(
                 .{ .start = start.span.start, .end = end_pos },
                 hir_mod.none_node_id,
                 &.{},
@@ -10385,6 +10431,11 @@ pub const Parser = struct {
                 ns_alias_is_string_literal,
                 ns_alias_pos,
             );
+            const payload = &self.hir.export_payloads.items[self.hir.payloads.items[export_node]];
+            payload.module_specifier_pos = mod_tok.span.start;
+            payload.module_specifier_end = mod_tok.span.end;
+            try self.cookModuleSpecifier(&payload.module, &payload.raw_module);
+            return export_node;
         }
 
         // `export` can modify declarations, but not statement-only forms.
@@ -15636,6 +15687,7 @@ pub const Parser = struct {
         // bailing the whole file (`importTypeGeneric.ts`).
         var import_module: ?hir_mod.StringId = null;
         var import_module_pos: u32 = 0;
+        var import_module_end: ?u32 = null;
         var import_module_quote: u8 = '"';
         const specifier_is_invalid = self.peek().kind != .string_literal;
         if (specifier_is_invalid) {
@@ -15656,6 +15708,7 @@ pub const Parser = struct {
             const module_token = self.advance();
             import_module = try self.internStringLiteral(module_token);
             import_module_pos = module_token.span.start;
+            import_module_end = module_token.span.end;
             import_module_quote = self.source[module_token.span.start];
         }
         if (self.match(.comma)) {
@@ -15725,7 +15778,7 @@ pub const Parser = struct {
                 &.{},
             );
         }
-        return try self.builder.addImportType(
+        const node = try self.builder.addImportType(
             .{ .start = import_tok.span.start, .end = end_pos },
             import_module.?,
             import_module_pos,
@@ -15736,6 +15789,10 @@ pub const Parser = struct {
             qualifier.items,
             args.items,
         );
+        const payload = &self.hir.type_ref_payloads.items[self.hir.payloads.items[node]];
+        payload.import_module_end = import_module_end;
+        if (payload.import_module) |*module| try self.cookModuleSpecifier(module, &payload.import_module_raw);
+        return node;
     }
 
     fn reportImportTypeOptionsGrammarDiagnostics(self: *Parser) ParseError!void {
@@ -37161,6 +37218,46 @@ test "parser: contextual keyword index parameters retain index signature structu
         try T.expectEqualStrings(name, setup.interner.get(index.key_name));
         try T.expectEqual(@as(u32, 0), countDiag(setup, 1169));
     }
+}
+
+test "parser: module token ranges retain authored text and distinct repeated sites" {
+    const source = "import { x as a } from './same'; import { x as b } from './same'; import './sh\\u0061red'; import c = require(\"./shared\"); export { x } from './same'; export * from \"./shared\"; type T = import('./same').X;";
+    const setup = try newTestSetup(source);
+    defer destroyTestSetup(setup);
+    const root = try setup.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+    const statements = hir_mod.blockStmts(&setup.hir, root);
+    const expected = [_][]const u8{ "'./same'", "'./same'", "'./sh\\u0061red'", "\"./shared\"", "'./same'", "\"./shared\"" };
+    var previous_end: u32 = 0;
+    for (statements[0..6], expected) |node, text| {
+        const start, const end = switch (setup.hir.kindOf(node)) {
+            .import_decl => blk: {
+                const payload = hir_mod.importOf(&setup.hir, node);
+                break :blk .{ payload.module_specifier_pos.?, payload.module_specifier_end.? };
+            },
+            .export_decl => blk: {
+                const payload = hir_mod.exportOf(&setup.hir, node);
+                break :blk .{ payload.module_specifier_pos.?, payload.module_specifier_end.? };
+            },
+            else => unreachable,
+        };
+        try T.expect(start >= previous_end);
+        try T.expectEqualStrings(text, source[start..end]);
+        previous_end = end;
+    }
+    const escaped = hir_mod.importOf(&setup.hir, statements[2]);
+    try T.expectEqualStrings("./shared", setup.interner.get(escaped.module));
+    try T.expectEqualStrings("./sh\\u0061red", setup.interner.get(escaped.raw_module.?));
+    var found_import_type = false;
+    var node: hir_mod.NodeId = 1;
+    while (node < setup.hir.nodeCount()) : (node += 1) {
+        if (setup.hir.kindOf(node) != .type_ref) continue;
+        const payload = hir_mod.typeRefOf(&setup.hir, node);
+        if (payload.import_module == null) continue;
+        try T.expectEqualStrings("'./same'", source[payload.import_module_pos..payload.import_module_end.?]);
+        found_import_type = true;
+    }
+    try T.expect(found_import_type);
 }
 
 test "parser: parameter literal priority retains original annotation syntax" {
