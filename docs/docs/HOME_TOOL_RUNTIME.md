@@ -70,6 +70,14 @@ native query. ReadStream, WriteStream, raw mode and the full terminal/process
 stream surface remain unsupported; descriptor classification does not provide
 terminal I/O or an event loop.
 
+The `crypto`/`node:crypto` adapter exposes synchronous randomBytes with real
+managed Buffer storage. It obtains fresh OS entropy through Zig Io.randomSecure;
+entropy failure throws instead of returning zeros or using a weak seed. Numeric
+size validation and fractional-size truncation follow Node. Callback-based
+randomBytes is explicitly refused because this tool has no asynchronous crypto
+host. Ciphers, hashes, keys, Web Crypto and the remaining Node crypto surface are
+not supplied by this adapter.
+
 The `buffer`/`node:buffer` aliases and global Buffer share a bounded Buffer
 implementation backed by real, engine-managed Uint8Array/ArrayBuffer storage.
 from accepts primitive strings, arrays, typed views, raw ArrayBuffers and

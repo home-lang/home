@@ -1,0 +1,1 @@
+{"sizes":[0,1,1,16,32,65537],"invalid":[["TypeError","ERR_INVALID_ARG_TYPE"],["TypeError","ERR_INVALID_ARG_TYPE"],["TypeError","ERR_INVALID_ARG_TYPE"],["TypeError","ERR_INVALID_ARG_TYPE"],["RangeError","ERR_OUT_OF_RANGE"],["RangeError","ERR_OUT_OF_RANGE"],["RangeError","ERR_OUT_OF_RANGE"],["RangeError","ERR_OUT_OF_RANGE"],["RangeError","ERR_OUT_OF_RANGE"]]}

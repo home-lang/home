@@ -901,6 +901,16 @@ pub fn build(b: *std.Build) void {
         run_home_tool_buffer_esm.addArgs(&.{ "run", "node_buffer_esm.mjs" });
         run_home_tool_buffer_esm.expectStdOutEqual("OK home-tool ESM Buffer identity\n");
         home_tool_smoke_step.dependOn(&run_home_tool_buffer_esm.step);
+        const run_home_tool_crypto = b.addRunArtifact(home_tool_exe);
+        run_home_tool_crypto.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_crypto.addArgs(&.{ "run", "node_crypto_entry.cjs" });
+        run_home_tool_crypto.expectStdOutEqual(@embedFile("packages/runtime/test/tool_modules/node_crypto.expected.json"));
+        home_tool_smoke_step.dependOn(&run_home_tool_crypto.step);
+        const run_home_tool_crypto_esm = b.addRunArtifact(home_tool_exe);
+        run_home_tool_crypto_esm.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_crypto_esm.addArgs(&.{ "run", "node_crypto_esm.mjs" });
+        run_home_tool_crypto_esm.expectStdOutEqual("OK home-tool ESM OS entropy\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_crypto_esm.step);
         const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
         run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });

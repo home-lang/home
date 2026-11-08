@@ -81,6 +81,28 @@
   delete globalThis.__home_tool_buffer_factory;
   const bufferApi = bufferFactory(decodeUtf8);
   globalThis.Buffer = bufferApi.Buffer;
+  const nativeRandomBytes = globalThis.__home_tool_random_bytes;
+  delete globalThis.__home_tool_random_bytes;
+  const allocateBytes = bufferApi.Buffer.alloc;
+  function cryptoArgumentError(code, message, range) {
+    const error = range ? new RangeError(message) : new TypeError(message);
+    error.code = code;
+    throw error;
+  }
+  const cryptoApi = {
+    randomBytes: function(size, callback) {
+      // https://nodejs.org/api/crypto.html#cryptorandombytessize-callback
+      if (typeof size !== 'number') cryptoArgumentError('ERR_INVALID_ARG_TYPE', 'randomBytes size must be a number');
+      if (!Number.isFinite(size) || size < 0 || size > 0x7fffffff) cryptoArgumentError('ERR_OUT_OF_RANGE', 'randomBytes size must be between 0 and 2147483647', true);
+      if (callback !== undefined) {
+        if (typeof callback !== 'function') cryptoArgumentError('ERR_INVALID_ARG_TYPE', 'randomBytes callback must be a function');
+        unsupported('Home crypto.randomBytes callbacks require an asynchronous host');
+      }
+      const bytes = allocateBytes(Math.floor(size));
+      if (!nativeRandomBytes(bytes)) throw new Error('Native crypto entropy source failed');
+      return bytes;
+    },
+  };
   const fs = {
     readFileSync: function(path, options) {
       path = stringPath(path);
@@ -408,6 +430,8 @@
   const builtins = Object.create(null);
   builtins.buffer = bufferApi;
   builtins['node:buffer'] = bufferApi;
+  builtins.crypto = cryptoApi;
+  builtins['node:crypto'] = cryptoApi;
   builtins.tty = ttyApi;
   builtins['node:tty'] = ttyApi;
   builtins.events = eventsApi;
