@@ -9,7 +9,7 @@ const g_io = std.Io.Threaded.global_single_threaded.io();
 
 fn usage() noreturn {
     std.debug.print(
-        "usage: home-tool eval <typescript> [--print] | home-tool run <file> [args...]\n",
+        "usage: home-tool [--conditions <name>]... eval <typescript> [--print] | home-tool run <file> [args...]\n",
         .{},
     );
     std.process.exit(2);
@@ -43,6 +43,7 @@ fn runSource(
     argv: []const []const u8,
     print_result: bool,
     module_completion: bool,
+    conditions: []const []const u8,
 ) !u8 {
     var engine = try tool_runtime.Engine.init(allocator);
     defer engine.deinit();
@@ -63,7 +64,7 @@ fn runSource(
     tool_runtime.os.install(ctx, global);
     tool_runtime.fs.install(ctx, global);
     tool_runtime.builtins.install(allocator, ctx);
-    tool_runtime.modules.install(allocator, ctx, global);
+    tool_runtime.modules.installWithConditions(allocator, ctx, global, conditions);
 
     const evaluation = try tool_runtime.evaluate.evaluateUtf8Detailed(allocator, ctx, source, source_url, 1);
     defer evaluation.deinit(allocator);
@@ -120,7 +121,17 @@ pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.smp_allocator;
     var iterator = std.process.Args.Iterator.init(init.minimal.args);
     _ = iterator.next();
-    const command = iterator.next() orelse usage();
+    var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer conditions.deinit(allocator);
+    var command = iterator.next() orelse usage();
+    while (true) {
+        if (std.mem.eql(u8, command, "--conditions")) {
+            try conditions.append(allocator, iterator.next() orelse usage());
+        } else if (std.mem.startsWith(u8, command, "--conditions=")) {
+            try conditions.append(allocator, command["--conditions=".len..]);
+        } else break;
+        command = iterator.next() orelse usage();
+    }
 
     if (std.mem.eql(u8, command, "eval")) {
         const input = iterator.next() orelse usage();
@@ -129,7 +140,7 @@ pub fn main(init: std.process.Init) !void {
         const emitted = try emitTypeScript(allocator, input, false);
         defer allocator.free(emitted);
         const argv = [_][]const u8{ "home-tool", "eval" };
-        const code = try runSource(allocator, emitted, "home:tool-eval", &argv, flag != null, false);
+        const code = try runSource(allocator, emitted, "home:tool-eval", &argv, flag != null, false, conditions.items);
         if (code != 0) std.process.exit(code);
         return;
     }
@@ -148,7 +159,7 @@ pub fn main(init: std.process.Init) !void {
         try argv.append(allocator, entry_path);
         while (iterator.next()) |arg| try argv.append(allocator, arg);
 
-        const code = try runSource(allocator, "Home.startModule(process.argv[1]);", entry_path, argv.items, false, true);
+        const code = try runSource(allocator, "Home.startModule(process.argv[1]);", entry_path, argv.items, false, true, conditions.items);
         if (code != 0) std.process.exit(code);
         return;
     }

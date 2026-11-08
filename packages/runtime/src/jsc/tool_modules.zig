@@ -168,7 +168,7 @@ fn resolvePackageImport(allocator: std.mem.Allocator, specifier: []const u8, par
 
 const PackageExport = union(enum) { absent, path: []u8 };
 
-fn packageExport(allocator: std.mem.Allocator, directory: []const u8, subpath: []const u8, mode: package_exports.Mode, self_name: ?[]const u8) !PackageExport {
+fn packageExport(allocator: std.mem.Allocator, directory: []const u8, subpath: []const u8, mode: package_exports.Mode, conditions: []const []const u8, self_name: ?[]const u8) !PackageExport {
     const package_path = try std.fs.path.join(allocator, &.{ directory, "package.json" });
     defer allocator.free(package_path);
     const source = std.Io.Dir.cwd().readFileAlloc(g_io, package_path, allocator, .limited(1024 * 1024)) catch |err| {
@@ -187,7 +187,7 @@ fn packageExport(allocator: std.mem.Allocator, directory: []const u8, subpath: [
     // Node's package reader ignores null/primitive fields other than strings.
     // Invalid nested targets still fail PACKAGE_TARGET_RESOLVE.
     if (exports != .string and exports != .object and exports != .array) return .absent;
-    const relative = try package_exports.resolve(allocator, exports, subpath, mode);
+    const relative = try package_exports.resolveWithConditions(allocator, exports, subpath, mode, conditions);
     defer allocator.free(relative);
     const target = try std.fs.path.join(allocator, &.{ directory, relative });
     defer allocator.free(target);
@@ -196,7 +196,7 @@ fn packageExport(allocator: std.mem.Allocator, directory: []const u8, subpath: [
     return .{ .path = resolvedFile(allocator, target) orelse return error.ExportedFileNotFound };
 }
 
-fn resolvePackage(allocator: std.mem.Allocator, specifier: []const u8, parent_dir: []const u8, mode: package_exports.Mode) !?[]u8 {
+fn resolvePackage(allocator: std.mem.Allocator, specifier: []const u8, parent_dir: []const u8, mode: package_exports.Mode, conditions: []const []const u8) !?[]u8 {
     const first_slash = std.mem.findScalar(u8, specifier, '/');
     const name_end = if (specifier[0] == '@') blk: {
         const scope_end = first_slash orelse return error.InvalidModuleSpecifier;
@@ -217,7 +217,7 @@ fn resolvePackage(allocator: std.mem.Allocator, specifier: []const u8, parent_di
         const manifest = try std.fs.path.join(allocator, &.{ scope, "package.json" });
         defer allocator.free(manifest);
         if (isFile(manifest)) {
-            switch (try packageExport(allocator, scope, subpath, mode, name)) {
+            switch (try packageExport(allocator, scope, subpath, mode, conditions, name)) {
                 .path => |path| return path,
                 .absent => break,
             }
@@ -232,7 +232,7 @@ fn resolvePackage(allocator: std.mem.Allocator, specifier: []const u8, parent_di
         const directory = try std.fs.path.join(allocator, &.{ search_dir, "node_modules", name });
         defer allocator.free(directory);
         if (isDirectory(directory)) {
-            switch (try packageExport(allocator, directory, subpath, mode, null)) {
+            switch (try packageExport(allocator, directory, subpath, mode, conditions, null)) {
                 .path => |path| return path,
                 .absent => {
                     const candidate = try std.fs.path.join(allocator, &.{ search_dir, "node_modules", specifier });
@@ -250,7 +250,7 @@ fn resolvePackage(allocator: std.mem.Allocator, specifier: []const u8, parent_di
     return null;
 }
 
-fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_path: []const u8, mode: package_exports.Mode) !?[]u8 {
+fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_path: []const u8, mode: package_exports.Mode, conditions: []const []const u8) !?[]u8 {
     if (specifier.len == 0) return null;
     const parent_dir = if (parent_path.len == 0)
         "."
@@ -275,7 +275,7 @@ fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_pat
         if (tryPath(allocator, specifier)) |path| return path;
     }
 
-    return resolvePackage(allocator, specifier, parent_dir, mode);
+    return resolvePackage(allocator, specifier, parent_dir, mode, conditions);
 }
 
 // Await belongs to module evaluation only outside a function's body/parameters.
@@ -431,8 +431,18 @@ fn resolveModuleNative(
         setProperty(c, object, "code", stringValue(c, "ERR_HOME_TSCONFIG"));
         return @ptrCast(object);
     };
+    // The install closure retains this immutable JSON string per realm. No
+    // process-global conditions or mutable public process flags affect resolution.
+    const conditions_json = if (argument_count > 4 and arguments[4] != null)
+        valueToOwnedUtf8(c, arguments[4].?, allocator) orelse return extern_fns.JSValueMakeNull(c)
+    else
+        allocator.dupe(u8, "[]") catch return extern_fns.JSValueMakeNull(c);
+    defer allocator.free(conditions_json);
+    const conditions = std.json.parseFromSlice([]const []const u8, allocator, conditions_json, .{}) catch
+        return extern_fns.JSValueMakeNull(c);
+    defer conditions.deinit();
     const mode: package_exports.Mode = if (argument_count > 3 and arguments[3] != null and extern_fns.JSValueToBoolean(c, arguments[3])) .import else .require;
-    const path = alias orelse (resolveModule(allocator, specifier, parent_path, mode) catch |err| {
+    const path = alias orelse (resolveModule(allocator, specifier, parent_path, mode, conditions.value) catch |err| {
         const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
         setProperty(c, object, "error", stringValue(c, @errorName(err)));
         const code = if (err == error.ExportedFileNotFound and mode == .import) "ERR_MODULE_NOT_FOUND" else package_exports.code(err);
@@ -482,6 +492,13 @@ fn resolveModuleNative(
 const install_glue = @embedFile("tool_modules.js");
 
 pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
+    installWithConditions(allocator, ctx, global, &.{});
+}
+
+pub fn installWithConditions(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject, conditions: []const []const u8) void {
+    const json = std.json.Stringify.valueAlloc(allocator, conditions, .{}) catch return;
+    defer allocator.free(json);
+    setProperty(ctx, @ptrCast(global), "__home_tool_conditions", stringValue(ctx, json));
     callback.registerCallback(ctx, global, "__home_tool_resolve_module", resolveModuleNative);
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:tool-module-install", 1) catch return;
     result.deinit(allocator);

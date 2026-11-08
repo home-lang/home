@@ -31,6 +31,7 @@ Run TypeScript without a separate transpilation step:
 
 ```sh
 zig-out/bin/home-tool run path/to/tool.ts --tool-argument
+zig-out/bin/home-tool --conditions development run path/to/tool.ts
 zig-out/bin/home-tool eval 'const answer: number = 40 + 2; answer' --print
 ```
 
@@ -330,8 +331,15 @@ not file-existence fallback: a missing first selected file fails. Export targets
 are exact files and cannot use extension/directory-main fallback or traversal,
 including escaped dot/node_modules segments. Lookup never executes a target.
 
-This is a Node condition profile: `bun`, `types`, `development`, custom CLI
-conditions, node-addons and module-sync are not active. Export targets containing
+Additional package export conditions can be enabled before `run` or `eval`
+with repeated `--conditions <name>` or `--conditions=<name>` flags. They apply
+to static imports, dynamic imports, require and require.resolve in that tool
+realm. JSON key order decides priority, not flag order; commas stay part of a
+single condition name. Flags after the entry filename remain tool arguments.
+The default Node condition profile does not activate `bun`, `types`,
+`development`, node-addons or module-sync unless explicitly requested. Custom
+conditions do not extend the bounded package-private imports profile below.
+Export targets containing
 raw query, fragment or backslash syntax are explicitly refused with
 ERR_HOME_PACKAGE_TARGET; full file-URL module identity remains unimplemented.
 Legacy packages without exports retain Home's existing main/module/index and

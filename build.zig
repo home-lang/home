@@ -977,6 +977,18 @@ pub fn build(b: *std.Build) void {
         run_home_tool_exports.addArgs(&.{ "run", "entry.mjs" });
         run_home_tool_exports.expectStdOutEqual("OK actual package exports conditions, patterns and blocked targets\n");
         home_tool_smoke_step.dependOn(&run_home_tool_exports.step);
+        for ([_][]const []const u8{
+            &.{ "run", "entry.mjs", "prod", "--conditions", "argument-value" },
+            &.{ "--conditions", "development", "--conditions=first", "--conditions", "second", "run", "entry.mjs", "dev", "--conditions", "argument-value" },
+            &.{ "--conditions=development,first", "run", "entry.mjs", "literal", "--conditions", "argument-value" },
+        }, [_][]const u8{ "prod", "dev", "literal" }) |args, mode| {
+            const run_conditions = b.addRunArtifact(home_tool_exe);
+            run_conditions.setCwd(b.path("packages/runtime/test/tool_modules/custom_conditions"));
+            run_conditions.addArgs(args);
+            run_conditions.expectStdOutEqual(b.fmt("OK actual custom package conditions {s}\n", .{mode}));
+            home_tool_smoke_step.dependOn(&run_conditions.step);
+        }
+
         inline for (.{ "require-only", "blocked", "missing-array", "extensionless", "directory" }) |name| {
             const run_home_tool_export_rejection = b.addRunArtifact(home_tool_exe);
             run_home_tool_export_rejection.setCwd(b.path("packages/runtime/test/tool_modules/package_exports"));

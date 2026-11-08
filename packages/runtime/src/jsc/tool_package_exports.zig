@@ -1,5 +1,5 @@
 //! Node-style package exports selection, independent of filesystem probing.
-//! Active conditions are node + import/require; default follows JSON key order.
+//! Active conditions are node + import/require + explicit CLI conditions; JSON key order wins.
 const std = @import("std");
 pub const Mode = enum { import, require };
 const Selection = union(enum) { unmatched, blocked, target: []u8 };
@@ -66,12 +66,14 @@ fn decodePath(allocator: std.mem.Allocator, source: []const u8, invalid: anyerro
     return output.toOwnedSlice(allocator);
 }
 
-fn active(key: []const u8, mode: Mode) bool {
-    return std.mem.eql(u8, key, "default") or std.mem.eql(u8, key, "node") or
-        std.mem.eql(u8, key, if (mode == .import) "import" else "require");
+fn active(key: []const u8, mode: Mode, conditions: []const []const u8) bool {
+    if (std.mem.eql(u8, key, "default") or std.mem.eql(u8, key, "node") or
+        std.mem.eql(u8, key, if (mode == .import) "import" else "require")) return true;
+    for (conditions) |condition| if (std.mem.eql(u8, key, condition)) return true;
+    return false;
 }
 
-fn select(allocator: std.mem.Allocator, value: std.json.Value, replacement: ?[]const u8, mode: Mode, depth: usize) anyerror!Selection {
+fn select(allocator: std.mem.Allocator, value: std.json.Value, replacement: ?[]const u8, mode: Mode, conditions: []const []const u8, depth: usize) anyerror!Selection {
     if (depth > 128) return error.InvalidPackageConfig;
     switch (value) {
         .null => return .blocked,
@@ -95,7 +97,7 @@ fn select(allocator: std.mem.Allocator, value: std.json.Value, replacement: ?[]c
         .array => |array| {
             var invalid_target = false;
             for (array.items) |item| {
-                const result = select(allocator, item, replacement, mode, depth + 1) catch |err| {
+                const result = select(allocator, item, replacement, mode, conditions, depth + 1) catch |err| {
                     if (err != error.InvalidPackageTarget) return err;
                     invalid_target = true;
                     continue;
@@ -125,8 +127,8 @@ fn select(allocator: std.mem.Allocator, value: std.json.Value, replacement: ?[]c
                 }
             }
             for (object.keys(), object.values()) |key, item| {
-                if (active(key, mode)) {
-                    const result = try select(allocator, item, replacement, mode, depth + 1);
+                if (active(key, mode, conditions)) {
+                    const result = try select(allocator, item, replacement, mode, conditions, depth + 1);
                     if (result != .unmatched) return result;
                 }
             }
@@ -139,6 +141,10 @@ fn select(allocator: std.mem.Allocator, value: std.json.Value, replacement: ?[]c
 // PACKAGE_EXPORTS_RESOLVE and PATTERN_KEY_COMPARE:
 // https://nodejs.org/api/esm.html#resolution-algorithm-specification
 pub fn resolve(allocator: std.mem.Allocator, exports: std.json.Value, subpath: []const u8, mode: Mode) ![]u8 {
+    return resolveWithConditions(allocator, exports, subpath, mode, &.{});
+}
+
+pub fn resolveWithConditions(allocator: std.mem.Allocator, exports: std.json.Value, subpath: []const u8, mode: Mode, custom_conditions: []const []const u8) ![]u8 {
     var selected: std.json.Value = exports;
     var replacement: ?[]const u8 = null;
     if (exports == .object) {
@@ -170,7 +176,7 @@ pub fn resolve(allocator: std.mem.Allocator, exports: std.json.Value, subpath: [
             }
         } else if (!std.mem.eql(u8, subpath, ".")) return error.PackagePathNotExported;
     } else if (!std.mem.eql(u8, subpath, ".")) return error.PackagePathNotExported;
-    return switch (try select(allocator, selected, replacement, mode, 0)) {
+    return switch (try select(allocator, selected, replacement, mode, custom_conditions, 0)) {
         .target => |path| path,
         else => error.PackagePathNotExported,
     };
@@ -245,4 +251,21 @@ test "exports replaces all raw stars and preserves escaped literal stars" {
 test "exports fixed pattern target ignores unused encoded separator" {
     try expectTarget("{\"./*\":\"./fixed.js\"}", "./a%2fb", .import, "fixed.js");
     try expectError("{\"./*\":\"./*.js\"}", "./a%2fb", .import, error.InvalidModuleSpecifier);
+}
+
+test "custom conditions preserve JSON order nested misses and null blocking" {
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{".":{"second":"./second.js","first":"./first.js","default":"./default.js"},"./nested":{"first":{"missing":"./wrong.js"},"default":"./default.js"},"./blocked":{"first":null,"default":"./default.js"},"./literal":{"first,second":"./literal.js","default":"./default.js"}}
+    , .{});
+    defer parsed.deinit();
+    const conditions = &.{ "first", "second" };
+    for ([_][]const u8{ ".", "./nested", "./literal" }, [_][]const u8{ "second.js", "default.js", "default.js" }) |subpath, expected| {
+        const result = try resolveWithConditions(std.testing.allocator, parsed.value, subpath, .import, conditions);
+        defer std.testing.allocator.free(result);
+        try std.testing.expectEqualStrings(expected, result);
+    }
+    try std.testing.expectError(error.PackagePathNotExported, resolveWithConditions(std.testing.allocator, parsed.value, "./blocked", .require, conditions));
+    const literal = try resolveWithConditions(std.testing.allocator, parsed.value, "./literal", .require, &.{"first,second"});
+    defer std.testing.allocator.free(literal);
+    try std.testing.expectEqualStrings("literal.js", literal);
 }

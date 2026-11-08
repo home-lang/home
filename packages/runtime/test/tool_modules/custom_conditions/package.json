@@ -1,0 +1,39 @@
+{
+  "name": "@home/custom-conditions",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": {
+        "import": "./dev.mjs",
+        "require": "./dev.cjs"
+      },
+      "default": {
+        "import": "./prod.mjs",
+        "require": "./prod.cjs"
+      }
+    },
+    "./priority": {
+      "second": "./second.mjs",
+      "first": "./first.mjs",
+      "default": "./prod.mjs"
+    },
+    "./blocked": {
+      "development": null,
+      "default": "./prod.mjs"
+    },
+    "./nested": {
+      "development": {
+        "inactive": "./wrong.mjs"
+      },
+      "default": "./prod.mjs"
+    },
+    "./literal": {
+      "development,first": "./literal.mjs",
+      "default": "./prod.mjs"
+    },
+    "./late": {
+      "development": "./dev.mjs",
+      "default": "./prod.mjs"
+    }
+  }
+}

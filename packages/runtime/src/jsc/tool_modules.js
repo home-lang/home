@@ -1,8 +1,10 @@
 // Home-owned module linkage and evaluation for either public-C engine backend.
 (function() {
   const rawResolve = globalThis.__home_tool_resolve_module;
+  const conditions = globalThis.__home_tool_conditions;
+  delete globalThis.__home_tool_conditions;
   function resolveNative(specifier, parent, lookupOnly, importMode) {
-    const result = rawResolve(specifier, parent, lookupOnly, !!importMode);
+    const result = rawResolve(specifier, parent, lookupOnly, !!importMode, conditions);
     if (result && result.error) throw moduleError(result.code, `Cannot resolve ${specifier} from ${parent}: ${result.error}`);
     return result;
   }
