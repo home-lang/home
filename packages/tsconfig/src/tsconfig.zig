@@ -34,6 +34,7 @@
 
 const std = @import("std");
 const jsonc = @import("jsonc.zig");
+const filename_case = @import("filename_case");
 
 /// Home's compiler-option compatibility contract follows the native
 /// TypeScript 7 frontend. Older options are still parsed far enough to emit
@@ -361,7 +362,8 @@ fn projectInputExtensionPriority(path: []const u8, allow_js: bool) ?ProjectInput
 }
 
 fn projectInputPathEql(a: []const u8, b: []const u8, case_sensitive: bool) bool {
-    return if (case_sensitive) std.mem.eql(u8, a, b) else std.ascii.eqlIgnoreCase(a, b);
+    const context = filename_case.Context{ .case_sensitive = case_sensitive };
+    return context.eql(a, b);
 }
 
 /// Compare one already-selected project input with a newly discovered
@@ -3824,6 +3826,28 @@ test "tsconfig: project input extension priority matches TypeScript wildcard dis
         ProjectInputPriorityRelation.unrelated,
         projectInputPriorityRelation("/project/A.ts", "/project/a.js", true, true),
     );
+}
+
+test "tsconfig: wildcard extension priority follows Unicode filename identity" {
+    for ([_][2][]const u8{
+        .{ "/project/ΟΣ.ts", "/project/οσ.js" },
+        .{ "/project/K.ts", "/project/k.js" },
+        .{ "/project/𐐀.ts", "/project/𐐨.js" },
+        .{ "/project/ẞ.ts", "/project/ß.js" },
+    }) |pair| {
+        try t.expectEqual(ProjectInputPriorityRelation.existing_preferred, projectInputPriorityRelation(pair[0], pair[1], true, false));
+        try t.expectEqual(ProjectInputPriorityRelation.candidate_preferred, projectInputPriorityRelation(pair[1], pair[0], true, false));
+        try t.expectEqual(ProjectInputPriorityRelation.unrelated, projectInputPriorityRelation(pair[0], pair[1], true, true));
+    }
+    try t.expectEqual(ProjectInputPriorityRelation.same_path, projectInputPriorityRelation("/project/Σ.ts", "/project/σ.ts", false, false));
+    for ([_][2][]const u8{
+        .{ "/project/İ.ts", "/project/i.js" },
+        .{ "/project/ß.ts", "/project/ss.js" },
+        .{ "/project/ΟΣ.ts", "/project/ος.js" },
+        .{ "/project/é.ts", "/project/é.js" },
+    }) |pair| {
+        try t.expectEqual(ProjectInputPriorityRelation.unrelated, projectInputPriorityRelation(pair[0], pair[1], true, false));
+    }
 }
 
 test "tsconfig.validate: verbatimModuleSyntax rejects legacy wrapper modules" {

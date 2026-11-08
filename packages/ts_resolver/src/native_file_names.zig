@@ -2,7 +2,7 @@
 //! current project's data volume, and retain the result for every compilation.
 const std = @import("std");
 const builtin = @import("builtin");
-const filename_case = @import("filename_case.zig");
+const filename_case = @import("filename_case");
 
 var mutex: std.Io.Mutex = .init;
 var cached: ?bool = null;

@@ -1,7 +1,7 @@
 //! Select logical root identities before any filesystem read. The host's
 //! fixed filename policy determines aliases, not existence or real paths.
 const std = @import("std");
-const FileNameContext = @import("filename_case.zig").Context;
+const FileNameContext = @import("filename_case").Context;
 
 pub const Input = struct {
     authored_name: []const u8,

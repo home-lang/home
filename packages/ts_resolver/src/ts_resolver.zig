@@ -31,7 +31,7 @@
 //!   - Symlink realpath canonicalization for case-sensitive matching
 
 const std = @import("std");
-pub const FileNameContext = @import("filename_case.zig").Context;
+pub const FileNameContext = @import("filename_case").Context;
 pub const native_file_names = @import("native_file_names.zig");
 pub const root_inputs = @import("root_inputs.zig");
 

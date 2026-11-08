@@ -5363,11 +5363,18 @@ fn expandProjectGlobs(
     const exclude_base = try std.fs.path.resolve(gpa, &.{project_dir});
     defer gpa.free(exclude_base);
 
-    // TypeScript retains wildcard matches in an extension-priority map rather
-    // than appending every supported file. Keep this list separate from
-    // `owned`: rejected and displaced allocations still remain owned by the
-    // caller, while only the selected paths are appended to `out` below.
-    const WildcardInput = struct { path: []const u8, include_index: usize };
+    const WildcardInput = struct {
+        path: []const u8,
+        include_index: usize,
+        discovery_index: usize,
+
+        fn before(_: void, first: @This(), second: @This()) bool {
+            if (first.include_index != second.include_index) return first.include_index < second.include_index;
+            return first.discovery_index < second.discovery_index;
+        }
+    };
+    var candidates: std.ArrayListUnmanaged(WildcardInput) = .empty;
+    defer candidates.deinit(gpa);
     var wildcard_files: std.ArrayListUnmanaged(WildcardInput) = .empty;
     defer wildcard_files.deinit(gpa);
     var threaded = std.Io.Threaded.init(gpa, .{});
@@ -5380,7 +5387,7 @@ fn expandProjectGlobs(
 
     var stack: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
-        for (stack.items) |s| gpa.free(s);
+        for (stack.items) |path| gpa.free(path);
         stack.deinit(gpa);
     }
     try stack.ensureUnusedCapacity(gpa, 1);
@@ -5389,74 +5396,99 @@ fn expandProjectGlobs(
     while (stack.items.len > 0) {
         const rel = stack.pop().?;
         defer gpa.free(rel);
-
         const subdir_path = if (rel.len == 0)
             try gpa.dupe(u8, project_dir)
         else
             try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, rel });
         defer gpa.free(subdir_path);
-
         var sub = cwd.openDir(io, subdir_path, .{ .iterate = true }) catch continue;
         defer sub.close(io);
+
+        // Go's ReadDir supplies filename-sorted entries. Own the iterator's
+        // borrowed names, then visit files before ascending child directories.
+        var entries: std.ArrayListUnmanaged(std.Io.Dir.Entry) = .empty;
+        defer {
+            for (entries.items) |entry| gpa.free(entry.name);
+            entries.deinit(gpa);
+        }
         var iter = sub.iterate();
         while (iter.next(io) catch null) |entry| {
+            const name = try gpa.dupe(u8, entry.name);
+            entries.append(gpa, .{ .name = name, .kind = entry.kind, .inode = entry.inode }) catch |err| {
+                gpa.free(name);
+                return err;
+            };
+        }
+        std.sort.pdq(std.Io.Dir.Entry, entries.items, {}, struct {
+            fn before(_: void, first: std.Io.Dir.Entry, second: std.Io.Dir.Entry) bool {
+                return std.mem.lessThan(u8, first.name, second.name);
+            }
+        }.before);
+
+        for (entries.items) |entry| {
+            if (entry.kind != .file) continue;
             const child_rel = if (rel.len == 0)
                 try gpa.dupe(u8, entry.name)
             else
                 try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel, entry.name });
+            defer gpa.free(child_rel);
+            if (!isProjectInputExtension(child_rel, allow_js)) continue;
+            if (anyMatches(exclude_base, exclude, child_rel)) continue;
+            const include_index = firstFileIncludeMatch(include, child_rel) orelse continue;
+            try owned.ensureUnusedCapacity(gpa, 1);
+            const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, child_rel });
+            owned.appendAssumeCapacity(full);
+            try candidates.append(gpa, .{ .path = full, .include_index = include_index, .discovery_index = candidates.items.len });
+        }
 
-            switch (entry.kind) {
-                .directory => {
-                    // TypeScript's wildcard matcher implicitly excludes dot
-                    // directories and package folders, but a literal include
-                    // component may opt back into them. Ask the include
-                    // matcher whether any descendant can qualify instead of
-                    // unconditionally dropping `node_modules`.
-                    if (!anyFileIncludeMayMatchDirectory(include, child_rel)) {
-                        gpa.free(child_rel);
-                        continue;
-                    }
-                    if (anyMatches(exclude_base, exclude, child_rel)) {
-                        gpa.free(child_rel);
-                        continue;
-                    }
-                    stack.append(gpa, child_rel) catch |err| {
-                        gpa.free(child_rel);
-                        return err;
-                    };
+        // Reverse stack insertion preserves ascending depth-first traversal.
+        var entry_index = entries.items.len;
+        while (entry_index > 0) {
+            entry_index -= 1;
+            const entry = entries.items[entry_index];
+            if (entry.kind != .directory) continue;
+            const child_rel = if (rel.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel, entry.name });
+            // Literal include components can opt into otherwise hidden or
+            // package directories. Preserve the existing matcher contract.
+            if (!anyFileIncludeMayMatchDirectory(include, child_rel) or anyMatches(exclude_base, exclude, child_rel)) {
+                gpa.free(child_rel);
+                continue;
+            }
+            stack.append(gpa, child_rel) catch |err| {
+                gpa.free(child_rel);
+                return err;
+            };
+        }
+    }
+
+    // Match results belong to their first admitting include bucket. Apply
+    // extension priority in authored bucket order, retaining encounter order
+    // within each bucket and each selected path's original source index.
+    std.sort.pdq(WildcardInput, candidates.items, {}, WildcardInput.before);
+    for (candidates.items) |candidate| {
+        var keep_candidate = true;
+        var selected_index: usize = 0;
+        while (selected_index < wildcard_files.items.len) {
+            switch (tsconfig_mod.projectInputPriorityRelation(
+                wildcard_files.items[selected_index].path,
+                candidate.path,
+                allow_js,
+                case_sensitive_file_names,
+            )) {
+                .same_path, .existing_preferred => {
+                    keep_candidate = false;
+                    break;
                 },
-                .file => {
-                    defer gpa.free(child_rel);
-                    if (!isProjectInputExtension(child_rel, allow_js)) continue;
-                    if (anyMatches(exclude_base, exclude, child_rel)) continue;
-                    const include_index = firstFileIncludeMatch(include, child_rel) orelse continue;
-                    try owned.ensureUnusedCapacity(gpa, 1);
-                    const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, child_rel });
-                    owned.appendAssumeCapacity(full);
-                    var keep_candidate = true;
-                    var selected_index: usize = 0;
-                    while (selected_index < wildcard_files.items.len) {
-                        switch (tsconfig_mod.projectInputPriorityRelation(
-                            wildcard_files.items[selected_index].path,
-                            full,
-                            allow_js,
-                            case_sensitive_file_names,
-                        )) {
-                            .same_path, .existing_preferred => {
-                                keep_candidate = false;
-                                break;
-                            },
-                            .candidate_preferred => {
-                                _ = wildcard_files.orderedRemove(selected_index);
-                            },
-                            .unrelated, .coexist => selected_index += 1,
-                        }
-                    }
-                    if (keep_candidate) try wildcard_files.append(gpa, .{ .path = full, .include_index = include_index });
+                .candidate_preferred => {
+                    _ = wildcard_files.orderedRemove(selected_index);
                 },
-                else => gpa.free(child_rel),
+                .unrelated, .coexist => selected_index += 1,
             }
         }
+        if (keep_candidate) try wildcard_files.append(gpa, candidate);
     }
     try out.ensureUnusedCapacity(gpa, wildcard_files.items.len);
     if (include_indices) |indices| {
@@ -8029,6 +8061,75 @@ test "tsc_main: wildcard discovery honors TypeScript extension priority" {
         defer std.testing.allocator.free(path);
         try std.testing.expect(!pathInList(selected.items, path));
     }
+}
+
+test "tsc_main: wildcard discovery retains include order and each admitting origin" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "a.ts", "z.ts" }) |name| {
+        var file = try tmp.dir.createFile(io, name, .{});
+        file.close(io);
+    }
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    for ([_][2][]const u8{ .{ "a.ts", "z.ts" }, .{ "z.ts", "a.ts" } }) |patterns| {
+        var selected: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer selected.deinit(allocator);
+        var origins: std.ArrayListUnmanaged(usize) = .empty;
+        defer origins.deinit(allocator);
+        var owned: std.ArrayListUnmanaged([]u8) = .empty;
+        defer {
+            for (owned.items) |path| allocator.free(path);
+            owned.deinit(allocator);
+        }
+        try expandProjectGlobs(allocator, directory, &patterns, &.{}, false, &selected, &owned, &origins);
+        try std.testing.expectEqual(@as(usize, 2), selected.items.len);
+        try std.testing.expectEqualStrings(patterns[0], std.fs.path.basename(selected.items[0]));
+        try std.testing.expectEqualStrings(patterns[1], std.fs.path.basename(selected.items[1]));
+        try std.testing.expectEqualSlices(usize, &.{ 0, 1 }, origins.items);
+    }
+}
+
+test "tsc_main: wildcard discovery preserves caller inputs across allocation failures" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "a.ts", "z.ts" }) |name| {
+        var file = try tmp.dir.createFile(io, name, .{});
+        file.close(io);
+    }
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    const Lifecycle = struct {
+        fn run(gpa: std.mem.Allocator, root: []const u8) !void {
+            var selected: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer selected.deinit(gpa);
+            var origins: std.ArrayListUnmanaged(usize) = .empty;
+            defer origins.deinit(gpa);
+            var owned: std.ArrayListUnmanaged([]u8) = .empty;
+            defer {
+                for (owned.items) |path| gpa.free(path);
+                owned.deinit(gpa);
+            }
+            try selected.append(gpa, "existing.ts");
+            try origins.append(gpa, 91);
+            expandProjectGlobs(gpa, root, &.{ "z.ts", "a.ts" }, &.{}, false, &selected, &owned, &origins) catch |err| {
+                try std.testing.expectEqual(@as(usize, 1), selected.items.len);
+                try std.testing.expectEqualStrings("existing.ts", selected.items[0]);
+                try std.testing.expectEqualSlices(usize, &.{91}, origins.items);
+                return err;
+            };
+            try std.testing.expectEqual(@as(usize, 3), selected.items.len);
+            try std.testing.expectEqualStrings("existing.ts", selected.items[0]);
+            try std.testing.expectEqualStrings("z.ts", std.fs.path.basename(selected.items[1]));
+            try std.testing.expectEqualStrings("a.ts", std.fs.path.basename(selected.items[2]));
+            try std.testing.expectEqualSlices(usize, &.{ 91, 0, 1 }, origins.items);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(allocator, Lifecycle.run, .{directory});
 }
 
 test "tsc_main: JSON string writers escape controls and replace invalid UTF8" {

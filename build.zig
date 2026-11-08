@@ -659,8 +659,12 @@ pub fn build(b: *std.Build) void {
     ts_parser_prec_pkg.addImport("hir", hir_pkg);
     const d_ts_pkg = createPackage(b, "packages/d_ts/src/d_ts.zig", target, optimize, zig_test_framework);
     const tsconfig_jsonc_pkg = createPackage(b, "packages/tsconfig/src/jsonc.zig", target, optimize, zig_test_framework);
+    // Filename identity is a shared primitive, independent of config loading
+    // and resolution. Import one module so both owners use the same policy.
+    const filename_case_pkg = createPackage(b, "packages/ts_resolver/src/filename_case.zig", target, optimize, zig_test_framework);
     const tsconfig_pkg = createPackage(b, "packages/tsconfig/src/tsconfig.zig", target, optimize, zig_test_framework);
     tsconfig_pkg.addImport("jsonc", tsconfig_jsonc_pkg);
+    tsconfig_pkg.addImport("filename_case", filename_case_pkg);
 
     // Tier 0 `bun` compat shim — top-level peer of `bundler` so
     // any package that needs to compile against vendored Bun source
@@ -875,6 +879,7 @@ pub fn build(b: *std.Build) void {
 
     // TS-parity Phase 1.E follow-up — module resolver.
     const ts_resolver_pkg = createPackage(b, "packages/ts_resolver/src/ts_resolver.zig", target, optimize, zig_test_framework);
+    ts_resolver_pkg.addImport("filename_case", filename_case_pkg);
 
     // TS-parity Phase 4 — tsc-compatible diagnostic formatter.
     const ts_diagnostics_pkg = createPackage(b, "packages/ts_diagnostics/src/ts_diagnostics.zig", target, optimize, zig_test_framework);
@@ -4119,6 +4124,10 @@ pub fn build(b: *std.Build) void {
     const tsconfig_jsonc_tests = b.addTest(.{ .root_module = tsconfig_jsonc_pkg });
     const run_tsconfig_jsonc_tests = b.addRunArtifact(tsconfig_jsonc_tests);
     dependOnTest(test_step, &run_tsconfig_jsonc_tests.step, test_filter, "tsconfig_jsonc");
+
+    const filename_case_tests = b.addTest(.{ .root_module = filename_case_pkg });
+    const run_filename_case_tests = b.addRunArtifact(filename_case_tests);
+    dependOnTest(test_step, &run_filename_case_tests.step, test_filter, "filename_case");
 
     const tsconfig_tests = b.addTest(.{ .root_module = tsconfig_pkg });
     const run_tsconfig_tests = b.addRunArtifact(tsconfig_tests);
