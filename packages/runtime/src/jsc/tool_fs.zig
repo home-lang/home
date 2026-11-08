@@ -13,7 +13,7 @@ fn readToolFile(dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator)
     return dir.readFileAlloc(io, path, allocator, .limited(tool_file_max + 1));
 }
 
-fn string(ctx: *types.JSContextRef, value: ?*types.JSValue, allocator: std.mem.Allocator) ?[]u8 {
+pub fn string(ctx: *types.JSContextRef, value: ?*types.JSValue, allocator: std.mem.Allocator) ?[]u8 {
     const js_string = api.JSValueToStringCopy(ctx, value, null) orelse return null;
     defer api.JSStringRelease(js_string);
     const buffer = allocator.alloc(u8, api.JSStringGetLength(js_string) * 4 + 1) catch return null;
@@ -23,7 +23,7 @@ fn string(ctx: *types.JSContextRef, value: ?*types.JSValue, allocator: std.mem.A
     return allocator.dupe(u8, buffer[0 .. count - 1]) catch null;
 }
 
-fn text(ctx: *types.JSContextRef, value: []const u8) ?*types.JSValue {
+pub fn text(ctx: *types.JSContextRef, value: []const u8) ?*types.JSValue {
     const allocator = std.heap.smp_allocator;
     const terminated = bun.dupeZ(allocator, u8, value) catch return null;
     defer allocator.free(terminated);
@@ -32,13 +32,13 @@ fn text(ctx: *types.JSContextRef, value: []const u8) ?*types.JSValue {
     return api.JSValueMakeString(ctx, result);
 }
 
-fn set(ctx: *types.JSContextRef, object: *types.JSObject, name: [:0]const u8, value: ?*types.JSValue) void {
+pub fn set(ctx: *types.JSContextRef, object: *types.JSObject, name: [:0]const u8, value: ?*types.JSValue) void {
     const key = api.JSStringCreateWithUTF8CString(name.ptr) orelse return;
     defer api.JSStringRelease(key);
     api.JSObjectSetProperty(ctx, object, key, value, 0, null);
 }
 
-fn failure(ctx: *types.JSContextRef, object: *types.JSObject, err: anyerror) ?*types.JSValue {
+pub fn failure(ctx: *types.JSContextRef, object: *types.JSObject, err: anyerror) ?*types.JSValue {
     const code: []const u8 = switch (err) {
         error.FileNotFound => "ENOENT",
         error.AccessDenied => "EACCES",

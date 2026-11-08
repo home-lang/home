@@ -754,8 +754,14 @@ pub fn build(b: *std.Build) void {
         const tool_config_graph_pkg = createPackage(b, "packages/ts_program/src/config_graph.zig", target, optimize, zig_test_framework);
         tool_config_graph_pkg.addImport("tsconfig", tsconfig_pkg);
         tool_config_graph_pkg.addImport("ts_resolver", ts_resolver_pkg);
+        const tool_glob_support_pkg = createPackage(b, "packages/runtime/src/tool_glob_support.zig", target, optimize, zig_test_framework);
+        tool_glob_support_pkg.addImport("home", tool_glob_support_pkg);
+        tool_glob_support_pkg.addImport("bun", tool_glob_support_pkg);
+        const tool_glob_matcher_pkg = createPackage(b, "packages/runtime/src/glob/matcher.zig", target, optimize, zig_test_framework);
+        tool_glob_matcher_pkg.addImport("home", tool_glob_support_pkg);
         const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
         tool_runtime_pkg.addImport("bun", tool_compat_pkg);
+        tool_runtime_pkg.addImport("tool_glob_matcher", tool_glob_matcher_pkg);
         tool_runtime_pkg.addImport("build_options", tool_build_options_module);
         tool_runtime_pkg.addImport("ts_driver", ts_driver_pkg);
         tool_runtime_pkg.addImport("hir", hir_pkg);
@@ -801,6 +807,28 @@ pub fn build(b: *std.Build) void {
             }),
         });
         home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_file_tests).step);
+        const tool_glob_matcher_tests = b.addTest(.{ .name = "home-tool-glob-matcher-tests", .root_module = tool_glob_matcher_pkg });
+        home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_glob_matcher_tests).step);
+        const tool_glob_walk_tests = b.addTest(.{
+            .name = "home-tool-glob-walk-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_glob_walk.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        tool_glob_walk_tests.root_module.addImport("tool_glob_matcher", tool_glob_matcher_pkg);
+        home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_glob_walk_tests).step);
+        inline for (.{
+            .{ "glob_contract.mjs", "OK actual filesystem glob sync async options and matching\n" },
+            .{ "glob_unsupported.mjs", "OK explicit unsupported glob scans remain errors\n" },
+        }) |case| {
+            const run_home_tool_glob = b.addRunArtifact(home_tool_exe);
+            run_home_tool_glob.setCwd(b.path("packages/runtime/test/tool_modules"));
+            run_home_tool_glob.addArgs(&.{ "run", case[0] });
+            run_home_tool_glob.expectStdOutEqual(case[1]);
+            home_tool_smoke_step.dependOn(&run_home_tool_glob.step);
+        }
         const run_home_tool_file = b.addRunArtifact(home_tool_exe);
         run_home_tool_file.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_file.addArgs(&.{ "run", "bun_file_contract.mjs" });

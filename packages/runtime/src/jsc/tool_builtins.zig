@@ -16,6 +16,9 @@ pub fn install(allocator: std.mem.Allocator, ctx: *opaques.JSContextRef) void {
     const zlib = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_zlib.js"), "home:tool-zlib-factory-install", 1) catch return;
     defer zlib.deinit(allocator);
     if (zlib.exception != null) return;
+    const glob = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_glob.js"), "home:tool-glob-factory-install", 1) catch return;
+    defer glob.deinit(allocator);
+    if (glob.exception != null) return;
     const file = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_file.js"), "home:tool-file-factory-install", 1) catch return;
     defer file.deinit(allocator);
     if (file.exception != null) return;

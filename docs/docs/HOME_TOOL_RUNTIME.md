@@ -263,6 +263,25 @@ The Node-produced path/URL fixture retains both successful results and errors.
 Other path methods, Windows path behavior, URL objects and other URL APIs still
 require implementations.
 
+`Bun.Glob` and the `bun` module's `Glob` share a real POSIX filesystem adapter.
+`scanSync` returns an iterator and `scan` an async iterator; both enumerate native
+directory entries when iteration starts, using Home's existing glob matcher.
+Relative component patterns support *, **, ?, character classes, escapes and
+brace alternatives without slashes. Explicit dot components, dot/absolute/
+onlyFiles options, string or object cwd, and leading ./ are retained. Ordinary
+scans exclude symlinks with onlyFiles:true and yield link names without traversal
+with onlyFiles:false, including broken links. match uses the shared string matcher
+(including negation and dot characters), independently of filesystem scan policy.
+
+Enumeration currently materializes a bounded scan on the calling tool thread;
+async iteration does not claim nonblocking native filesystem work. Native errors
+propagate. Symlink traversal, absolute/parent/negated scan patterns, braces that
+cross path components or select leading-dot alternatives, non-UTF-8 filenames,
+and unknown options fail explicitly. Option fields use strict string/boolean
+validation. The scan refuses more than 100,000 entries, depth above 128, patterns
+above 4096 bytes/128 components or exhausted matching budgets instead of returning
+partial success. Other Bun APIs remain absent until implemented.
+
 `Bun.YAML.parse`, `require("bun").YAML.parse` and `Home.parseYAML` use Home's
 owned native YAML parser. The tool backend keeps scalar/collection storage in a
 scoped thread-local arena and transfers a reference graph into the selected JS

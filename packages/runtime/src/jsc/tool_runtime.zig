@@ -13,6 +13,7 @@ pub const gzip = @import("tool_gzip.zig");
 pub const performance = @import("tool_performance.zig");
 pub const async_context = @import("tool_async_context.zig");
 pub const os = @import("tool_os.zig");
+pub const glob = @import("tool_glob.zig");
 pub const fs = @import("tool_fs.zig");
 pub const host = @import("tool_host.zig");
 pub const builtins = @import("tool_builtins.zig");
