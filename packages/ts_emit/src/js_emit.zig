@@ -202,6 +202,9 @@ pub const Options = struct {
     /// Host-only static import accessor. The host links/evaluates dependencies
     /// first; explicit source require() remains synchronous and unchanged.
     commonjs_import_binding: ?[]const u8 = null,
+    /// Host-only dynamic loader, separate from synchronous source require and
+    /// prelinked static imports. The host returns the actual loading promise.
+    commonjs_dynamic_import_binding: ?[]const u8 = null,
     /// `esModuleInterop` — when true and module_kind is commonjs,
     /// inject `__importDefault` / `__importStar` helper calls so
     /// `import x from "y"` works against CJS modules without
@@ -9748,20 +9751,24 @@ pub const Printer = struct {
             try self.printTaggedTemplate(node, p);
             return;
         }
-        // Dynamic `import("...")` lowering for CommonJS targets:
-        // emit `Promise.resolve(require("..."))`. ESM keeps the
-        // native `import()` form (handled by the runtime).
+        // The repository-tool host provides genuine async loading. Ordinary
+        // CommonJS emission retains its existing require-based lowering; ESM
+        // keeps native import(). Never route dynamic requests to the static
+        // accessor, which may only read already evaluated dependency records.
         if (self.options.module_kind == .commonjs and self.hir.kindOf(p.callee) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, p.callee);
             const name = self.interner.get(id.name);
             if (std.mem.eql(u8, name, "import")) {
-                try self.write("Promise.resolve(require(");
+                if (self.options.commonjs_dynamic_import_binding) |binding| {
+                    try self.write(binding);
+                    try self.write("(");
+                } else try self.write("Promise.resolve(require(");
                 const args = hir_mod.callArgs(self.hir, node);
                 for (args, 0..) |a, i| {
                     if (i > 0) try self.write(", ");
-                    try self.printExpression(a);
+                    try self.printExpr(a, .comma);
                 }
-                try self.write("))");
+                try self.write(if (self.options.commonjs_dynamic_import_binding != null) ")" else "))");
                 return;
             }
         }
@@ -16907,4 +16914,24 @@ test "emit: await result keeps member call and exponentiation grouping" {
         defer std.testing.allocator.free(out);
         try std.testing.expectEqualStrings(source, out);
     }
+}
+
+test "emit: host dynamic imports use their own loader and preserve argument boundaries" {
+    const out = try emitWithOpts("import x from 'static'; const mod=import((side(), 'dynamic'), options()); const raw=require('explicit');", .{
+        .module_kind = .commonjs,
+        .commonjs_import_binding = "__host_static",
+        .commonjs_dynamic_import_binding = "__host_dynamic",
+    });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__host_static(\"static\")") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__host_dynamic((side(), \"dynamic\"), options())") != null);
+    try T.expect(std.mem.indexOf(u8, out, "require(\"explicit\")") != null);
+    try T.expect(std.mem.indexOf(u8, out, "Promise.resolve(require") == null);
+}
+
+test "emit: native ESM ignores host dynamic import lowering" {
+    const out = try emitWithOpts("const value=import('target');", .{ .commonjs_dynamic_import_binding = "__host_dynamic" });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "import(\"target\")") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__host_dynamic") == null);
 }

@@ -979,6 +979,23 @@ pub fn build(b: *std.Build) void {
             run_home_tool_export_rejection.expectExitCode(1);
             home_tool_smoke_step.dependOn(&run_home_tool_export_rejection.step);
         }
+        inline for (.{
+            .{ "entry.mjs", "OK actual dynamic import graphs namespaces referrers and failures\n" },
+            .{ "unsupported.mjs", "OK unsupported dynamic import forms remain explicit errors\n" },
+        }) |case| {
+            const run_home_tool_dynamic_import = b.addRunArtifact(home_tool_exe);
+            run_home_tool_dynamic_import.setCwd(b.path("packages/runtime/test/tool_modules/dynamic_import"));
+            run_home_tool_dynamic_import.addArgs(&.{ "run", case[0] });
+            run_home_tool_dynamic_import.expectStdOutEqual(case[1]);
+            home_tool_smoke_step.dependOn(&run_home_tool_dynamic_import.step);
+        }
+        inline for (.{ "reject-entry.mjs", "pending-entry.mjs" }) |entry| {
+            const run_home_tool_dynamic_rejection = b.addRunArtifact(home_tool_exe);
+            run_home_tool_dynamic_rejection.setCwd(b.path("packages/runtime/test/tool_modules/dynamic_import"));
+            run_home_tool_dynamic_rejection.addArgs(&.{ "run", entry });
+            run_home_tool_dynamic_rejection.expectExitCode(1);
+            home_tool_smoke_step.dependOn(&run_home_tool_dynamic_rejection.step);
+        }
         const run_home_tool_imports_smoke = b.addRunArtifact(home_tool_exe);
         run_home_tool_imports_smoke.setCwd(b.path("packages/runtime/test/tool_modules/package_imports"));
         run_home_tool_imports_smoke.addArgs(&.{ "run", "entry.cjs" });

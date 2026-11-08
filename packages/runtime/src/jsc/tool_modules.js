@@ -14,6 +14,7 @@
   const cache = Object.create(null);
   let mainModule = null;
   const records = Object.create(null);
+  const builtinRecords = Object.create(null);
   // Preserve emitted ESM identity while adapting genuine CommonJS values.
   globalThis.__importDefault = function(value) {
     return value && value.__esModule ? value : { default: value };
@@ -61,9 +62,13 @@
     return error;
   }
   function link(specifier, parentPath, importMode) {
-    if (isBuiltin(specifier)) return { builtin: true, exports: builtins[specifier] };
+    if (isBuiltin(specifier)) {
+      const key = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
+      if (!builtinRecords[key]) builtinRecords[key] = { builtin: true, exports: builtins[specifier] };
+      return builtinRecords[key];
+    }
     const resolved = resolveNative(specifier, parentPath || '', true, importMode);
-    if (resolved === null) throw new Error(`cannot resolve module ${specifier} from ${parentPath}`);
+    if (resolved === null) throw moduleError(importMode ? 'ERR_MODULE_NOT_FOUND' : 'MODULE_NOT_FOUND', `cannot resolve module ${specifier} from ${parentPath}`);
     if (Object.prototype.hasOwnProperty.call(records, resolved.path)) return records[resolved.path];
     const payload = resolveNative(resolved.path, '');
     if (payload === null) throw new Error(`cannot emit module ${resolved.path}`);
@@ -134,6 +139,32 @@
       if (dependency.asynchronous && dependency.state !== 'evaluated') throw moduleError('ERR_HOME_MODULE_LINK', `Async dependency not evaluated: ${request}`);
       return dependency.module.exports;
     }
+    function dynamicImport(specifier, options) {
+      let request;
+      try {
+        // EvaluateImportCall performs ToString now (string hint, rejecting
+        // Symbols), but reports conversion/loading failures through a promise.
+        request = `${specifier}`;
+        if (options !== undefined) throw moduleError('ERR_HOME_UNSUPPORTED_IMPORT', 'Dynamic import attributes are not implemented');
+        if (request.slice(0, 5).toLowerCase() === 'file:') {
+          if (request.includes('?') || request.includes('#')) throw moduleError('ERR_HOME_UNSUPPORTED_IMPORT', 'Dynamic import URL queries and fragments are not implemented');
+          request = builtins['node:url'].fileURLToPath(request);
+        }
+        else if ((request.startsWith('/') || request.startsWith('./') || request.startsWith('../')) && (request.includes('?') || request.includes('#'))) {
+          throw moduleError('ERR_HOME_UNSUPPORTED_IMPORT', 'Dynamic import URL queries and fragments are not implemented');
+        }
+      }
+      catch (error) {
+        return Promise.reject(error);
+      }
+      // Defer linkage and evaluation until after the current execution turn.
+      // The static graph and explicit source require() remain independent.
+      return Promise.resolve().then(function() {
+        const root = graph(request, payload.path, true);
+        if (!root.builtin && root.payload.format === 'json') throw moduleError('ERR_HOME_UNSUPPORTED_IMPORT', 'Dynamic JSON imports require attribute support');
+        return evaluateAsync(root, false, []);
+      }).then(namespaceFor);
+    }
     record.execute = function() {
       if (payload.format === 'json') {
         module.exports = JSON.parse(payload.source);
@@ -141,8 +172,8 @@
       }
       // The import accessor is separate from explicit source require(): only
       // linked static edges may read an already evaluated async dependency.
-      const factorySource = `(function(${payload.metaBinding}, module, ${payload.importBinding || '__home_unused_import'}) { return ${record.asynchronous ? 'async ' : ''}function(exports, require, ${payload.moduleBinding || 'module'}, __filename, __dirname) {\n${payload.source}\n}; })`;
-      const wrapper = (0, eval)(factorySource)(metadata, module, staticImport);
+      const factorySource = `(function(${payload.metaBinding}, module, ${payload.importBinding || '__home_unused_import'}, ${payload.dynamicImportBinding || '__home_unused_dynamic_import'}) { return ${record.asynchronous ? 'async ' : ''}function(exports, require, ${payload.moduleBinding || 'module'}, __filename, __dirname) {\n${payload.source}\n}; })`;
+      const wrapper = (0, eval)(factorySource)(metadata, module, staticImport, dynamicImport);
       return wrapper(module.exports, localRequire, module, payload.path, directory);
     };
   }
@@ -215,6 +246,28 @@
       record.promise = Promise.reject(error);
     }
     return record.promise;
+  }
+  function namespaceFor(record) {
+    if (record.namespace) return record.namespace;
+    const exports = record.builtin ? record.exports : record.module.exports;
+    const esm = !record.builtin && record.payload.esModule;
+    const namespace = Object.create(null);
+    const names = (exports !== null && (typeof exports === 'object' || typeof exports === 'function') ? Object.keys(exports) : []).filter(function(name) {
+      return esm ? name !== '__esModule' : name !== 'default';
+    });
+    if (!esm) names.push('default');
+    names.sort().forEach(function(name) {
+      if (!esm && name === 'default') Object.defineProperty(namespace, name, { enumerable: true, value: exports });
+      else Object.defineProperty(namespace, name, { enumerable: true, get: function() {
+        return exports[name];
+      } });
+    });
+    Object.defineProperty(namespace, Symbol.toStringTag, { value: 'Module' });
+    Object.preventExtensions(namespace);
+    record.namespace = namespace;
+    // A genuine `then` export is deliberately visible: the actual promise
+    // resolution procedure may call it, as native dynamic import does.
+    return namespace;
   }
   function load(specifier, parentPath, asMain) {
     const record = evaluateSync(graph(String(specifier), parentPath), asMain);

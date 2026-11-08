@@ -308,10 +308,11 @@ fn hasTopLevelAwait(hir: *const hir_mod.Hir) bool {
     return false;
 }
 
-fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8, meta_binding: *?[]u8, module_binding: *?[]u8, import_binding: *?[]u8, is_esm: *bool, top_await: *bool, static_imports: *?[]u8) ?[]u8 {
+fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8, meta_binding: *?[]u8, module_binding: *?[]u8, import_binding: *?[]u8, dynamic_binding: *?[]u8, is_esm: *bool, top_await: *bool, static_imports: *?[]u8) ?[]u8 {
     meta_binding.* = null;
     module_binding.* = null;
     import_binding.* = null;
+    dynamic_binding.* = null;
     is_esm.* = false;
     top_await.* = false;
     static_imports.* = null;
@@ -334,7 +335,8 @@ fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8
     defer imports.deinit(allocator);
     top_await.* = hasTopLevelAwait(&compilation.hir);
     const extension = std.fs.path.extension(path);
-    is_esm.* = top_await.* and !std.mem.eql(u8, extension, ".cjs") and !std.mem.eql(u8, extension, ".cts");
+    is_esm.* = std.mem.eql(u8, extension, ".mjs") or std.mem.eql(u8, extension, ".mts") or
+        (top_await.* and !std.mem.eql(u8, extension, ".cjs") and !std.mem.eql(u8, extension, ".cts"));
     if (compilation.root != hir_mod.none_node_id) {
         for (hir_mod.blockStmts(&compilation.hir, compilation.root)) |statement| {
             if (compilation.hir.kindOf(statement) == .import_decl) {
@@ -372,6 +374,15 @@ fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8
         }
     }
     options.emit.import_meta_binding = meta_binding.*;
+    suffix = 0;
+    while (true) : (suffix += 1) {
+        const name = std.fmt.bufPrint(&buffer, "__home_dynamic_import_{d}", .{suffix}) catch return null;
+        if (compilation.interner.lookup(name) == null) {
+            dynamic_binding.* = allocator.dupe(u8, name) catch return null;
+            break;
+        }
+    }
+    options.emit.commonjs_dynamic_import_binding = dynamic_binding.*;
     if (is_esm.*) {
         suffix = 0;
         while (true) : (suffix += 1) {
@@ -442,6 +453,8 @@ fn resolveModuleNative(
     var meta_binding: ?[]u8 = null;
     var module_binding: ?[]u8 = null;
     var import_binding: ?[]u8 = null;
+    var dynamic_binding: ?[]u8 = null;
+    defer if (dynamic_binding) |name| allocator.free(name);
     defer if (import_binding) |name| allocator.free(name);
     var is_esm = false;
     var top_await = false;
@@ -449,7 +462,7 @@ fn resolveModuleNative(
     defer if (static_imports) |json| allocator.free(json);
     defer if (meta_binding) |name| allocator.free(name);
     defer if (module_binding) |name| allocator.free(name);
-    const emitted = emitModule(allocator, source, path, &meta_binding, &module_binding, &import_binding, &is_esm, &top_await, &static_imports) orelse return extern_fns.JSValueMakeNull(c);
+    const emitted = emitModule(allocator, source, path, &meta_binding, &module_binding, &import_binding, &dynamic_binding, &is_esm, &top_await, &static_imports) orelse return extern_fns.JSValueMakeNull(c);
     defer allocator.free(emitted);
 
     const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
@@ -458,6 +471,7 @@ fn resolveModuleNative(
     if (meta_binding) |name| setProperty(c, object, "metaBinding", stringValue(c, name));
     if (module_binding) |name| setProperty(c, object, "moduleBinding", stringValue(c, name));
     if (import_binding) |name| setProperty(c, object, "importBinding", stringValue(c, name));
+    if (dynamic_binding) |name| setProperty(c, object, "dynamicImportBinding", stringValue(c, name));
     setProperty(c, object, "esModule", extern_fns.JSValueMakeBoolean(c, is_esm));
     setProperty(c, object, "topLevelAwait", extern_fns.JSValueMakeBoolean(c, top_await));
     if (static_imports) |json| setProperty(c, object, "staticImports", stringValue(c, json));

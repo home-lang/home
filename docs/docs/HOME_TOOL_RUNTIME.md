@@ -364,13 +364,32 @@ separate from explicit source `require()`, which rejects async graphs with
 export are not assimilated as evaluation promises. Sync CommonJS cycles retain
 the existing partial-exports behavior.
 
+Dynamic import in modules run by home-tool uses a separate, collision-free host
+accessor. Specifier conversion runs synchronously with the string hint; conversion,
+resolution and evaluation failures reject real promises. Module loading runs after
+the current turn and uses import conditions, the lexical referrer, the same module
+records and acyclic async graph evaluation. Concurrent/repeated imports share
+execution and namespace identity, and failed ESM evaluations retain their error.
+POSIX file URL strings without query/fragment identity are supported. Explicit
+source require stays synchronous and still refuses async graphs.
+
+The adapter returns cached, nonextensible null-prototype namespace views. CommonJS
+gets its actual exports as default, with runtime enumerable names; this does not
+claim Node's static CommonJS named-export analysis or native namespace exotic
+property descriptors. ESM live binding/TDZ remains subject to the existing lowering
+limits. A genuine then export is visible to actual promise resolution, including
+its assimilation behavior. Import attributes, JSON dynamic imports, URL queries/
+fragments and full async cycles remain explicit errors or unsettled failures.
+Plain CommonJS emitter output without a host accessor retains its older lowering;
+the module profile does not certify dynamic import in bare eval mode.
+
 The native runner protects a private completion closure across the engine's
 microtask checkpoint and checks it before natural exit. Rejections (including
 `throw undefined`) fail; an unsettled entry fails with
 `ERR_HOME_UNSETTLED_MODULE`. This is not a complete ESM implementation: async
 cycles are explicitly refused with `ERR_HOME_ASYNC_MODULE_CYCLE`, the existing
 CommonJS lowering does not provide full ESM live-binding/TDZ/namespace semantics,
-and dynamic import and event-loop-backed I/O require separate implementations.
+and event-loop-backed I/O requires a separate implementation.
 No await is stripped and no external JavaScript runtime evaluates these modules.
 
 After successful evaluation, the runner emits the natural process `exit` event

@@ -1,0 +1,1 @@
+{"name": "home-tool-dynamic-import-fixture", "type": "module", "imports": {"#awaited": "./awaited.mjs"}}
