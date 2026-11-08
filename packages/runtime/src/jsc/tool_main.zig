@@ -53,6 +53,7 @@ fn runSource(
     tool_runtime.process.install(allocator, ctx, global, argv);
     tool_runtime.host.install(allocator, ctx, global);
     tool_runtime.yaml.install(allocator, ctx, global);
+    tool_runtime.os.install(ctx, global);
     tool_runtime.fs.install(ctx, global);
     tool_runtime.builtins.install(allocator, ctx);
     tool_runtime.modules.install(allocator, ctx, global);

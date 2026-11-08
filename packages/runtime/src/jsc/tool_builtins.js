@@ -375,7 +375,22 @@
       return null;
     },
   };
+  const accountHomedir = globalThis.__home_tool_account_homedir;
+  delete globalThis.__home_tool_account_homedir;
+  const osApi = {
+    homedir: function() {
+      if (Object.prototype.hasOwnProperty.call(process.env, 'HOME')) {
+        if (typeof process.env.HOME !== 'string') unsupported('Home os.homedir requires a string HOME environment value');
+        return process.env.HOME;
+      }
+      const directory = accountHomedir();
+      if (directory === null) throw new Error('Cannot query the native POSIX home directory');
+      return directory;
+    },
+  };
   const builtins = Object.create(null);
+  builtins.os = osApi;
+  builtins['node:os'] = osApi;
   builtins.process = globalThis.process;
   builtins['node:process'] = globalThis.process;
   builtins['fs/promises'] = fsPromises;

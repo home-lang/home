@@ -842,6 +842,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_process_module.addArgs(&.{ "run", "node_process_entry.mjs" });
         run_home_tool_process_module.expectStdOutEqual("OK home-tool process module identity\n");
         home_tool_smoke_step.dependOn(&run_home_tool_process_module.step);
+        const run_home_tool_os = b.addRunArtifact(home_tool_exe);
+        run_home_tool_os.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_os.addArgs(&.{ "run", "node_os_entry.mjs" });
+        run_home_tool_os.expectStdOutEqual("OK home-tool POSIX home directory\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_os.step);
         const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
         run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });

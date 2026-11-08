@@ -49,6 +49,12 @@ The `process` and `node:process` module aliases expose the existing live Home
 next-tick queue and exit handling. They do not manufacture additional Node
 process methods; unsupported fields remain absent.
 
+The `os`/`node:os` adapter implements POSIX `homedir`: it honors string HOME
+values (including empty strings), then queries the real current-user account
+via reentrant `getpwuid_r` when HOME is absent, on macOS/Linux. Native lookup
+failure throws. Other os APIs remain absent. Node is the oracle for mutable HOME
+behavior; Bun 1.4.4 caches its home directory and differs on these witnesses.
+
 The tool module loader exposes the same real filesystem adapter as `fs` and
 `node:fs`: `existsSync` and `readFileSync` with explicit `utf8`/`utf-8` encoding
 and string paths. Reads use native file bytes, preserve embedded NULs and BOMs,
