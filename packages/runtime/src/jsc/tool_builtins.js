@@ -416,6 +416,9 @@
   };
   const eventsApi = globalThis.__home_tool_events;
   delete globalThis.__home_tool_events;
+  const streamsFactory = globalThis.__home_tool_streams_factory;
+  delete globalThis.__home_tool_streams_factory;
+  const streamsApi = streamsFactory(eventsApi, bufferApi.Buffer);
   const nativeIsatty = globalThis.__home_tool_isatty;
   delete globalThis.__home_tool_isatty;
   const ttyApi = {
@@ -471,6 +474,10 @@
     },
   };
   const builtins = Object.create(null);
+  builtins.stream = streamsApi;
+  builtins['node:stream'] = streamsApi;
+  builtins['stream/promises'] = streamsApi.promises;
+  builtins['node:stream/promises'] = streamsApi.promises;
   // The Node 26 recognizer covers CSI and terminated OSC sequences, including
   // colon-delimited SGR and Unicode/newline OSC payloads. Keep it private.
   const vtControls = /(?:\x1b\][\s\S]*?(?:\x07|\x1b\\|\x9c))|[\x1b\x9b][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]/g;

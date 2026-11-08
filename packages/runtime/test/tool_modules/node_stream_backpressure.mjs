@@ -1,0 +1,13 @@
+import { Writable } from 'node:stream';
+import { finished } from 'node:stream/promises';
+const trace = [];
+const sink = new Writable({ highWaterMark: 1, write(chunk, encoding, callback) { const text = chunk.toString(); trace.push('write:' + text); process.nextTick(() => { trace.push('ack:' + text); callback(); }); } });
+const drained = new Promise(resolve => sink.once('drain', () => { trace.push('drain'); resolve(); }));
+const accepted = sink.write(Buffer.from('a'));
+if (accepted !== false) throw new Error('backpressure not reported');
+await drained;
+const completion = finished(sink);
+sink.end(Buffer.from('b'));
+await completion;
+if (!sink.writableFinished || trace.join(',') !== 'write:a,ack:a,drain,write:b,ack:b') throw new Error('drain/completion ordering failed');
+console.log(JSON.stringify({ accepted, trace, finished: sink.writableFinished }));

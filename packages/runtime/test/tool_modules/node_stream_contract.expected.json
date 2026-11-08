@@ -1,0 +1,1 @@
+{"objects":[1,{"x":2},3],"pull":["ab","cdef",0,true],"transform":"AB!","async":[4,5],"cleanup":[true,true],"errorIdentities":true,"premature":"ERR_STREAM_PREMATURE_CLOSE","callback":"callback","bytes":[["68c3a9","buffer"],["ff00","buffer"],["41","buffer"]]}

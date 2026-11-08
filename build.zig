@@ -840,6 +840,30 @@ pub fn build(b: *std.Build) void {
         run_home_tool_interop_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_interop_smoke.addArgs(&.{ "run", "interop_entry.ts" });
         home_tool_smoke_step.dependOn(&run_home_tool_interop_smoke.step);
+        const run_home_tool_mixed_imports = b.addRunArtifact(home_tool_exe);
+        run_home_tool_mixed_imports.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_mixed_imports.addArgs(&.{ "run", "mixed_imports_entry.mjs" });
+        run_home_tool_mixed_imports.expectStdOutEqual("OK mixed import bindings 42\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_mixed_imports.step);
+        inline for (.{
+            .{ "node_stream_flow.mjs", "{\"data\":\"AB\",\"finished\":true,\"ended\":true}\n" },
+            .{ "node_stream_backpressure.mjs", "{\"accepted\":false,\"trace\":[\"write:a\",\"ack:a\",\"drain\",\"write:b\",\"ack:b\"],\"finished\":true}\n" },
+            .{ "node_stream_failure.mjs", "OK actual pipeline error identity and cleanup\n" },
+            .{ "node_stream_contract.mjs", @embedFile("packages/runtime/test/tool_modules/node_stream_contract.expected.json") },
+            .{ "node_stream_errors.mjs", @embedFile("packages/runtime/test/tool_modules/node_stream_errors.expected.json") },
+        }) |case| {
+            const run_home_tool_stream = b.addRunArtifact(home_tool_exe);
+            run_home_tool_stream.setCwd(b.path("packages/runtime/test/tool_modules"));
+            run_home_tool_stream.addArgs(&.{ "run", case[0] });
+            run_home_tool_stream.expectStdOutEqual(case[1]);
+            home_tool_smoke_step.dependOn(&run_home_tool_stream.step);
+        }
+        const run_home_tool_pending_stream = b.addRunArtifact(home_tool_exe);
+        run_home_tool_pending_stream.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_pending_stream.addArgs(&.{ "run", "node_stream_pending.mjs" });
+        run_home_tool_pending_stream.expectExitCode(1);
+        run_home_tool_pending_stream.expectStdOutEqual("waiting for actual write acknowledgment\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_pending_stream.step);
         const run_home_tool_imports_smoke = b.addRunArtifact(home_tool_exe);
         run_home_tool_imports_smoke.setCwd(b.path("packages/runtime/test/tool_modules/package_imports"));
         run_home_tool_imports_smoke.addArgs(&.{ "run", "entry.cjs" });

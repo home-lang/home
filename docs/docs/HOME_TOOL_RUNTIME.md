@@ -105,6 +105,24 @@ control sequences, including colon-delimited SGR and Unicode/newline OSC data;
 non-string arguments fail with ERR_INVALID_ARG_TYPE. inspect, format, promisify,
 types and the remaining Node utility surface are absent.
 
+The `stream`/`node:stream` aliases provide owned EventEmitter-based Readable,
+Writable, Duplex, Transform and PassThrough classes. These move actual managed
+bytes or objects through queues, honor highWaterMark backpressure and drain,
+and wait for write/final/flush callbacks. Readable.from consumes synchronous or
+asynchronous iterables; read, push, pause/resume and single-destination pipe
+operate on real buffered data. Pipelines destroy failed stages and await actual
+iterator/resource cleanup callbacks. Missing provider callbacks leave completion
+pending rather than fabricating finish or EOF.
+
+The shared stream/promises namespace supplies pipeline and finished for owned
+streams; callback pipeline is also supported. The implementation is a bounded
+profile, not the full Node stream implementation. Native file/terminal streams,
+outbound async iteration, string decoders/setEncoding, cork/writev, construct,
+AbortSignal/Web Streams, multi-destination pipes and callback finished cleanup
+are absent or explicitly refused. Unrecognized constructor/helper options are
+refused. Native file-copy witnesses remain failed until fs stream adapters and
+their actual I/O exist; passing in-memory flow does not certify file I/O.
+
 The `crypto`/`node:crypto` adapter exposes synchronous randomBytes with real
 managed Buffer storage. It obtains fresh OS entropy through Zig Io.randomSecure;
 entropy failure throws instead of returning zeros or using a weak seed. Numeric
