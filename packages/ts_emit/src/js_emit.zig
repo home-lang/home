@@ -8628,6 +8628,11 @@ pub const Printer = struct {
             .jsx_expression => try self.printJsxExpression(node),
             .await_expr => {
                 const a = hir_mod.awaitExprOf(self.hir, node);
+                // AwaitExpression is a UnaryExpression (ECMA-262); preserve
+                // grouping when its result becomes a member/call target.
+                // Downlevel yield has AssignmentExpression precedence.
+                const wrap = level.gte(if (self.in_async_downlevel) .assign else .prefix);
+                if (wrap) try self.write("(");
                 // §4.A.5 — under ES2016 and below the enclosing async
                 // function is wrapped in `__awaiter(... function* ())`,
                 // so `await E` lowers to `yield E` inside the
@@ -8654,6 +8659,7 @@ pub const Printer = struct {
                 // operand keeps its parens (`await (a + b)`), while a
                 // member/call does not (`await a.b`).
                 try self.printExpr(a.expr, Level.sub(.prefix, 1));
+                if (wrap) try self.write(")");
             },
             .yield_expr => {
                 const y = hir_mod.yieldExprOf(self.hir, node);
@@ -9074,7 +9080,7 @@ pub const Printer = struct {
             // `-2 ** 3` is a SyntaxError, so force `(-2) ** 3`. (Bun forces
             // the left operand to `.call` for unary/await/signed-number
             // left operands; Home models a signed number as a unary.)
-            if (self.hir.kindOf(p.lhs) == .unary_op) left_level = .call;
+            if (self.hir.kindOf(p.lhs) == .unary_op or self.hir.kindOf(p.lhs) == .await_expr) left_level = .call;
         } else if (p.op != .comma) {
             right_level = e_level;
         }
@@ -16753,4 +16759,13 @@ test "commonjs host static import accessor leaves source require synchronous" {
         try std.testing.expect(std.mem.indexOf(u8, out, call) != null);
     }
     try std.testing.expect(std.mem.indexOf(u8, out, "require(\"g\")") != null);
+}
+
+test "emit: await result keeps member call and exponentiation grouping" {
+    const cases = [_][]const u8{ "(await value).field;", "(await value)[key];", "(await callable)();", "(await value) ** 3;" };
+    for (cases) |source| {
+        const out = try emit(source);
+        defer std.testing.allocator.free(out);
+        try std.testing.expectEqualStrings(source, out);
+    }
 }

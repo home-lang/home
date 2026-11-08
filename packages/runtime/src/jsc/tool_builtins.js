@@ -63,20 +63,24 @@
     return output.join('');
   }
 
+  function utf8ReadOptions(options) {
+    const encoding = typeof options === 'string' ? options : options && options.encoding;
+    if (typeof encoding !== 'string' || !['utf8', 'utf-8'].includes(encoding.toLowerCase())) {
+      unsupported('Home node:fs readFileSync currently requires utf8 encoding; Buffer and other encodings are unsupported');
+    }
+    if (options && typeof options === 'object') {
+      if (options.flag !== undefined && options.flag !== 'r') unsupported('Home node:fs currently supports the r flag only');
+      const unknown = Object.keys(options).filter(function(key) {
+        return key !== 'encoding' && key !== 'flag';
+      });
+      if (unknown.length) unsupported(`Unsupported Home node:fs read options: ${unknown.join(', ')}`);
+    }
+  }
+
   const fs = {
     readFileSync: function(path, options) {
       path = stringPath(path);
-      const encoding = typeof options === 'string' ? options : options && options.encoding;
-      if (typeof encoding !== 'string' || !['utf8', 'utf-8'].includes(encoding.toLowerCase())) {
-        unsupported('Home node:fs readFileSync currently requires utf8 encoding; Buffer and other encodings are unsupported');
-      }
-      if (options && typeof options === 'object') {
-        if (options.flag !== undefined && options.flag !== 'r') unsupported('Home node:fs currently supports the r flag only');
-        const unknown = Object.keys(options).filter(function(key) {
-          return key !== 'encoding' && key !== 'flag';
-        });
-        if (unknown.length) unsupported(`Unsupported Home node:fs read options: ${unknown.join(', ')}`);
-      }
+      utf8ReadOptions(options);
       // Hex transport preserves NULs and malformed UTF-8 that a sentinel-based
       // text callback cannot carry faithfully. File errors propagate as errors.
       return decodeUtf8(Home.readFileHex(path));
@@ -86,6 +90,80 @@
       return Home.fileExists(stringPath(path));
     },
   };
+  const nativeFs = globalThis.__home_tool_fs_operation;
+  delete globalThis.__home_tool_fs_operation;
+  function fsOptions(options, allowed) {
+    if (options === undefined) return {};
+    if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('Expected filesystem options object');
+    for (const key of Object.keys(options)) {
+      if (!allowed.includes(key)) unsupported(`Unsupported filesystem option: ${key}`);
+    }
+    return options;
+  }
+  function booleanFsOption(options, key) {
+    if (options[key] !== undefined && typeof options[key] !== 'boolean') throw new TypeError(`Expected boolean ${key}`);
+    return options[key] === true;
+  }
+  function fsOperation(operation, path, recursive, force) {
+    path = stringPath(path);
+    const result = nativeFs(operation, path, recursive, force);
+    if (result === null) throw new Error('Native filesystem operation failed');
+    if (result.error) {
+      const error = new Error(`${result.error}: ${operation} '${path}'${result.detail ? ` (${result.detail})` : ''}`);
+      error.code = result.error;
+      error.syscall = operation;
+      error.path = path;
+      throw error;
+    }
+    return result;
+  }
+  const fsPromises = {
+    readFile: async function(path, options) {
+      utf8ReadOptions(options);
+      return decodeUtf8(fsOperation('readFile', path, false, false).hex);
+    },
+    mkdir: async function(path, options) {
+      options = fsOptions(options, ['recursive']);
+      const result = fsOperation('mkdir', path, booleanFsOption(options, 'recursive'), false);
+      return result.created;
+    },
+    rm: async function(path, options) {
+      options = fsOptions(options, ['recursive', 'force']);
+      fsOperation('rm', path, booleanFsOption(options, 'recursive'), booleanFsOption(options, 'force'));
+    },
+    stat: async function(path, options) {
+      fsOptions(options, []);
+      const result = fsOperation('stat', path, false, false);
+      const kind = result.kind;
+      delete result.kind;
+      result.isFile = function() {
+        return kind === 'file';
+      };
+      result.isDirectory = function() {
+        return kind === 'directory';
+      };
+      result.isSymbolicLink = function() {
+        return kind === 'sym_link';
+      };
+      result.isBlockDevice = function() {
+        return kind === 'block_device';
+      };
+      result.isCharacterDevice = function() {
+        return kind === 'character_device';
+      };
+      result.isFIFO = function() {
+        return kind === 'named_pipe';
+      };
+      result.isSocket = function() {
+        return kind === 'unix_domain_socket';
+      };
+      result.mtime = new Date(result.mtimeMs);
+      result.ctime = new Date(result.ctimeMs);
+      if (result.atimeMs !== undefined) result.atime = new Date(result.atimeMs);
+      return result;
+    },
+  };
+  fs.promises = fsPromises;
   function invalidReferrer() {
     const error = new TypeError('createRequire needs an absolute filename or file URL string');
     error.code = 'ERR_INVALID_ARG_VALUE';
@@ -300,6 +378,8 @@
   const builtins = Object.create(null);
   builtins.process = globalThis.process;
   builtins['node:process'] = globalThis.process;
+  builtins['fs/promises'] = fsPromises;
+  builtins['node:fs/promises'] = fsPromises;
   builtins.fs = fs;
   builtins['node:fs'] = fs;
   builtins.module = moduleApi;

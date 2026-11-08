@@ -847,6 +847,10 @@ pub fn build(b: *std.Build) void {
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });
         run_home_tool_fs.expectStdOutEqual("OK home-tool node:fs UTF-8 reads\n");
         home_tool_smoke_step.dependOn(&run_home_tool_fs.step);
+        const run_home_tool_fs_promises = b.addRunArtifact(home_tool_exe);
+        run_home_tool_fs_promises.addArgs(&.{ "run", "packages/runtime/test/tool_modules/node_fs_promises_entry.mjs" });
+        run_home_tool_fs_promises.expectStdOutEqual("OK home-tool native filesystem promises\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_fs_promises.step);
         const run_home_tool_create_require = b.addRunArtifact(home_tool_exe);
         run_home_tool_create_require.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_create_require.addArgs(&.{ "run", "node_module_entry.cjs" });
@@ -875,6 +879,7 @@ pub fn build(b: *std.Build) void {
         for ([_][2][]const u8{
             .{ "siblings.mjs", "OK home-tool independent async siblings\n" },
             .{ "for-await.mjs", "OK home-tool top-level for await\n" },
+            .{ "await-precedence.mjs", "OK home-tool await result precedence\n" },
         }) |case| {
             const positive = b.addRunArtifact(home_tool_exe);
             positive.setCwd(b.path("packages/runtime/test/tool_modules/async"));

@@ -58,6 +58,20 @@ Buffer-returning reads, other encodings/flags and URL/Buffer paths still require
 implementations and remain errors. Native read errors
 propagate; complete Node filesystem error metadata is not provided yet.
 
+The `fs/promises` and `node:fs/promises` aliases share `fs.promises`. Supported
+operations perform real native I/O: UTF-8 `readFile`, default-mode `mkdir`
+(including the first-created-ancestor return for recursive creation), `rm`
+(including recursive/force behavior and unlinking symlinks), and `stat`. Stat
+returns actual kind predicates, size, inode, link count and available access,
+modification and change times; this is a subset of Node's Stats fields.
+The methods return real promises, but native filesystem work currently blocks
+the tool thread. Buffer/URL paths, binary reads, custom permissions, retry,
+bigint, abort and other options are unsupported rather than silently ignored.
+Other fs promises methods remain absent. The disposable filesystem smoke checks
+native reads/metadata, missing/existing paths, recursive deletion and that a
+symlink never causes deletion of its target. Await result/member/call/exponent
+precedence is preserved by the Home emitter.
+
 `module`/`node:module` expose `createRequire` for absolute POSIX filenames and
 file URL strings. The returned require resolves relative files, package imports
 and offline packages from that referrer, sharing the real module cache. The
