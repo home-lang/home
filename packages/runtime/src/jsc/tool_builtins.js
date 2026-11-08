@@ -471,6 +471,18 @@
     },
   };
   const builtins = Object.create(null);
+  // The Node 26 recognizer covers CSI and terminated OSC sequences, including
+  // colon-delimited SGR and Unicode/newline OSC payloads. Keep it private.
+  const vtControls = /(?:\x1b\][\s\S]*?(?:\x07|\x1b\\|\x9c))|[\x1b\x9b][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]/g;
+  const stripControls = RegExp.prototype[Symbol.replace].bind(vtControls);
+  const utilApi = {
+    stripVTControlCharacters: function(text) {
+      if (typeof text !== 'string') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'stripVTControlCharacters requires a string');
+      return stripControls(text, '');
+    },
+  };
+  builtins.util = utilApi;
+  builtins['node:util'] = utilApi;
   builtins.readline = readlineApi;
   builtins['node:readline'] = readlineApi;
   builtins.buffer = bufferApi;

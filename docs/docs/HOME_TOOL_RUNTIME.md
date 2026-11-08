@@ -99,6 +99,12 @@ absent: the tool still needs actual input streams and an I/O event loop. The
 existing process.stdout.write writes bytes but does not yet implement Node's
 write callbacks; the helpers do not invent successful callback completion for it.
 
+The `util`/`node:util` adapter supplies stripVTControlCharacters for primitive
+strings using Node's CSI/terminated-OSC recognizer. It removes actual terminal
+control sequences, including colon-delimited SGR and Unicode/newline OSC data;
+non-string arguments fail with ERR_INVALID_ARG_TYPE. inspect, format, promisify,
+types and the remaining Node utility surface are absent.
+
 The `crypto`/`node:crypto` adapter exposes synchronous randomBytes with real
 managed Buffer storage. It obtains fresh OS entropy through Zig Io.randomSecure;
 entropy failure throws instead of returning zeros or using a weak seed. Numeric

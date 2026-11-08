@@ -968,6 +968,16 @@ pub fn build(b: *std.Build) void {
         run_home_tool_readline_esm.addArgs(&.{ "run", "node_readline_esm.mjs" });
         run_home_tool_readline_esm.expectStdOutEqual("\x1b[1G\x1b[1D\x1b[2B\x1b[2K\x1b[0J");
         home_tool_smoke_step.dependOn(&run_home_tool_readline_esm.step);
+        const run_home_tool_util = b.addRunArtifact(home_tool_exe);
+        run_home_tool_util.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_util.addArgs(&.{ "run", "node_util_entry.cjs" });
+        run_home_tool_util.expectStdOutEqual(@embedFile("packages/runtime/test/tool_modules/node_util.expected.json"));
+        home_tool_smoke_step.dependOn(&run_home_tool_util.step);
+        const run_home_tool_util_esm = b.addRunArtifact(home_tool_exe);
+        run_home_tool_util_esm.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_util_esm.addArgs(&.{ "run", "node_util_esm.mjs" });
+        run_home_tool_util_esm.expectStdOutEqual("OK home-tool ESM VT controls\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_util_esm.step);
         const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
         run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });
