@@ -548,6 +548,16 @@ fn isDigit(c: u8) bool {
     return c >= '0' and c <= '9';
 }
 
+fn parseHexCodeUnit(raw: []const u8) ParseError!u16 {
+    if (raw.len < 4) return error.InvalidEscape;
+    var unit: u16 = 0;
+    for (raw[0..4]) |c| {
+        const digit = std.fmt.charToDigit(c, 16) catch return error.InvalidEscape;
+        unit = (unit << 4) | digit;
+    }
+    return unit;
+}
+
 fn unescape(arena: std.mem.Allocator, raw: []const u8) ParseError![]const u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(arena);
@@ -573,12 +583,22 @@ fn unescape(arena: std.mem.Allocator, raw: []const u8) ParseError![]const u8 {
             'b' => try out.append(arena, 0x08),
             'f' => try out.append(arena, 0x0C),
             'u' => {
-                if (i + 4 > raw.len) return error.InvalidEscape;
-                const hex = raw[i .. i + 4];
+                var cp: u21 = try parseHexCodeUnit(raw[i..]);
                 i += 4;
-                const cp = std.fmt.parseInt(u21, hex, 16) catch return error.InvalidEscape;
+                // JSON escapes represent UTF16 code units. Combine adjacent
+                // surrogate pairs; retain unpaired units in WTF8, as the
+                // scanner does for JavaScript string values.
+                if (std.unicode.utf16IsHighSurrogate(@intCast(cp)) and
+                    i + 6 <= raw.len and raw[i] == '\\' and raw[i + 1] == 'u')
+                {
+                    const low = try parseHexCodeUnit(raw[i + 2 ..]);
+                    if (std.unicode.utf16IsLowSurrogate(low)) {
+                        cp = std.unicode.utf16DecodeSurrogatePair(&.{ @intCast(cp), low }) catch unreachable;
+                        i += 6;
+                    }
+                }
                 var buf: [4]u8 = undefined;
-                const len = std.unicode.utf8Encode(cp, &buf) catch return error.InvalidEscape;
+                const len = std.unicode.wtf8Encode(cp, &buf) catch return error.InvalidEscape;
                 try out.appendSlice(arena, buf[0..len]);
             },
             else => return error.InvalidEscape,
@@ -692,6 +712,28 @@ test "jsonc: simple object with strings and numbers" {
     const o = v.asObject().?;
     try t.expectEqualStrings("home", o.get("name").?.asString().?);
     try t.expectApproxEqRel(@as(f64, 1.5), o.get("version").?.asNumber().?, 1e-9);
+}
+
+test "jsonc: Unicode escapes retain UTF16 code units and combine surrogate pairs" {
+    const cases = .{
+        .{ "\\ud801\\udc00", "\u{10400}" },
+        .{ "\\uDBFF\\uDFFF", "\u{10ffff}" },
+        .{ "\\ud800", "\xed\xa0\x80" },
+        .{ "\\udc00", "\xed\xb0\x80" },
+        .{ "\\ud800\\u0041", "\xed\xa0\x80A" },
+        .{ "\\ud800A", "\xed\xa0\x80A" },
+        .{ "\\udc00\\ud800", "\xed\xb0\x80\xed\xa0\x80" },
+        .{ "\\ud800\\ud800\\udc00", "\xed\xa0\x80\u{10000}" },
+    };
+    inline for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const source = "[\"" ++ case[0] ++ "\"]";
+        const value = try parseString(source, arena.allocator());
+        try t.expectEqualStrings(case[1], value.asArray().?[0].asString().?);
+        const span = value.arraySpan(0) orelse return error.TestExpectedSome;
+        try t.expectEqualStrings("\"" ++ case[0] ++ "\"", source[span.start..span.end]);
+    }
 }
 
 test "jsonc: line comments are skipped" {
