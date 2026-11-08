@@ -50,6 +50,12 @@ zig-out/bin/home-tool --conditions development run path/to/tool.ts
 zig-out/bin/home-tool eval 'const answer: number = 40 + 2; answer' --print
 ```
 
+Exported TypeScript enums retain their initialized runtime objects through
+Home's CommonJS lowering, including enums exported as namespace members.
+Static imports, dynamic imports and require share those objects; numeric
+reverse mappings and merged declarations retain their values. A local enum
+named module does not replace the loader's lexical module binding.
+
 Tools receive `console`, `process`, and a deliberately small `Home` host API:
 
 - `Home.engine` reports `zig-js` or `jsc`.

@@ -7983,6 +7983,7 @@ pub const Printer = struct {
             .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, ex.decl).name,
             .fn_decl => hir_mod.fnDeclOf(self.hir, ex.decl).name,
             .class_decl => hir_mod.classOf(self.hir, ex.decl).name,
+            .enum_decl => hir_mod.enumOf(self.hir, ex.decl).name,
             else => hir_mod.none_node_id,
         };
         // Interfaces / type aliases erase — no assignment.
@@ -10510,7 +10511,7 @@ fn anyJsxIn(hir: *const Hir, root: NodeId) bool {
 }
 
 /// Return the StringId of the bound name for a top-level
-/// declaration (function / class / let / const). Returns null
+/// declaration (function / class / enum / let / const). Returns null
 /// when the decl has no bindable name (e.g. anonymous function
 /// expression).
 fn decoratorBoundName(hir: *const Hir, decl: NodeId) ?hir_mod.StringId {
@@ -10533,6 +10534,11 @@ fn decoratorBoundName(hir: *const Hir, decl: NodeId) ?hir_mod.StringId {
             if (v.name == hir_mod.none_node_id) return null;
             if (hir.kindOf(v.name) != .identifier) return null;
             return hir_mod.identifierOf(hir, v.name).name;
+        },
+        .enum_decl => {
+            const name = hir_mod.enumOf(hir, decl).name;
+            if (name == hir_mod.none_node_id or hir.kindOf(name) != .identifier) return null;
+            return hir_mod.identifierOf(hir, name).name;
         },
         else => return null,
     }

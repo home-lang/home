@@ -853,6 +853,16 @@ pub fn build(b: *std.Build) void {
         run_descriptors.addFileArg(b.path("packages/runtime/test/tool_modules/fs_descriptors.mjs"));
         run_descriptors.expectStdOutEqual("OK native descriptors, exact bytes, kernel append, inherited handles and syscall errors\n");
         home_tool_smoke_step.dependOn(&run_descriptors.step);
+        inline for (.{
+            .{ "entry.mjs", "OK actual string/numeric/merged enum exports, namespace identity and lexical module binding\n" },
+            .{ "entry.cjs", "OK actual CJS enum exports and namespace members\n" },
+        }) |case| {
+            const run_enum_exports = b.addRunArtifact(home_tool_exe);
+            run_enum_exports.addArg("run");
+            run_enum_exports.addFileArg(b.path("packages/runtime/test/tool_modules/enum_exports/" ++ case[0]));
+            run_enum_exports.expectStdOutEqual(case[1]);
+            home_tool_smoke_step.dependOn(&run_enum_exports.step);
+        }
         const run_async_property_names = b.addRunArtifact(home_tool_exe);
         run_async_property_names.addArgs(&.{ "run", "packages/runtime/test/tool_modules/async_property_names.mjs" });
         run_async_property_names.expectStdOutEqual("OK actual async keyword, literal, computed and generator methods\n");
