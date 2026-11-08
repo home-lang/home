@@ -59,7 +59,7 @@ An option getter that detaches or changes the binary view's byte length is
 refused with ERR_HOME_MARKDOWN_BUFFER_CHANGED. Full Bun native buffer-pinning
 parity is not provided; an already-detached raw ArrayBuffer is refused too.
 This exposes the HTML method; ANSI, custom callback and React methods are not
-part of this tool adapter. It does not add a test scheduler or timer event loop.
+part of this tool adapter. It does not add a test scheduler.
 
 The `events`/`node:events` adapter exports a real synchronous EventEmitter
 constructor. Listener registration, prepend/once behavior, dispatch snapshots,
@@ -178,8 +178,38 @@ execution-context primitive. The explicit home-tool-async-context-smoke gate
 fails when requested there; the zig-js ecosystem bootstrap must run this gate.
 Disable/lifecycle hooks, AsyncResource, static bind/snapshot, constructor options
 and context inheritance for unsupported async sources (including rejection-event
-dispatch and timers) are not implemented. Refusals and reference differences
+dispatch) are not implemented. Refusals and reference differences
 remain capability failures; this is not the complete Node async_hooks surface.
+
+`setTimeout`/`clearTimeout` and `setInterval`/`clearInterval` globals and
+`timers`/`node:timers` aliases share a native host queue. `timers/promises` and `node:timers/promises` expose
+setTimeout resolving the supplied value after the actual deadline. Registration
+returns immediately; after current script/jobs finish, the owner thread waits
+on macOS kqueue timer events or Linux monotonic timerfd/poll events. Earliest
+deadlines dispatch first, with a job/rejection checkpoint after each callback.
+Intervals rearm from callback start and can cancel themselves by handle or id.
+This is a timer task loop, not a general I/O or test scheduler.
+
+Handles support ref/unref/hasRef and numeric cancellation. Unreferenced timers
+do not keep the process alive but can fire while referenced tasks remain.
+Canceled handles retain their reference state as in Node 26; Bun 1.4.4 differs.
+Callbacks retain their receiver/arguments and original thrown values reach the
+existing monitor/uncaught handler; fatal callbacks and throwing handlers exit
+with statuses 1 and 7 respectively. With zig-js, protected callback closures
+retain actual engine async-context snapshots and restore them inside active JS
+execution, including exception dispatch. There is no ambient JS context store.
+Native queue state is scoped per CLI invocation and owner thread, checked
+against its context and never shared with another JS thread. Pending callbacks
+remain C-API protected until cancellation, dispatch or queue destruction.
+
+Immediates, refresh, AbortSignal and other lifecycle APIs remain
+absent or explicitly refused. The bounded host removes inherited engine-owned
+immediate globals rather than mixing independent queues and exception
+policies. Promise options accept ref; unknown options and signals fail with
+ERR_HOME_UNSUPPORTED. Delay coercion/clamping and warning categories follow
+the measured Node profile, with Home's existing synchronous warning delivery.
+The home-tool-timers-smoke gate is included in home-tool-smoke; timer context
+and rejection witnesses also run in their respective explicit capability gates.
 
 The shared Bun/bun namespace also exposes file for string filesystem paths.
 Its argv property initially shares the actual process.argv array, including

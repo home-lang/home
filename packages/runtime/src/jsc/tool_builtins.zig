@@ -31,6 +31,9 @@ pub fn install(allocator: std.mem.Allocator, ctx: *opaques.JSContextRef) void {
     const markdown = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_markdown.js"), "home:tool-markdown-install", 1) catch return;
     defer markdown.deinit(allocator);
     if (markdown.exception != null) return;
+    const timers = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_timers.js"), "home:tool-timers-install", 1) catch return;
+    defer timers.deinit(allocator);
+    if (timers.exception != null) return;
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_builtins.js"), "home:tool-builtins-install", 1) catch return;
     result.deinit(allocator);
 }

@@ -50,6 +50,9 @@ fn runSource(
 
     const ctx = engine.currentContext();
     const global = engine.currentGlobalObject();
+    var timers = try tool_runtime.timers.Loop.init(allocator, ctx);
+    defer timers.deinit();
+    timers.install(global);
     tool_runtime.console.install(allocator, ctx, global);
     const uncaught_handler = tool_runtime.process.installWithUncaughtHandler(allocator, ctx, global, argv) orelse return error.MissingUncaughtHandler;
     defer tool_runtime.extern_fns.JSValueUnprotect(ctx, uncaught_handler);
@@ -76,13 +79,18 @@ fn runSource(
         });
         return 1;
     }
+    if (evaluation.value) |value| tool_runtime.extern_fns.JSValueProtect(ctx, value);
+    defer if (evaluation.value) |value| tool_runtime.extern_fns.JSValueUnprotect(ctx, value);
+    if (try timers.drain(uncaught_handler)) |diagnostic| {
+        defer allocator.free(diagnostic);
+        std.debug.print("home-tool ({s}): {s}\n", .{ build_options.js_engine, diagnostic });
+        return 1;
+    }
     if (module_completion) {
         // JSEvaluateScript performs the backend's microtask checkpoint. Keep
         // the returned private completion closure alive while checking that
         // the entry actually fulfilled (including rejection with undefined).
         const completion = evaluation.value orelse return error.MissingModuleCompletion;
-        tool_runtime.extern_fns.JSValueProtect(ctx, completion);
-        defer tool_runtime.extern_fns.JSValueUnprotect(ctx, completion);
         const function = tool_runtime.extern_fns.JSValueToObject(ctx, completion, null) orelse return error.InvalidModuleCompletion;
         if (!tool_runtime.extern_fns.JSObjectIsFunction(ctx, function)) return error.InvalidModuleCompletion;
         var exception: ?*tool_runtime.opaques.JSValue = null;

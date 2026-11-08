@@ -11,6 +11,7 @@ pub const tty = @import("tool_tty.zig");
 pub const crypto = @import("tool_crypto.zig");
 pub const gzip = @import("tool_gzip.zig");
 pub const performance = @import("tool_performance.zig");
+pub const timers = @import("tool_timers.zig");
 pub const async_context = @import("tool_async_context.zig");
 pub const os = @import("tool_os.zig");
 pub const glob = @import("tool_glob.zig");

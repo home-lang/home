@@ -801,6 +801,34 @@ pub fn build(b: *std.Build) void {
         run_home_tool_package_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_package_smoke.addArgs(&.{ "run", "main.ts" });
         const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
+        const timer_step = b.step("home-tool-timers-smoke", "Verify kernel timer tasks, cancellation, liveness and fatal callbacks");
+        inline for (.{
+            .{ "timers.mjs", "OK actual timer deadlines, cancellation, callback jobs, values and aliases\n" },
+            .{ "timers_interval.mjs", "OK actual recurring timer deadlines, self-cancellation, aliases and references\n" },
+            .{ "timers_unsupported.mjs", "OK unsupported timer lifecycle and signal APIs remain explicit\n" },
+        }) |case| {
+            const run_timer = b.addRunArtifact(home_tool_exe);
+            run_timer.setCwd(b.path("packages/runtime/test/tool_modules"));
+            run_timer.addArgs(&.{ "run", case[0] });
+            run_timer.expectStdOutEqual(case[1]);
+            timer_step.dependOn(&run_timer.step);
+        }
+        inline for (.{
+            .{ "unref", 0, "registered unreferenced\n" },
+            .{ "unref-live", 0, "unreferenced fired\nreferenced fired\n" },
+            .{ "clear-ref", 0, "cleared reference state\n" },
+            .{ "handled", 23, "monitor\nhandled identity\nlater timer\nexit 23\n" },
+            .{ "fatal", 1, "exit 1\n" },
+            .{ "handler-throw", 7, "" },
+        }) |case| {
+            const run_timer = b.addRunArtifact(home_tool_exe);
+            run_timer.setCwd(b.path("packages/runtime/test/tool_modules"));
+            run_timer.addArgs(&.{ "run", "timers_exit.cjs", case[0] });
+            run_timer.expectExitCode(case[1]);
+            run_timer.expectStdOutEqual(case[2]);
+            timer_step.dependOn(&run_timer.step);
+        }
+        home_tool_smoke_step.dependOn(timer_step);
         const tool_file_tests = b.addTest(.{
             .name = "home-tool-file-io-tests",
             .root_module = b.createModule(.{
@@ -889,6 +917,22 @@ pub fn build(b: *std.Build) void {
         const home_tool_rejections_step = b.step("home-tool-rejections-smoke", "Verify actual unhandled-rejection status and events");
         // This gate must fail on a backend without actual execution snapshots.
         const home_tool_async_context_step = b.step("home-tool-async-context-smoke", "Verify genuine async-context propagation through engine jobs");
+        const run_timer_context = b.addRunArtifact(home_tool_exe);
+        run_timer_context.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_timer_context.addArgs(&.{ "run", "timers_async_context.mjs" });
+        run_timer_context.expectStdOutEqual("OK actual timer context across callbacks, nested tasks, jobs, awaits and exceptions\n");
+        home_tool_async_context_step.dependOn(&run_timer_context.step);
+        inline for (.{
+            .{ "reject", 1, "exit 1\n" },
+            .{ "reject-listener", 0, "rejected identity\nexit 0\n" },
+        }) |case| {
+            const run_timer_rejection = b.addRunArtifact(home_tool_exe);
+            run_timer_rejection.setCwd(b.path("packages/runtime/test/tool_modules"));
+            run_timer_rejection.addArgs(&.{ "run", "timers_exit.cjs", case[0] });
+            run_timer_rejection.expectExitCode(case[1]);
+            run_timer_rejection.expectStdOutEqual(case[2]);
+            home_tool_rejections_step.dependOn(&run_timer_rejection.step);
+        }
         const run_home_tool_async_context = b.addRunArtifact(home_tool_exe);
         run_home_tool_async_context.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_async_context.addArgs(&.{ "run", "async_context.mjs" });
