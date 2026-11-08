@@ -743,7 +743,11 @@
   delete globalThis.__home_tool_glob;
   const markdownApi = globalThis.__home_tool_markdown_api;
   delete globalThis.__home_tool_markdown_api;
-  const bunApi = { markdown: markdownApi, Glob: globFactory(nativeGlob), YAML: { parse: Home.parseYAML }, file: fileFactory(fsOperation, bufferApi.Buffer) };
+  const spawnFactory = globalThis.__home_tool_spawn_factory;
+  const nativeChild = globalThis.__home_tool_child;
+  delete globalThis.__home_tool_spawn_factory;
+  delete globalThis.__home_tool_child;
+  const bunApi = { spawn: spawnFactory(nativeChild, timers), markdown: markdownApi, Glob: globFactory(nativeGlob), YAML: { parse: Home.parseYAML }, file: fileFactory(fsOperation, bufferApi.Buffer) };
   Object.defineProperty(bunApi, 'env', { value: process.env, enumerable: true });
   Object.defineProperty(bunApi, 'argv', { value: process.argv, writable: true, enumerable: true, configurable: false });
   globalThis.Bun = bunApi;

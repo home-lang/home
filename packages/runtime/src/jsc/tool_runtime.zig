@@ -18,6 +18,7 @@ pub const glob = @import("tool_glob.zig");
 pub const markdown = @import("tool_markdown.zig");
 pub const fs = @import("tool_fs.zig");
 pub const util_types = @import("tool_util_types.zig");
+pub const spawn = @import("tool_spawn.zig");
 pub const host = @import("tool_host.zig");
 pub const builtins = @import("tool_builtins.zig");
 pub const yaml = @import("tool_yaml.zig");

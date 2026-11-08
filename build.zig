@@ -912,6 +912,23 @@ pub fn build(b: *std.Build) void {
         const tool_file_test_bin = b.step("home-tool-file-io-test-bin", "Compile the native filesystem tests without running them");
         tool_file_test_bin.dependOn(&b.addInstallArtifact(tool_file_tests, .{}).step);
         home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_file_tests).step);
+        const tool_child_tests = b.addTest(.{
+            .name = "home-tool-child-lifecycle-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_child_pool.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        const child_test_bin = b.step("home-tool-child-lifecycle-test-bin", "Compile native child lifecycle tests without running them");
+        child_test_bin.dependOn(&b.addInstallArtifact(tool_child_tests, .{}).step);
+        home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_child_tests).step);
+        const run_spawn = b.addSystemCommand(&.{"python3"});
+        run_spawn.addFileArg(b.path("packages/runtime/test/tool_spawn_fixture.py"));
+        run_spawn.addArtifactArg(home_tool_exe);
+        run_spawn.expectStdOutEqual("OK real child lifecycle, inherited I/O, owner-loop liveness, cleanup and refusals\n");
+        home_tool_smoke_step.dependOn(&run_spawn.step);
         const run_util_types = b.addRunArtifact(home_tool_exe);
         run_util_types.addArg("run");
         run_util_types.addFileArg(b.path(if (tool_use_zig_js) "packages/runtime/test/tool_modules/util_types.mjs" else "packages/runtime/test/tool_modules/util_types_unsupported.mjs"));

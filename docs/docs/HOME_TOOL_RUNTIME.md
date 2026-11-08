@@ -584,3 +584,27 @@ checking after contextual diagnostics have been updated. A compiler diagnostic
 is a normal checked failure; a checker panic or signal exit is not. Issue #834
 was verified with this command at a 55 MB supervised peak, in
 addition to the complete checker and normal conformance suites.
+
+
+### Asynchronous inherited-stream children
+
+`Bun.spawn(argv, options)` now creates a real POSIX child when all three streams
+are explicitly `inherit` or `ignore`. It supports cwd, replacement env (including
+PATH lookup), real pid, `exited`, exitCode/signalCode, onExit, and named signals
+through `kill`. Children retain owner-loop liveness even without awaiting exited.
+The owner-thread pool uses unique tokens rather than recycled PIDs; teardown
+kills/reaps remaining owned children, including uncaught callback/evaluation
+failures. No JavaScript executes on a worker thread.
+
+Completion is checked with nonblocking waitpid from a protected 5 ms interval
+in the existing kernel timer queue. A JS call never waits for normal child
+completion; this is not an I/O readiness loop. The common mandatory gate tests
+actual inherited input/output, concurrent children, timer progress, cwd/env,
+exit/signals, synchronous spawn errors, callback failure and teardown cleanup.
+Native tests also cover allocation failures and stale ownership tokens.
+
+Pipe streams (including Bun's default stdout pipe), detached processes,
+unref lifetime semantics, numeric signals and other spawn options remain
+explicitly unsupported. Unsupported options are refused before process creation.
+`Home.spawnSync` remains a distinct blocking operation. This surface does not
+implement Bun.build, a test scheduler or general Bun subprocess compatibility.

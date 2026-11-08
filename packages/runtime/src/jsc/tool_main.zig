@@ -69,6 +69,9 @@ fn runSource(
     var filesystem = tool_runtime.fs.Host.init(allocator, ctx);
     defer filesystem.deinit();
     filesystem.install(global);
+    var children = try tool_runtime.spawn.Host.init(allocator, ctx);
+    defer children.deinit();
+    children.install(global);
     tool_runtime.util_types.install(ctx, global);
     tool_runtime.builtins.install(allocator, ctx);
     tool_runtime.modules.installWithConditions(allocator, ctx, global, conditions);
