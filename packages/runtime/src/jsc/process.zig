@@ -556,13 +556,15 @@ pub fn emitNaturalExit(allocator: std.mem.Allocator, ctx: *JSContextRef) !Natura
         \\    if (value === undefined || value === null) return fallback;
         \\    var number = Number(value);
         \\    if (!Number.isFinite(number)) return fallback;
-        \\    return Math.max(0, Math.min(255, Math.trunc(number)));
+        \\    return Math.trunc(number);
         \\  }
         \\  var code = exitCode(p.exitCode, 0);
-        \\  if (p._exiting) return code;
+        // Listeners see the requested code; only the native process status is
+        // reduced to eight bits (for example, -1 -> 255 and 256 -> 0).
+        \\  if (p._exiting) return code & 255;
         \\  p._exiting = true;
         \\  p.emit("exit", code);
-        \\  return exitCode(p.exitCode, code);
+        \\  return exitCode(p.exitCode, code) & 255;
         \\})()
     ,
         "home:process-natural-exit",

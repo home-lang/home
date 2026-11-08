@@ -42,7 +42,7 @@ fn runSource(
     source_url: []const u8,
     argv: []const []const u8,
     print_result: bool,
-) !void {
+) !u8 {
     var engine = try tool_runtime.Engine.init(allocator);
     defer engine.deinit();
 
@@ -60,7 +60,7 @@ fn runSource(
             build_options.js_engine,
             evaluation.exception_message orelse "uncaught exception",
         });
-        std.process.exit(1);
+        return 1;
     }
     if (print_result) {
         if (evaluation.value) |value| {
@@ -71,6 +71,12 @@ fn runSource(
             try stdout.writeStreamingAll(g_io, "\n");
         }
     }
+    var natural_exit = try tool_runtime.process.emitNaturalExit(allocator, ctx);
+    defer natural_exit.deinit(allocator);
+    if (natural_exit.exception_message) |message| {
+        std.debug.print("home-tool ({s}): {s}\n", .{ build_options.js_engine, message });
+    }
+    return natural_exit.exit_code;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -86,7 +92,9 @@ pub fn main(init: std.process.Init) !void {
         const emitted = try emitTypeScript(allocator, input, false);
         defer allocator.free(emitted);
         const argv = [_][]const u8{ "home-tool", "eval" };
-        return runSource(allocator, emitted, "home:tool-eval", &argv, flag != null);
+        const code = try runSource(allocator, emitted, "home:tool-eval", &argv, flag != null);
+        if (code != 0) std.process.exit(code);
+        return;
     }
 
     if (std.mem.eql(u8, command, "run")) {
@@ -97,7 +105,9 @@ pub fn main(init: std.process.Init) !void {
         try argv.append(allocator, path);
         while (iterator.next()) |arg| try argv.append(allocator, arg);
 
-        return runSource(allocator, "Home.runModule(process.argv[1]);", path, argv.items, false);
+        const code = try runSource(allocator, "Home.runModule(process.argv[1]);", path, argv.items, false);
+        if (code != 0) std.process.exit(code);
+        return;
     }
 
     usage();

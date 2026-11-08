@@ -62,6 +62,12 @@ source scope, so an import or local declaration named `module` cannot collide
 with the CommonJS wrapper. Ordinary source identifiers retain their meaning,
 and the wrapper still receives five arguments.
 
+After successful evaluation, the runner emits the natural process `exit` event
+and returns the effective `process.exitCode` to the caller. Exit-listener code
+changes are honored, and a thrown exit listener fails the command. Smoke gates
+exercise nonzero statuses, deferred assignments, listener failures and native
+eight-bit status wrapping; a zero exit is not substituted for a script's status.
+
 The tool frontend lowers `import.meta` for its CommonJS wrapper without changing strings, comments or ordinary member names. Each module receives one extensible, null-prototype metadata object with `url`, `path`, `dir`, `file`, `main`, `filename`/`dirname` aliases, `env` and the local `require`. File paths are canonical and file URLs escape reserved characters. Metadata remains lexical inside nested functions and shares module-cache identity across relative and absolute imports. `import.meta.resolve` and `glob` still require separate host implementations.
 
 Use `zig build home-tool-smoke` with either engine selection to verify
