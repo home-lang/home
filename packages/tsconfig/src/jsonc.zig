@@ -28,14 +28,26 @@ pub const SourceLocation = struct {
     column: u32,
 };
 
+/// Half-open byte extent in the original JSONC source, before unescaping.
+pub const Span = struct {
+    start: u32,
+    end: u32,
+};
+
 pub const Value = union(enum) {
     null_,
     bool_: bool,
     number: f64,
     string: []const u8,
-    array: []Value,
+    array: Array,
     object: Object,
     invalid: Invalid,
+
+    pub const Array = struct {
+        items: []Value,
+        /// Parsed elements have one span each. Constructed values may omit it.
+        spans: []const Span = &.{},
+    };
 
     pub const Object = struct {
         /// Keys and values held in parallel arrays. Order is preserved
@@ -100,7 +112,14 @@ pub const Value = union(enum) {
 
     pub fn asArray(self: Value) ?[]Value {
         return switch (self) {
-            .array => |a| a,
+            .array => |a| a.items,
+            else => null,
+        };
+    }
+
+    pub fn arraySpan(self: Value, index: usize) ?Span {
+        return switch (self) {
+            .array => |a| if (index < a.items.len and index < a.spans.len) a.spans[index] else null,
             else => null,
         };
     }
@@ -387,6 +406,8 @@ const Parser = struct {
 
         var items: std.ArrayListUnmanaged(Value) = .empty;
         errdefer items.deinit(self.arena);
+        var spans: std.ArrayListUnmanaged(Span) = .empty;
+        errdefer spans.deinit(self.arena);
 
         while (true) {
             self.skipWhitespace();
@@ -398,8 +419,10 @@ const Parser = struct {
                 self.pos += 1;
                 break;
             }
+            const start = self.pos;
             const v = try self.parseValue();
             try items.append(self.arena, v);
+            try spans.append(self.arena, .{ .start = start, .end = self.pos });
             self.skipWhitespace();
             if (self.peek() == ',') {
                 self.pos += 1;
@@ -417,7 +440,10 @@ const Parser = struct {
             self.report("expected ',' or ']' in array");
             return error.UnexpectedCharacter;
         }
-        return Value{ .array = try items.toOwnedSlice(self.arena) };
+        return Value{ .array = .{
+            .items = try items.toOwnedSlice(self.arena),
+            .spans = try spans.toOwnedSlice(self.arena),
+        } };
     }
 
     fn parseString(self: *Parser) ParseError![]const u8 {
@@ -896,4 +922,24 @@ test "jsonc: real tsconfig fragment" {
     const paths = co.get("paths").?.asObject().?;
     const at_slash = paths.get("@/*").?.asArray().?;
     try t.expectEqualStrings("src/*", at_slash[0].asString().?);
+}
+
+test "jsonc: array spans retain escaped lexemes and ignore comment decoys" {
+    inline for (.{
+        .{ "{\n  \"files\": [\n    \"globals.d.ts\",\n    \"src/\\u0066oo.ts\",\n    \"src/Foo.ts\"\n  ]\n}", @as(u32, 39), @as(u32, 56), "\"src/\\u0066oo.ts\"" },
+        .{ "{\n  \"files\": [\n    // \"src/foo.ts\" is only a comment\n    \"globals.d.ts\",\n    \"src/foo.ts\",\n    \"src/Foo.ts\"\n  ]\n}", @as(u32, 77), @as(u32, 89), "\"src/foo.ts\"" },
+    }) |case| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const result = try parse(t.allocator, arena.allocator(), case[0]);
+        defer t.allocator.free(result.diagnostics);
+        try t.expectEqual(@as(usize, 0), result.diagnostics.len);
+        const files = result.value.asObject().?.get("files").?;
+        try t.expectEqual(@as(usize, 3), files.asArray().?.len);
+        try t.expectEqualStrings("src/foo.ts", files.asArray().?[1].asString().?);
+        const span = files.arraySpan(1) orelse return error.TestExpectedSome;
+        try t.expectEqualDeep(Span{ .start = case[1], .end = case[2] }, span);
+        try t.expectEqualStrings(case[3], case[0][span.start..span.end]);
+        try t.expect(files.arraySpan(3) == null);
+    }
 }

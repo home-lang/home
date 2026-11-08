@@ -464,6 +464,22 @@ pub const JsonParseDiagnostic = struct {
     message: []const u8,
 };
 
+pub const FileSpecKind = enum { files, include };
+
+/// A file-list entry's original source, borrowed for the config's lifetime.
+pub const FileSpecSource = struct {
+    file_path: []const u8,
+    source: []const u8,
+    span: jsonc.Span,
+};
+
+const FileSpecMetadata = struct {
+    /// Null is unbound; an empty bound path explicitly means unknown.
+    file_path: ?[]const u8 = null,
+    source: []const u8,
+    spans: []const jsonc.Span,
+};
+
 pub const TsConfig = struct {
     /// The path this config came from (set by the loader; empty when
     /// parsed via `parseString`).
@@ -483,6 +499,8 @@ pub const TsConfig = struct {
     /// `include`: glob patterns. `null` if not present (default
     /// `["**/*"]` if neither `files` nor `include` is set).
     include: ?[][]const u8,
+    files_source: ?FileSpecMetadata = null,
+    include_source: ?FileSpecMetadata = null,
     /// `exclude`: glob patterns. `null` if not present.
     exclude: ?[][]const u8,
     /// `references`: project-references entries. Phase 9 fills in.
@@ -527,6 +545,40 @@ pub const TsConfig = struct {
     /// object assignment, so these entries clear a value inherited from a
     /// parent even though the typed field itself is `null`.
     compiler_option_unsets: [][]const u8 = &.{},
+
+    /// Source metadata follows the filtered file-spec list's indices.
+    /// Synthesized specs without source metadata have no source reference.
+    pub fn fileSpecSource(self: TsConfig, kind: FileSpecKind, index: usize) ?FileSpecSource {
+        const values = switch (kind) {
+            .files => self.files,
+            .include => self.include,
+        } orelse return null;
+        const metadata = switch (kind) {
+            .files => self.files_source,
+            .include => self.include_source,
+        } orelse return null;
+        if (index >= values.len or index >= metadata.spans.len) return null;
+        return .{
+            .file_path = metadata.file_path orelse self.file_path,
+            .source = metadata.source,
+            .span = metadata.spans[index],
+        };
+    }
+
+    /// Bind a newly loaded source before inherited values are rebased.
+    /// Later active-path changes preserve an already bound declaring owner.
+    pub fn setFilePath(self: *TsConfig, path: []const u8) void {
+        self.file_path = path;
+        self.bindFileSpecSources(path);
+    }
+
+    fn bindFileSpecSources(self: *TsConfig, path: []const u8) void {
+        inline for (.{ "files_source", "include_source" }) |field| {
+            if (@field(self.*, field)) |*metadata| {
+                if (metadata.file_path == null) metadata.file_path = path;
+            }
+        }
+    }
 
     /// Return the config-file exclude specs used for project discovery.
     /// An explicit `exclude` list is authoritative, including an empty list.
@@ -1925,9 +1977,9 @@ pub fn parseString(
                 cfg.extends = arr;
             },
             .array => |arr| {
-                const out = try arena.alloc([]const u8, arr.len);
+                const out = try arena.alloc([]const u8, arr.items.len);
                 var count: usize = 0;
-                for (arr, 0..) |item, index| {
+                for (arr.items, 0..) |item, index| {
                     if (item.asString()) |value| {
                         out[count] = value;
                         count += 1;
@@ -1957,7 +2009,9 @@ pub fn parseString(
             // Root file lists treat null as absent, so an extended value is
             // still inherited.
         } else if (v.asArray() != null) {
-            cfg.files = try parseStringArray(arena, v, "files", &config_diags);
+            var spans: []const jsonc.Span = &.{};
+            cfg.files = try parseStringArray(arena, v, "files", &config_diags, &spans);
+            cfg.files_source = .{ .source = source, .spans = spans };
         } else {
             try recordOptionTypeMismatch(arena, &config_diags, "files", "Array");
         }
@@ -1966,7 +2020,9 @@ pub fn parseString(
         if (v == .null_) {
             // See `files` above.
         } else if (v.asArray() != null) {
-            cfg.include = try parseStringArray(arena, v, "include", &config_diags);
+            var spans: []const jsonc.Span = &.{};
+            cfg.include = try parseStringArray(arena, v, "include", &config_diags, &spans);
+            cfg.include_source = .{ .source = source, .spans = spans };
         } else {
             try recordOptionTypeMismatch(arena, &config_diags, "include", "Array");
         }
@@ -1975,7 +2031,7 @@ pub fn parseString(
         if (v == .null_) {
             // See `files` above.
         } else if (v.asArray() != null) {
-            cfg.exclude = try parseStringArray(arena, v, "exclude", &config_diags);
+            cfg.exclude = try parseStringArray(arena, v, "exclude", &config_diags, null);
         } else {
             try recordOptionTypeMismatch(arena, &config_diags, "exclude", "Array");
         }
@@ -2102,8 +2158,8 @@ fn collectRootInvalidJsonValueDiagnostics(
 fn containsInvalidJsonValue(value: jsonc.Value) bool {
     return switch (value) {
         .invalid => true,
-        .array => |items| blk: {
-            for (items) |item| {
+        .array => |array| blk: {
+            for (array.items) |item| {
                 if (containsInvalidJsonValue(item)) break :blk true;
             }
             break :blk false;
@@ -2134,13 +2190,19 @@ fn parseStringArray(
     v: jsonc.Value,
     option: []const u8,
     diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+    source_spans: ?*[]const jsonc.Span,
 ) ![][]const u8 {
+    if (source_spans) |spans| spans.* = &.{};
     const arr = v.asArray() orelse return &.{};
     const out = try arena.alloc([]const u8, arr.len);
+    const spans: ?[]jsonc.Span = if (source_spans != null) try arena.alloc(jsonc.Span, arr.len) else null;
     var n: usize = 0;
     for (arr, 0..) |item, index| {
         if (item.asString()) |s| {
             out[n] = s;
+            // Only parsed root arrays request metadata. Their array spans
+            // retain raw indices even when null or invalid entries are filtered.
+            if (spans) |locations| locations[n] = v.arraySpan(index).?;
             n += 1;
         } else if (item != .null_) {
             // Null list elements convert to undefined and are filtered out
@@ -2149,6 +2211,7 @@ fn parseStringArray(
             try recordOptionElementTypeMismatch(arena, diags, option, "string", index);
         }
     }
+    if (source_spans) |locations| locations.* = spans.?[0..n];
     return out[0..n];
 }
 
@@ -2463,7 +2526,7 @@ fn fillCompilerOptions(
                 if (value == .null_) {
                     try unsets.append(arena, entry.name);
                 } else if (value.asArray() != null) {
-                    @field(co, entry.field) = try parseStringArray(arena, value, entry.name, diags);
+                    @field(co, entry.field) = try parseStringArray(arena, value, entry.name, diags, null);
                 } else {
                     try recordOptionTypeMismatch(arena, diags, entry.name, "Array");
                     try unsets.append(arena, entry.name);
@@ -2620,6 +2683,9 @@ fn fillCompilerOptions(
 /// `extends` chain — base = parent, child = current file.
 pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfig {
     var merged = base;
+    merged.bindFileSpecSources(base.file_path);
+    var child_sources = child;
+    child_sources.bindFileSpecSources(child.file_path);
     // Compiler options: child overrides base on every set field. A known
     // option that converted to undefined also overrides: TypeScript merges
     // these objects with `assign`, so `{ allowJs: null }` clears an inherited
@@ -2676,8 +2742,14 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
     }
 
     // Top-level keys: child overrides if set.
-    if (child.files) |f| merged.files = f;
-    if (child.include) |f| merged.include = f;
+    if (child.files) |f| {
+        merged.files = f;
+        merged.files_source = child_sources.files_source;
+    }
+    if (child.include) |f| {
+        merged.include = f;
+        merged.include_source = child_sources.include_source;
+    }
     if (child.exclude) |f| merged.exclude = f;
     if (child.references.len > 0) merged.references = child.references;
     if (child.extends.len > 0) merged.extends = child.extends;
@@ -5264,6 +5336,59 @@ test "tsconfig.merge: dependency diagnostics belong to the active child source" 
                 try t.expectEqual(@as(u32, if (std.mem.eql(u8, mode, "key")) 3 else 2), location.line);
                 try t.expectEqual(@as(u32, if (std.mem.eql(u8, mode, "key")) 4 else 2), location.column);
             }
+        }
+    }
+}
+
+test "tsconfig: file spec sources follow filtered files and include entries" {
+    inline for (.{ FileSpecKind.files, FileSpecKind.include }) |kind| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const source = try std.fmt.allocPrint(arena.allocator(), "{{\"{s}\":[null,\"src/\\u0066oo.ts\",null,\"src/Foo.ts\"]}}", .{@tagName(kind)});
+        var config = try parseString(t.allocator, arena.allocator(), source);
+        config.file_path = "/repo/base.json";
+        const first = config.fileSpecSource(kind, 0) orelse return error.TestExpectedSome;
+        try t.expectEqualStrings("/repo/base.json", first.file_path);
+        try t.expectEqualStrings(source, first.source);
+        try t.expectEqualStrings("\"src/\\u0066oo.ts\"", first.source[first.span.start..first.span.end]);
+        const second = config.fileSpecSource(kind, 1) orelse return error.TestExpectedSome;
+        try t.expectEqualStrings("\"src/Foo.ts\"", second.source[second.span.start..second.span.end]);
+        try t.expect(config.fileSpecSource(kind, 2) == null);
+    }
+}
+
+test "tsconfig.merge: file spec sources retain their declaring owner" {
+    inline for (.{ FileSpecKind.files, FileSpecKind.include }) |kind| {
+        for ([_][]const u8{ "/repo/base.json", "" }) |base_path| {
+            var arena = std.heap.ArenaAllocator.init(t.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const base_source = try std.fmt.allocPrint(a, "{{\"{s}\":[\"src/base.ts\"]}}", .{@tagName(kind)});
+            var base = try parseString(t.allocator, a, base_source);
+            base.file_path = base_path;
+            var child = try parseString(t.allocator, a, "{}");
+            child.file_path = "/repo/child.json";
+            const inherited = try merge(a, base, child);
+            const origin = inherited.fileSpecSource(kind, 0) orelse return error.TestExpectedSome;
+            try t.expectEqualStrings(base_path, origin.file_path);
+            try t.expectEqualStrings(base_source, origin.source);
+            try t.expectEqualStrings("\"src/base.ts\"", origin.source[origin.span.start..origin.span.end]);
+
+            const child_source = try std.fmt.allocPrint(a, "{{\"{s}\":[\"src/child.ts\"]}}", .{@tagName(kind)});
+            var explicit = try parseString(t.allocator, a, child_source);
+            explicit.file_path = child.file_path;
+            const overridden = try merge(a, base, explicit);
+            const own = overridden.fileSpecSource(kind, 0) orelse return error.TestExpectedSome;
+            try t.expectEqualStrings(child.file_path, own.file_path);
+            try t.expectEqualStrings(child_source, own.source);
+            try t.expectEqualStrings("\"src/child.ts\"", own.source[own.span.start..own.span.end]);
+
+            var synthetic = try parseString(t.allocator, a, "{}");
+            synthetic.file_path = child.file_path;
+            var names = [_][]const u8{"virtual.ts"};
+            @field(synthetic, @tagName(kind)) = &names;
+            const replaced = try merge(a, base, synthetic);
+            try t.expect(replaced.fileSpecSource(kind, 0) == null);
         }
     }
 }

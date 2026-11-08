@@ -26147,3 +26147,26 @@ test "Program: imported template value graphs preserve generic and escaped inter
         try T.expectEqual(bad_pos, diagnostics[0].pos);
     }
 }
+
+test "program: config graph retains file spec declaring sources across rebasing" {
+    inline for (.{ tsconfig_mod.FileSpecKind.files, tsconfig_mod.FileSpecKind.include }) |kind| {
+        var arena = std.heap.ArenaAllocator.init(T.allocator);
+        defer arena.deinit();
+        var fs = ts_resolver.VirtualFs.init(T.allocator);
+        defer fs.deinit();
+        const base_source = try std.fmt.allocPrint(arena.allocator(), "{{\"{s}\":[null,\"src/\\u0066oo.ts\"]}}", .{@tagName(kind)});
+        try fs.addFile("/repo/base/base.json", base_source);
+        try fs.addFile("/repo/child/tsconfig.json", "{\"extends\":\"../base/base.json\"}");
+        const resolution = try config_graph.resolve(T.allocator, arena.allocator(), fs.fs(), "/repo/child/tsconfig.json");
+        try T.expect(resolution.failure == null);
+        const config = resolution.config orelse return error.TestExpectedSome;
+        try T.expectEqualStrings("/repo/child/tsconfig.json", config.file_path);
+        const values = @field(config, @tagName(kind)).?;
+        try T.expectEqual(@as(usize, 1), values.len);
+        try T.expectEqualStrings("../base/src/foo.ts", values[0]);
+        const origin = config.fileSpecSource(kind, 0) orelse return error.TestExpectedSome;
+        try T.expectEqualStrings("/repo/base/base.json", origin.file_path);
+        try T.expectEqualStrings(base_source, origin.source);
+        try T.expectEqualStrings("\"src/\\u0066oo.ts\"", origin.source[origin.span.start..origin.span.end]);
+    }
+}

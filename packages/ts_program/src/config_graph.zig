@@ -58,7 +58,7 @@ pub const Context = struct {
                 .failure = .{ .kind = .invalid, .path = config_path },
             },
         };
-        own.file_path = config_path;
+        own.setFilePath(config_path);
         try normalizeOwnPathOptions(self.arena, &own, config_path);
 
         try self.stack.append(self.gpa, config_path);
