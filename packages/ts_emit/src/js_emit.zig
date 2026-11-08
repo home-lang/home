@@ -8390,7 +8390,14 @@ pub const Printer = struct {
         // don't leave a dangling token.
         if (ex.decl != hir_mod.none_node_id) {
             const dk = self.hir.kindOf(ex.decl);
-            if (dk == .interface_decl or dk == .type_alias_decl) return;
+            switch (dk) {
+                .interface_decl, .type_alias_decl => return,
+                // Export wrappers bypass printStatement's erasure guard.
+                // Omit the entire signature, including any CJS assignment.
+                .fn_decl => if (hir_mod.fnDeclOf(self.hir, ex.decl).body == hir_mod.none_node_id) return,
+                .var_decl, .let_decl, .const_decl => if (hir_mod.varDeclOf(self.hir, ex.decl).is_ambient) return,
+                else => {},
+            }
         }
         if (self.options.module_kind == .commonjs) {
             try self.printExportCjs(node, ex);
@@ -11469,6 +11476,33 @@ test "emit: function overload signatures erase, implementation survives" {
     }
     try T.expectEqual(@as(usize, 1), count);
     try T.expect(std.mem.indexOf(u8, out, "return x;") != null);
+}
+
+test "emit: exported overload and ambient declarations erase across module kinds" {
+    const source =
+        \\export function over(value: string): string;
+        \\export function over<T>(value: T): T;
+        \\export function over(value: any): any { return value; }
+        \\export declare function ambient(): void;
+        \\export declare const missing: number;
+    ;
+    for ([_]Options{
+        .{ .module_kind = .esm },
+        .{ .module_kind = .commonjs },
+        .{ .module_kind = .commonjs, .commonjs_module_binding = "__host_module" },
+    }) |options| {
+        const out = try emitWithOpts(source, options);
+        defer T.allocator.free(out);
+        try T.expectEqual(@as(usize, 1), std.mem.count(u8, out, "function over("));
+        try T.expect(std.mem.indexOf(u8, out, "return value;") != null);
+        try T.expect(std.mem.indexOf(u8, out, "ambient") == null);
+        try T.expect(std.mem.indexOf(u8, out, "missing") == null);
+        if (options.module_kind == .commonjs) {
+            try T.expectEqual(@as(usize, 1), std.mem.count(u8, out, ".exports.over = over;"));
+        } else {
+            try T.expectEqual(@as(usize, 1), std.mem.count(u8, out, "export function over("));
+        }
+    }
 }
 
 test "emit: import x = require() lowers to const x = require()" {

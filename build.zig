@@ -862,6 +862,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_performance.addArgs(&.{ "run", "performance_clock.mjs" });
         run_home_tool_performance.expectStdOutEqual("OK actual native monotonic Performance clock\n");
         home_tool_smoke_step.dependOn(&run_home_tool_performance.step);
+        const run_home_tool_overloads = b.addRunArtifact(home_tool_exe);
+        run_home_tool_overloads.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_overloads.addArgs(&.{ "run", "overload_entry.ts" });
+        run_home_tool_overloads.expectStdOutEqual("OK actual exported overload bindings\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_overloads.step);
         const run_home_tool_syntax_smoke = b.addRunArtifact(home_tool_exe);
         run_home_tool_syntax_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_syntax_smoke.addArgs(&.{ "run", "runtime_invalid_syntax.js" });
