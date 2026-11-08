@@ -800,6 +800,10 @@ pub fn build(b: *std.Build) void {
         run_home_tool_interop_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_interop_smoke.addArgs(&.{ "run", "interop_entry.ts" });
         home_tool_smoke_step.dependOn(&run_home_tool_interop_smoke.step);
+        const run_home_tool_imports_smoke = b.addRunArtifact(home_tool_exe);
+        run_home_tool_imports_smoke.setCwd(b.path("packages/runtime/test/tool_modules/package_imports"));
+        run_home_tool_imports_smoke.addArgs(&.{ "run", "entry.cjs" });
+        home_tool_smoke_step.dependOn(&run_home_tool_imports_smoke.step);
     } else {
         const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);

@@ -49,6 +49,12 @@ packages. TypeScript/JavaScript modules emit to CommonJS, JSON modules load
 directly, package `main`/`module` entries and `index.*` fallbacks are supported,
 and the cache is populated before evaluation so CommonJS cycles terminate.
 
+Package-private `#name` imports support exact, unconditional `./file` targets
+from the nearest `package.json`. Missing or null mappings remain errors, and
+lookup stops at package and `node_modules` boundaries. Targets do not use
+extension or directory fallbacks. Conditional, wildcard, external-package and
+URL-encoded targets still require additional resolver support; they are refused.
+
 The host supplies the CommonJS emitter's default and namespace import helpers. ES-module exports keep their module identity, while CommonJS objects and primitive exports receive the appropriate default binding. This allows executable entry points to use ordinary TypeScript import interoperability without relying on ambient helpers from Node or Bun.
 
 The tool frontend lowers `import.meta` for its CommonJS wrapper without changing strings, comments or ordinary member names. Each module receives one extensible, null-prototype metadata object with `url`, `path`, `dir`, `file`, `main`, `filename`/`dirname` aliases, `env` and the local `require`. File paths are canonical and file URLs escape reserved characters. Metadata remains lexical inside nested functions and shares module-cache identity across relative and absolute imports. `import.meta.resolve` and `glob` still require separate host implementations.

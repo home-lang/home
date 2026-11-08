@@ -1,0 +1,12 @@
+{
+  "name": "home-tool-imports-smoke",
+  "imports": {
+    "#value": "./value.cjs",
+    "#alias": "./value.cjs",
+    "#blocked": null,
+    "#escape": "../interop_primitive.cjs",
+    "#traversal": "./sub/../value.cjs",
+    "#encoded": "./%2e%2e/interop_primitive.cjs",
+    "#extensionless": "./value"
+  }
+}

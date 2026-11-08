@@ -120,12 +120,58 @@ fn tryPath(allocator: std.mem.Allocator, base: []const u8) ?[]u8 {
     return null;
 }
 
+fn resolvePackageImport(allocator: std.mem.Allocator, specifier: []const u8, parent_dir: []const u8) ?[]u8 {
+    if (specifier.len < 2 or specifier[1] == '/') return null;
+    var search_dir = std.fs.path.resolve(allocator, &.{parent_dir}) catch return null;
+    defer allocator.free(search_dir);
+    while (true) {
+        // Node's LOOKUP_PACKAGE_SCOPE stops at the nearest package.json and
+        // never inherits a repository's private imports through node_modules.
+        // https://nodejs.org/api/packages.html#subpath-imports
+        if (std.mem.eql(u8, std.fs.path.basename(search_dir), "node_modules")) return null;
+        const package_path = std.fs.path.join(allocator, &.{ search_dir, "package.json" }) catch return null;
+        defer allocator.free(package_path);
+        if (isFile(package_path)) {
+            const source = std.Io.Dir.cwd().readFileAlloc(g_io, package_path, allocator, .limited(1024 * 1024)) catch return null;
+            defer allocator.free(source);
+            const parsed = std.json.parseFromSlice(std.json.Value, allocator, source, .{}) catch return null;
+            defer parsed.deinit();
+            if (parsed.value != .object) return null;
+            const imports = parsed.value.object.get("imports") orelse return null;
+            if (imports != .object) return null;
+            const target = imports.object.get(specifier) orelse return null;
+            // This host currently supports exact, unconditional relative file
+            // targets. Conditions, patterns and external targets stay refused
+            // until their actual resolver contracts are implemented.
+            if (target != .string or !std.mem.startsWith(u8, target.string, "./")) return null;
+            const relative = target.string[2..];
+            if (relative.len == 0 or std.mem.findAny(u8, relative, "\\%?#") != null) return null;
+            var segments = std.mem.splitScalar(u8, relative, '/');
+            while (segments.next()) |segment| {
+                if (std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, "..") or
+                    std.mem.eql(u8, segment, "node_modules")) return null;
+            }
+            const candidate = std.fs.path.join(allocator, &.{ search_dir, relative }) catch return null;
+            defer allocator.free(candidate);
+            // Import targets are exact files: no extension or directory-main
+            // fallback may turn a missing/blocked target into another module.
+            return resolvedFile(allocator, candidate);
+        }
+        const next = std.fs.path.dirname(search_dir) orelse return null;
+        if (std.mem.eql(u8, next, search_dir)) return null;
+        const replacement = allocator.dupe(u8, next) catch return null;
+        allocator.free(search_dir);
+        search_dir = replacement;
+    }
+}
+
 fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_path: []const u8) ?[]u8 {
     if (specifier.len == 0) return null;
     const parent_dir = if (parent_path.len == 0)
         "."
     else
         std.fs.path.dirname(parent_path) orelse ".";
+    if (specifier[0] == '#') return resolvePackageImport(allocator, specifier, parent_dir);
     const path_like = std.fs.path.isAbsolute(specifier) or
         std.mem.startsWith(u8, specifier, "./") or
         std.mem.startsWith(u8, specifier, "../");
