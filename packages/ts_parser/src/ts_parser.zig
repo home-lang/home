@@ -23191,6 +23191,9 @@ fn findJSDocParamName(source: []const u8, line_start: usize, line_end: usize) ?J
 }
 
 fn isExpressionIdentifierToken(kind: TokenKind) bool {
+    // Contextual words such as `as` are IdentifierReferences at expression
+    // starts; their assertion/declaration role depends on the surrounding syntax.
+    if (kind.isContextualKeyword()) return true;
     return switch (kind) {
         .identifier,
         .private_identifier,
@@ -37415,4 +37418,15 @@ test "parser: pending declarator ownership nests through multiple function bodie
     }
     const last = hir_mod.varDeclOf(&setup.hir, nested[2]).init;
     try T.expectEqual(@as(usize, 0), hir_mod.blockStmts(&setup.hir, hir_mod.fnDeclOf(&setup.hir, last).body).len);
+}
+
+
+test "parser: contextual identifier references start object values and array elements" {
+    inline for (.{ "as", "satisfies", "using", "accessor", "override", "readonly", "asserts", "infer", "keyof", "unique", "is", "abstract" }) |name| {
+        const source = "const " ++ name ++ "=7;const o={value:" ++ name ++ ",['computed']:" ++ name ++ ",nested:{" ++ name ++ "}};const a=[" ++ name ++ "];const f=(" ++ name ++ ")=>" ++ name ++ ";";
+        var setup = try newTestSetup(source);
+        defer destroyTestSetup(setup);
+        _ = try setup.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+    }
 }
