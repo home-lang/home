@@ -299,6 +299,16 @@ The `process` and `node:process` module aliases expose the existing live Home
 next-tick queue and exit handling. They do not manufacture additional Node
 process methods; unsupported fields remain absent.
 
+`Bun.env` and the `bun` module's env export share that OS-sourced environment
+bag. The env property is enumerable, read-only and nonconfigurable, matching
+Bun 1.4.4. Values follow Home's existing process.env semantics: the startup
+environment is captured from the native process, and string mutations/deletions
+remain visible through every alias. Explicit execFileSync env options forward
+the current bag to real native children.
+Home's ESM lowering currently lacks implicit strict assignment errors. The
+readonly-property witness uses explicit strict code; that separate semantic
+gap remains outside the supported profile.
+
 The `os`/`node:os` adapter implements POSIX `homedir`: it honors string HOME
 values (including empty strings), then queries the real current-user account
 via reentrant `getpwuid_r` when HOME is absent, on macOS/Linux. Native lookup

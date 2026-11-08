@@ -843,6 +843,12 @@ pub fn build(b: *std.Build) void {
         run_decimal_property_keys.addArgs(&.{ "run", "packages/runtime/test/tool_modules/decimal_property_keys.mjs" });
         run_decimal_property_keys.expectStdOutEqual("OK exact decimal string keys and actual Number exponent keys\n");
         home_tool_smoke_step.dependOn(&run_decimal_property_keys.step);
+        const run_bun_env = b.addRunArtifact(home_tool_exe);
+        run_bun_env.addArg("run");
+        run_bun_env.addFileArg(b.path("packages/runtime/test/tool_modules/bun_env.mjs"));
+        run_bun_env.setEnvironmentVariable("ECOSYSTEM_ENV_WITNESS", "native-witness");
+        run_bun_env.expectStdOutEqual("OK actual OS environment aliases, descriptor, mutation and native child forwarding\n");
+        home_tool_smoke_step.dependOn(&run_bun_env.step);
         inline for (.{
             .{ "contextual_type_assignment.mjs", "OK actual contextual type assignments across blocks and exported function bodies\n" },
             .{ "contextual_type_alias.ts", "OK actual type aliases erase without consuming contextual assignments\n" },
