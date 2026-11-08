@@ -14870,6 +14870,18 @@ pub const Parser = struct {
             if (std.mem.startsWith(u8, rhs, "Symbol.")) {
                 var end: usize = "Symbol.".len;
                 while (end < rhs.len and sourceIdentChar(rhs[end])) : (end += 1) {}
+                // A call returns a runtime key, not the referenced Symbol
+                // property. Token lookahead includes intervening comments
+                // and newlines, unlike this helper's source-line slice.
+                const member_end = @intFromPtr(rhs.ptr) + end - @intFromPtr(self.source.ptr);
+                for (self.tokens) |next| {
+                    if (next.span.start < member_end) continue;
+                    switch (next.kind) {
+                        .open_paren, .question_dot, .less_than, .no_substitution_template, .template_head => return null,
+                        else => {},
+                    }
+                    break;
+                }
                 const synthetic = try std.fmt.allocPrint(self.gpa, "Symbol.{s}", .{rhs["Symbol.".len..end]});
                 defer self.gpa.free(synthetic);
                 return self.interner.intern(synthetic) catch return error.OutOfMemory;
@@ -26123,6 +26135,45 @@ test "parser: reserved keywords label tuple elements" {
     defer destroyTestSetup(s);
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: Symbol factory calls keep distinct late-bound computed keys" {
+    for ([_][]const u8{ "('a')", " /* registry call */ ('a')", "\n('a')", "?.('a')" }) |tail| {
+        const source = try std.fmt.allocPrint(
+            T.allocator,
+            "const A = Symbol.for{s};\nconst B = Symbol.for('b');\ninterface I {{ [A]?: Promise<number>; [B]?: (event: string) => void; }}",
+            .{tail},
+        );
+        defer T.allocator.free(source);
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const members = hir_mod.interfaceMembers(&s.hir, hir_mod.blockStmts(&s.hir, root)[2]);
+        try T.expectEqual(@as(usize, 2), members.len);
+        for (members, [_][]const u8{ "A", "B" }) |node, name| {
+            const key = hir_mod.interfaceMemberKeyExpr(&s.hir, node);
+            try T.expectEqualStrings(name, s.interner.get(hir_mod.identifierOf(&s.hir, key).name));
+        }
+    }
+}
+
+test "parser: Symbol call keys still diagnose repeated identical identifiers" {
+    var s = try newTestSetup("const A = Symbol.for('a');\ninterface I { [A]: string; [A]: number; }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 2), countDiag(s, 2300));
+}
+
+test "parser: Symbol reference aliases retain well-known member names" {
+    var s = try newTestSetup("const A = Symbol.iterator;\nconst B = Symbol.toStringTag;\ninterface I { [A]?: () => unknown; [B]?: string; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const members = hir_mod.interfaceMembers(&s.hir, hir_mod.blockStmts(&s.hir, root)[2]);
+    for (members, [_][]const u8{ "Symbol.iterator", "Symbol.toStringTag" }) |node, name| {
+        try T.expectEqualStrings(name, s.interner.get(hir_mod.interfaceMemberOf(&s.hir, node).name));
+    }
 }
 
 test "parser: late-bound computed type members group by key expression" {

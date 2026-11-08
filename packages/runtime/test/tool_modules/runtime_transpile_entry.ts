@@ -32,4 +32,23 @@ const files: Files = { get, set };
 if (files.get() !== 41 || files.set(files.get()) !== 42) {
   throw new Error("runtime transpilation changed contextual type query bindings");
 }
+const BOOT_SLOT = Symbol.for('home.runtime.boot');
+const DISPATCH_OBSERVER = Symbol.for('home.runtime.dispatch');
+interface BootHost {
+  [BOOT_SLOT]?: Promise<number>
+  [DISPATCH_OBSERVER]?: (event: string) => void
+}
+const ready = Promise.resolve(7);
+const observed: string[] = [];
+const boot: BootHost = {
+  [BOOT_SLOT]: ready,
+  [DISPATCH_OBSERVER]: event => {
+    observed.push(event);
+  },
+};
+boot[DISPATCH_OBSERVER]!('ready');
+if (boot[BOOT_SLOT] !== ready || observed.join() !== 'ready'
+  || Object.getOwnPropertySymbols(boot).length !== 2) {
+  throw new Error("runtime transpilation conflated registry-symbol keys");
+}
 console.log("OK home-tool runtime transpilation");
