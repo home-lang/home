@@ -70,6 +70,15 @@ native query. ReadStream, WriteStream, raw mode and the full terminal/process
 stream surface remain unsupported; descriptor classification does not provide
 terminal I/O or an event loop.
 
+process.nextTick validates callback arguments synchronously. A thrown callback
+is sent to uncaughtExceptionMonitor and uncaughtException with its original
+value and origin. Without a handler it terminates with status 1 before later
+ticks; a throwing handler terminates with status 7. Fatal callbacks emit exit
+and honor an exit listener's explicit status update. Scheduling still uses
+Promise microtasks; this is not Node's complete tick-queue ordering or a general
+unhandled-Promise-rejection hook. Unhandled standalone Promise rejections remain
+an open host limitation, independently of entry-module rejection checking.
+
 The `readline`/`node:readline` adapter supplies cursorTo, moveCursor, clearLine
 and clearScreenDown. These write real ANSI sequences to the supplied destination
 and preserve its write result, callback and errors. Operations with no output

@@ -836,6 +836,24 @@ pub fn build(b: *std.Build) void {
             run_home_tool_exit.expectStdOutEqual("OK home-tool natural exit\n");
             home_tool_smoke_step.dependOn(&run_home_tool_exit.step);
         }
+        inline for (.{
+            .{ "error", 1, "exit 1\n" },
+            .{ "undefined", 1, "exit 1\n" },
+            .{ "monitor", 1, "monitor\nexit 1\n" },
+            .{ "handled", 21, "monitor\nhandled\nlater\n" },
+            .{ "handler-throw", 7, "" },
+            .{ "monitor-throw", 7, "" },
+            .{ "override", 23, "exit 1\n" },
+            .{ "exit-throw", 1, "exit 1\n" },
+            .{ "invalid", 0, "TypeError ERR_INVALID_ARG_TYPE\n" },
+        }) |case| {
+            const run_home_tool_tick = b.addRunArtifact(home_tool_exe);
+            run_home_tool_tick.setCwd(b.path("packages/runtime/test/tool_modules"));
+            run_home_tool_tick.addArgs(&.{ "run", "next_tick_failure.cjs", case[0] });
+            run_home_tool_tick.expectExitCode(case[1]);
+            run_home_tool_tick.expectStdOutEqual(case[2]);
+            home_tool_smoke_step.dependOn(&run_home_tool_tick.step);
+        }
         const run_home_tool_exit_listener = b.addRunArtifact(home_tool_exe);
         run_home_tool_exit_listener.addArgs(&.{ "eval", "process.exitCode = 5; process.on('exit', function(code) { if (code !== 5) throw new Error('wrong exit event code'); process.exitCode = 7; console.log('OK exit listener'); });" });
         run_home_tool_exit_listener.expectExitCode(7);

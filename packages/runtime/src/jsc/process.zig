@@ -403,6 +403,30 @@ const install_glue =
     \\    return [Number(ns / 1000000000n), Number(ns % 1000000000n)];
     \\  }
     \\  hrtime.bigint = function() { return nowNs(); };
+    \\  function uncaughtTick(error) {
+    \\    var p = globalThis.process;
+    \\    var code = 1;
+    \\    try {
+    \\      p.emit("uncaughtExceptionMonitor", error, "uncaughtException");
+    \\      if (p.emit("uncaughtException", error, "uncaughtException")) return;
+    \\    } catch (handlerError) {
+    \\      error = handlerError;
+    \\      code = 7;
+    \\    }
+    \\    // A rejected scheduling Promise is not an uncaught callback report.
+    \\    // Terminate through the captured native function so later ticks cannot
+    \\    // run and a missing JS rejection hook cannot turn this into exit zero.
+    \\    try { errWriteFn("Uncaught nextTick exception: " + String(error) + "\n"); } catch (ignored) { void ignored; }
+    \\    try {
+    \\      if (code !== 7) {
+    \\        p.exitCode = code;
+    \\        p._exiting = true;
+    \\        try { p.emit("exit", code); } catch (ignored) { void ignored; }
+    \\        var requested = Number(p.exitCode);
+    \\        if (Number.isFinite(requested)) code = Math.trunc(requested) & 255;
+    \\      }
+    \\    } finally { exitFn(code); }
+    \\  }
     \\  globalThis.process = {
     \\    argv: argvFn(),
     \\    env: envFn(),
@@ -451,8 +475,10 @@ const install_glue =
     \\      },
     \\    },
     \\    nextTick: function(cb) {
+    \\      if (typeof cb !== "function") { var error = new TypeError("nextTick callback must be a function"); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\      if (globalThis.process._exiting) return;
     \\      var args = Array.prototype.slice.call(arguments, 1);
-    \\      Promise.resolve().then(function() { cb.apply(null, args); });
+    \\      Promise.resolve().then(function() { try { cb.apply(null, args); } catch (error) { uncaughtTick(error); } });
     \\    },
     \\    umask: function(mask) {
     \\      if (mask === undefined) return umaskFn(-1);
