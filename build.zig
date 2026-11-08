@@ -834,6 +834,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_exit_throw.addArgs(&.{ "eval", "process.on('exit', function() { throw new Error('exit listener witness'); });" });
         run_home_tool_exit_throw.expectExitCode(1);
         home_tool_smoke_step.dependOn(&run_home_tool_exit_throw.step);
+        const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
+        run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });
+        run_home_tool_fs.expectStdOutEqual("OK home-tool node:fs UTF-8 reads\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_fs.step);
     } else {
         const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
         b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);

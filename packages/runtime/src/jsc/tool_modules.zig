@@ -321,6 +321,9 @@ fn resolveModuleNative(
 const install_glue =
     \\(function() {
     \\  var resolveNative = globalThis.__home_tool_resolve_module;
+    \\  var builtins = globalThis.__home_tool_builtins || Object.create(null);
+    \\  delete globalThis.__home_tool_builtins;
+    \\  function isBuiltin(request) { return Object.prototype.hasOwnProperty.call(builtins, request); }
     \\  var cache = Object.create(null);
     \\  var mainModule = null;
     // The CommonJS emitter's default contract uses ambient interop helpers.
@@ -344,6 +347,8 @@ const install_glue =
     \\  };
     \\  function fileURL(path) { return "file://" + path.split("/").map(encodeURIComponent).join("/"); }
     \\  function load(specifier, parentPath, asMain) {
+    \\    specifier = String(specifier);
+    \\    if (isBuiltin(specifier)) return builtins[specifier];
     \\    var payload = resolveNative(String(specifier), String(parentPath || ""));
     \\    if (payload === null) throw new Error("cannot resolve module " + specifier + (parentPath ? " from " + parentPath : ""));
     \\    if (Object.prototype.hasOwnProperty.call(cache, payload.path)) return cache[payload.path].exports;
@@ -360,6 +365,8 @@ const install_glue =
     \\    var directory = slash < 0 ? "." : payload.path.slice(0, slash);
     \\    function localRequire(request) { return load(request, payload.path, false); }
     \\    localRequire.resolve = function(request) {
+    \\      request = String(request);
+    \\      if (isBuiltin(request)) return request;
     \\      var resolved = resolveNative(String(request), payload.path);
     \\      if (resolved === null) throw new Error("cannot resolve module " + request + " from " + payload.path);
     \\      return resolved.path;
@@ -387,6 +394,8 @@ const install_glue =
     \\    return module.exports;
     \\  }
     \\  Home.resolveModule = function(specifier, parentPath) {
+    \\    specifier = String(specifier);
+    \\    if (isBuiltin(specifier)) return specifier;
     \\    var resolved = resolveNative(String(specifier), String(parentPath || ""));
     \\    if (resolved === null) throw new Error("cannot resolve module " + specifier);
     \\    return resolved.path;

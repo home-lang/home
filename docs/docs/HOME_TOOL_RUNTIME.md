@@ -44,6 +44,15 @@ Tools receive `console`, `process`, and a deliberately small `Home` host API:
 - `Home.spawnSync(argv)` resolves the executable through `PATH` and returns
   `{ exitCode, stdout, stderr }`.
 
+The tool module loader exposes the same real filesystem adapter as `fs` and
+`node:fs`: `existsSync` and `readFileSync` with explicit `utf8`/`utf-8` encoding
+and string paths. Reads use native file bytes, preserve embedded NULs and BOMs,
+and replace malformed UTF-8 sequences. The checked-in byte fixture and its
+Node-produced expected JSON cover Unicode boundaries and malformed input.
+Buffer-returning reads, other encodings/flags, URL/Buffer paths, and other Node
+built-ins still require implementations and remain errors. Native read errors
+propagate; complete Node filesystem error metadata is not provided yet.
+
 The runner resolves relative and absolute modules plus offline `node_modules`
 packages. TypeScript/JavaScript modules emit to CommonJS, JSON modules load
 directly, package `main`/`module` entries and `index.*` fallbacks are supported,
