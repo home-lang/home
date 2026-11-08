@@ -1330,6 +1330,7 @@ pub const Printer = struct {
         switch (self.hir.kindOf(node)) {
             .var_decl, .let_decl, .const_decl => if (hir_mod.varDeclOf(self.hir, node).is_ambient) return,
             .fn_decl => if (hir_mod.fnDeclOf(self.hir, node).body == hir_mod.none_node_id) return,
+            .namespace_decl => if (self.erasesNamespace(node)) return,
             else => {},
         }
         try self.indent();
@@ -8086,7 +8087,15 @@ pub const Printer = struct {
         };
     }
 
+    fn erasesNamespace(self: *const Printer, node: NodeId) bool {
+        const ns = hir_mod.namespaceOf(self.hir, node);
+        return ns.is_ambient or ns.is_string_named;
+    }
+
     fn printNamespace(self: *Printer, node: NodeId) !void {
+        // Ambient modules and augmentations describe types; only concrete
+        // namespaces create runtime variables and IIFEs.
+        if (self.erasesNamespace(node)) return;
         const n = hir_mod.namespaceOf(self.hir, node);
         const body = hir_mod.namespaceBody(self.hir, node);
         // A qualified name (`namespace A.B.C`) desugars to nested IIFEs.
@@ -8396,6 +8405,7 @@ pub const Printer = struct {
                 // Omit the entire signature, including any CJS assignment.
                 .fn_decl => if (hir_mod.fnDeclOf(self.hir, ex.decl).body == hir_mod.none_node_id) return,
                 .var_decl, .let_decl, .const_decl => if (hir_mod.varDeclOf(self.hir, ex.decl).is_ambient) return,
+                .namespace_decl => if (self.erasesNamespace(ex.decl)) return,
                 else => {},
             }
         }
@@ -11502,6 +11512,24 @@ test "emit: exported overload and ambient declarations erase across module kinds
         } else {
             try T.expectEqual(@as(usize, 1), std.mem.count(u8, out, "export function over("));
         }
+    }
+}
+
+test "emit: ambient modules erase while concrete namespaces survive" {
+    const source =
+        \\declare namespace Ghost { const marker: number; }
+        \\declare module "registry-types" { interface Model { id: number; } }
+        \\export declare namespace PublicGhost { const marker: number; }
+        \\export namespace Live { export const answer = 42; }
+    ;
+    for ([_]Options{ .{ .module_kind = .esm }, .{ .module_kind = .commonjs } }) |options| {
+        const out = try emitWithOpts(source, options);
+        defer T.allocator.free(out);
+        try T.expect(std.mem.indexOf(u8, out, "Ghost") == null);
+        try T.expect(std.mem.indexOf(u8, out, "registry-types") == null);
+        try T.expect(std.mem.indexOf(u8, out, "marker") == null);
+        try T.expect(std.mem.indexOf(u8, out, "var Live;") != null);
+        try T.expect(std.mem.indexOf(u8, out, "Live.answer = answer;") != null);
     }
 }
 
