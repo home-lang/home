@@ -255,6 +255,13 @@ operations perform real native I/O: UTF-8 `readFile`, default-mode `mkdir`
 (including recursive/force behavior and unlinking symlinks), and `stat`. Stat
 returns actual kind predicates, size, inode, link count and available access,
 modification and change times; this is a subset of Node's Stats fields.
+`writeFile` writes actual UTF-8 string bytes or the exact byte ranges of
+Buffer/typed-array/DataView inputs, creates or truncates files, and propagates
+native errors through its returned promise. It supports UTF-8 encoding, the
+`w` flag and the default `0o666` creation mode (subject to the process umask).
+String conversion preserves NUL and replaces lone surrogates without losing
+the remaining text. Iterable input, append/exclusive flags and other write
+options are explicitly unsupported; raw ArrayBuffer data is rejected as in Node.
 The methods return real promises, but native filesystem work currently blocks
 the tool thread. Buffer/URL paths, binary reads, custom permissions, retry,
 bigint, abort and other options are unsupported rather than silently ignored.

@@ -1193,6 +1193,14 @@ pub fn build(b: *std.Build) void {
         run_home_tool_fs_promises.addArgs(&.{ "run", "packages/runtime/test/tool_modules/node_fs_promises_entry.mjs" });
         run_home_tool_fs_promises.expectStdOutEqual("OK home-tool native filesystem promises\n");
         home_tool_smoke_step.dependOn(&run_home_tool_fs_promises.step);
+        const run_fs_write_file = b.addRunArtifact(home_tool_exe);
+        run_fs_write_file.addArgs(&.{ "run", "packages/runtime/test/tool_modules/fs_write_file.mjs" });
+        run_fs_write_file.expectStdOutEqual("OK actual file writes, UTF-8, 11 typed ranges, DataView, truncation and rejections\n");
+        home_tool_smoke_step.dependOn(&run_fs_write_file.step);
+        const run_fs_write_file_limits = b.addRunArtifact(home_tool_exe);
+        run_fs_write_file_limits.addArgs(&.{ "run", "packages/runtime/test/tool_modules/fs_write_file_limits.mjs" });
+        run_fs_write_file_limits.expectStdOutEqual("OK unsupported file-write options are refused before writing\n");
+        home_tool_smoke_step.dependOn(&run_fs_write_file_limits.step);
         const run_home_tool_create_require = b.addRunArtifact(home_tool_exe);
         run_home_tool_create_require.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_create_require.addArgs(&.{ "run", "node_module_entry.cjs" });

@@ -16,11 +16,13 @@ fn readToolFile(dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator)
 pub fn string(ctx: *types.JSContextRef, value: ?*types.JSValue, allocator: std.mem.Allocator) ?[]u8 {
     const js_string = api.JSValueToStringCopy(ctx, value, null) orelse return null;
     defer api.JSStringRelease(js_string);
-    const buffer = allocator.alloc(u8, api.JSStringGetLength(js_string) * 4 + 1) catch return null;
-    defer allocator.free(buffer);
-    const count = api.JSStringGetUTF8CString(js_string, buffer.ptr, buffer.len);
-    if (count == 0) return null;
-    return allocator.dupe(u8, buffer[0 .. count - 1]) catch null;
+    const length = api.JSStringGetLength(js_string);
+    if (length == 0) return allocator.dupe(u8, "") catch null;
+    const chars = allocator.dupe(u16, api.JSStringGetCharactersPtr(js_string)[0..length]) catch return null;
+    defer allocator.free(chars);
+    for (chars) |*char| char.* = std.mem.nativeToLittle(u16, char.*);
+    // Preserve NUL and replace lone UTF-16 surrogates without truncating suffixes.
+    return std.fmt.allocPrint(allocator, "{f}", .{std.unicode.fmtUtf16Le(chars)}) catch null;
 }
 
 pub fn text(ctx: *types.JSContextRef, value: []const u8) ?*types.JSValue {
@@ -96,9 +98,10 @@ fn operation(
 ) callconv(.c) ?*types.JSValue {
     _ = function;
     _ = this;
-    _ = exception;
     const c = ctx orelse return null;
     const object = api.JSObjectMake(c, null, null) orelse return api.JSValueMakeNull(c);
+    api.JSValueProtect(c, @ptrCast(object));
+    defer api.JSValueUnprotect(c, @ptrCast(object));
     if (count < 2 or args[0] == null or args[1] == null) return failure(c, object, error.Unsupported);
     const allocator = std.heap.smp_allocator;
     const op = string(c, args[0], allocator) orelse return failure(c, object, error.OutOfMemory);
@@ -108,7 +111,25 @@ fn operation(
     if (std.mem.indexOfScalar(u8, path, 0) != null) return failure(c, object, error.Unsupported);
     const recursive = count > 2 and api.JSValueToBoolean(c, args[2]);
     const force = count > 3 and api.JSValueToBoolean(c, args[3]);
-    if (std.mem.eql(u8, op, "readFile") or std.mem.eql(u8, op, "readToolFile")) {
+    if (std.mem.eql(u8, op, "writeFile")) {
+        if (count < 3 or args[2] == null) return failure(c, object, error.Unsupported);
+        const contents = if (api.JSValueIsString(c, args[2]))
+            string(c, args[2], allocator) orelse return failure(c, object, error.OutOfMemory)
+        else contents: {
+            const kind = api.JSValueGetTypedArrayType(c, args[2], exception);
+            if (kind == .kJSTypedArrayTypeNone or kind == .kJSTypedArrayTypeArrayBuffer) return failure(c, object, error.Unsupported);
+            const view = api.JSValueToObject(c, args[2], exception) orelse return null;
+            const length = api.JSObjectGetTypedArrayByteLength(c, view, exception);
+            if (exception) |out| if (out.* != null) return null;
+            if (length == 0) break :contents allocator.dupe(u8, "") catch return failure(c, object, error.OutOfMemory);
+            const offset = api.JSObjectGetTypedArrayByteOffset(c, view, exception);
+            const raw = api.JSObjectGetTypedArrayBytesPtr(c, view, exception) orelse return null;
+            const bytes: [*]const u8 = @ptrCast(raw);
+            break :contents allocator.dupe(u8, bytes[offset..][0..length]) catch return failure(c, object, error.OutOfMemory);
+        };
+        defer allocator.free(contents);
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = contents }) catch |err| return failure(c, object, err);
+    } else if (std.mem.eql(u8, op, "readFile") or std.mem.eql(u8, op, "readToolFile")) {
         const contents = (if (std.mem.eql(u8, op, "readToolFile")) readToolFile(.cwd(), path, allocator) else std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited)) catch |err| return failure(c, object, err);
         defer allocator.free(contents);
         const encoded = allocator.alloc(u8, contents.len * 2) catch return failure(c, object, error.OutOfMemory);

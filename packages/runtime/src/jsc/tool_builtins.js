@@ -118,6 +118,12 @@
   };
   const nativeFs = globalThis.__home_tool_fs_operation;
   delete globalThis.__home_tool_fs_operation;
+  const fsIsView = ArrayBuffer.isView.bind(ArrayBuffer);
+  const fsBytes = Uint8Array;
+  const fsDataView = DataView;
+  const fsViewBuffer = Object.getOwnPropertyDescriptor(fsDataView.prototype, 'buffer').get;
+  const fsViewOffset = Object.getOwnPropertyDescriptor(fsDataView.prototype, 'byteOffset').get;
+  const fsViewLength = Object.getOwnPropertyDescriptor(fsDataView.prototype, 'byteLength').get;
   function fsOptions(options, allowed) {
     if (options === undefined) return {};
     if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('Expected filesystem options object');
@@ -144,6 +150,19 @@
     return result;
   }
   const fsPromises = {
+    writeFile: async function(path, data, options) {
+      path = stringPath(path);
+      if (typeof data !== 'string' && !fsIsView(data)) {
+        if (data != null && (typeof data[Symbol.iterator] === 'function' || typeof data[Symbol.asyncIterator] === 'function')) unsupported('Home writeFile does not support iterable input');
+        nodeArgumentError('ERR_INVALID_ARG_TYPE', 'writeFile data must be a string or ArrayBuffer view');
+      }
+      options = typeof options === 'string' ? { encoding: options } : fsOptions(options, ['encoding', 'flag', 'mode']);
+      if (options.encoding != null && (typeof options.encoding !== 'string' || !['utf8', 'utf-8'].includes(options.encoding.toLowerCase()))) unsupported('Home writeFile supports UTF-8 encoding only');
+      if (options.flag !== undefined && options.flag !== 'w') unsupported('Home writeFile supports the w flag only');
+      if (options.mode !== undefined && options.mode !== 0o666) unsupported('Home writeFile supports the default 0o666 creation mode only');
+      if (data instanceof fsDataView) data = new fsBytes(fsViewBuffer.call(data), fsViewOffset.call(data), fsViewLength.call(data));
+      fsOperation('writeFile', path, data, false);
+    },
     readFile: async function(path, options) {
       utf8ReadOptions(options);
       return decodeUtf8(fsOperation('readFile', path, false, false).hex);
