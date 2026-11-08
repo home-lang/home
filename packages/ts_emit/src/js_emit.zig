@@ -1448,6 +1448,9 @@ pub const Printer = struct {
         var k: usize = close_end - 2; // index of the `*` of `*/`
         // k must be at least 2 so that src[k-2..k+1] is a valid range.
         while (k >= 2) : (k -= 1) {
+            // A prior terminator belongs to a different block comment.
+            // Crossing it can replay already-emitted TypeScript as JS.
+            if (src[k - 1] == '*' and src[k] == '/') return;
             if (src[k - 2] == '/' and src[k - 1] == '*' and src[k] == '*') {
                 const open_start = k - 2;
                 if (open_start + 3 > close_end) return;
@@ -16533,6 +16536,29 @@ test "emit: preserves leading JSDoc on a function declaration" {
     const doc_pos = std.mem.indexOf(u8, out, "/**").?;
     const fn_pos = std.mem.indexOf(u8, out, "function add").?;
     try T.expect(doc_pos < fn_pos);
+}
+
+test "emit: ordinary block comment never replays earlier typed code" {
+    const source = "/** Original documentation. */\nexport function first(value: number): number { return value + 1; }\n/* Ordinary boundary. */\nexport function next(value: number): number { return first(value); }";
+    for ([_]Options{
+        .{ .module_kind = .esm },
+        .{ .module_kind = .commonjs },
+        .{ .module_kind = .commonjs, .commonjs_module_binding = "__host_module" },
+    }) |options| {
+        const out = try emitWithOpts(source, options);
+        defer T.allocator.free(out);
+        try T.expectEqual(@as(usize, 1), std.mem.count(u8, out, "function first("));
+        try T.expectEqual(@as(usize, 1), std.mem.count(u8, out, "Original documentation."));
+        try T.expect(std.mem.indexOf(u8, out, "value: number") == null);
+    }
+}
+
+test "emit: leading documentation can contain a plain block opener" {
+    const source = "/** Documentation with a literal /* opener. */\nexport const value: number = 7;";
+    const out = try emitWithOpts(source, .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "/** Documentation with a literal /* opener. */") != null);
+    try T.expectEqual(@as(usize, 1), std.mem.count(u8, out, "const value = 7;"));
 }
 
 test "emit: removeComments strips JSDoc" {
