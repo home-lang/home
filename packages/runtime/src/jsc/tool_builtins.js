@@ -282,6 +282,13 @@
   fs.realpathSync.native = function(path, options) {
     return realPath(path, options, false);
   };
+  function appendFile(path, data, options) {
+    options = options == null ? {} : typeof options === 'string' ? { encoding: options } : fsOptions(options, ['encoding', 'flag', 'mode']);
+    // Use kernel O_APPEND through the existing writer; never read/concatenate
+    // the old file. Existing descriptors retain their offset and open flags.
+    writeFile(path, data, { encoding: options.encoding, mode: options.mode, flag: fileFlag(options.flag, 'a') });
+  }
+  fs.appendFileSync = appendFile;
   fs.writeFileSync = writeFile;
   const fsPromises = {
     constants: fsConstants,
@@ -293,6 +300,9 @@
     },
     readdir: async function(path, options) {
       return readDirectory(path, options);
+    },
+    appendFile: async function(path, data, options) {
+      appendFile(stringPath(path), data, options);
     },
     writeFile: async function(path, data, options) {
       writeFile(stringPath(path), data, options);

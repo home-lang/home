@@ -619,3 +619,18 @@ filesystem errors. Results reflect symlink mutations instead of a path cache.
 This bounded surface supports string paths and UTF-8 results; Buffer/URL paths,
 Buffer/other encoded results and non-UTF-8 native names are explicitly refused.
 The filesystem call blocks the tool thread even through the Promise facade.
+
+
+### Appending files
+
+`fs.appendFileSync` and `fs.promises.appendFile` use the native writer with
+kernel append flags by default. They preserve existing bytes and permissions,
+UTF-8 text including NUL, and exact typed-array/DataView/Buffer slices. The sync
+form also accepts a descriptor, preserving its current offset and O_APPEND
+state without reopening or closing it. Explicit supported flag overrides keep
+their actual kernel behavior, including truncation when `w` is requested.
+
+These methods share the writer's bounded encoding, creation-mode and flag
+options. Callback appendFile, FileHandle objects, iterable data, flush and other
+options remain unsupported. The Promise facade performs blocking native I/O and
+rejects actual filesystem errors; it is not a nonblocking I/O scheduler.

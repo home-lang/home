@@ -847,6 +847,12 @@ pub fn build(b: *std.Build) void {
         run_access.addFileArg(b.path("packages/runtime/test/tool_modules/fs_access.mjs"));
         run_access.expectStdOutEqual("OK native access permissions, all mode bits, aliases, symlinks, errno and rejected promises\n");
         home_tool_smoke_step.dependOn(&run_access.step);
+        const run_append = b.addSystemCommand(&.{"python3"});
+        run_append.addFileArg(b.path("packages/runtime/test/tool_append_fixture.py"));
+        run_append.addArtifactArg(home_tool_exe);
+        run_append.addFileArg(b.path("packages/runtime/test/tool_modules/fs_append_file.mjs"));
+        run_append.expectStdOutEqual("OK actual append bytes, UTF-8, binary views, descriptor offsets, flags and OS errors\n");
+        home_tool_smoke_step.dependOn(&run_append.step);
         const run_creation_modes = b.addSystemCommand(&.{"python3"});
         run_creation_modes.addFileArg(b.path("packages/runtime/test/tool_mode_fixture.py"));
         run_creation_modes.addArtifactArg(home_tool_exe);
