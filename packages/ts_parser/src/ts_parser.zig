@@ -12399,7 +12399,9 @@ pub const Parser = struct {
                         const typeof_t = try self.builder.addTypeofType(sp, ref);
                         return try self.parseArrayTypePostfix(typeof_t);
                     },
-                    else => if (self.peek().kind.isPrimitiveTypeKeyword()) self.advance() else {
+                    // Contextual keywords are IdentifierReferences here, too;
+                    // typeof get must resolve the same value name as get().
+                    else => if (self.peek().kind.isPrimitiveTypeKeyword() or self.peek().kind.isContextualKeyword()) self.advance() else {
                         const bad = self.peek();
                         try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
                         const ref = try self.recoverInvalidTypeofTypeOperand(bad);
@@ -28956,6 +28958,40 @@ test "parser: type annotation — typeof undefined accepts keyword operand" {
     try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
     const tt = hir_mod.typeofTypeOf(&s.hir, v.type_annotation);
     try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(tt.operand));
+}
+
+test "parser: typeof contextual identifiers preserve their value names" {
+    for ([_][]const u8{
+        "as",        "async",     "await",  "yield",       "from",    "get",      "set",      "of",
+        "satisfies", "type",      "using",  "accessor",    "out",     "override", "readonly", "require",
+        "module",    "namespace", "global", "constructor", "is",      "asserts",  "infer",    "keyof",
+        "unique",    "abstract",  "any",    "bigint",      "boolean", "declare",  "never",    "number",
+        "object",    "string",    "symbol", "undefined",   "unknown",
+    }) |name| {
+        const source = try std.fmt.allocPrint(T.allocator, "type Value = typeof {s};", .{name});
+        defer T.allocator.free(source);
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const alias = hir_mod.typeAliasOf(&s.hir, hir_mod.blockStmts(&s.hir, root)[0]);
+        try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(alias.aliased));
+        const query = hir_mod.typeofTypeOf(&s.hir, alias.aliased);
+        try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(query.operand));
+        try T.expectEqualStrings(name, s.interner.get(hir_mod.identifierOf(&s.hir, query.operand).name));
+    }
+}
+
+test "parser: typeof contextual qualified value keeps type arguments" {
+    var s = try newTestSetup("type Value = typeof get.member<number>; async function f() { type Await = typeof await; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const alias = hir_mod.typeAliasOf(&s.hir, hir_mod.blockStmts(&s.hir, root)[0]);
+    const query = hir_mod.typeofTypeOf(&s.hir, alias.aliased);
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(query.operand));
+    const call = hir_mod.callOf(&s.hir, query.operand);
+    try T.expectEqualStrings("get.member", s.interner.get(hir_mod.identifierOf(&s.hir, call.callee).name));
 }
 
 test "parser: typeof yield uses contextual reserved-name diagnostics" {
