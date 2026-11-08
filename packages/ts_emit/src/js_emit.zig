@@ -333,6 +333,9 @@ fn isNumericPropertyKey(name: []const u8) bool {
     if (name[0] == '+' or name[0] == '-') return false;
     const value = std.fmt.parseFloat(f64, name) catch return false;
     if (!std.math.isFinite(value) or value < 0 or value >= 9007199254740992) return false;
+    // ECMA-262 Number::toString uses exponent notation below 1e-6;
+    // std's decimal formatter alone cannot certify that property-key spelling.
+    if (value != 0 and value < 1e-6) return false;
     var buffer: [128]u8 = undefined;
     const canonical = if (@floor(value) == value)
         std.fmt.bufPrint(&buffer, "{d}", .{@as(u64, @intFromFloat(value))}) catch return false
@@ -10811,6 +10814,8 @@ test "emit: object property key unquotes only valid identifiers" {
         .{ .src = "const o = { \"1.0\": 1 };", .want = "const o = { \"1.0\": 1 };" },
         .{ .src = "const o = { \"1e5\": 1 };", .want = "const o = { \"1e5\": 1 };" },
         .{ .src = "const o = { \"9007199254740993\": 1 };", .want = "const o = { \"9007199254740993\": 1 };" },
+        .{ .src = "const o = { \"0.0000001\": 1 };", .want = "const o = { \"0.0000001\": 1 };" },
+        .{ .src = "const o = { \"0.000000000000000000001\": 1 };", .want = "const o = { \"0.000000000000000000001\": 1 };" },
         // Numeric keys stay unquoted (must not regress to `"1"`).
         .{ .src = "const o = { 1: 1, 2.5: 2 };", .want = "const o = { 1: 1, 2.5: 2 };" },
         .{ .src = "const o = { 0: 1 };", .want = "const o = { 0: 1 };" },

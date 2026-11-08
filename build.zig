@@ -839,6 +839,10 @@ pub fn build(b: *std.Build) void {
         run_async_property_names.addArgs(&.{ "run", "packages/runtime/test/tool_modules/async_property_names.mjs" });
         run_async_property_names.expectStdOutEqual("OK actual async keyword, literal, computed and generator methods\n");
         home_tool_smoke_step.dependOn(&run_async_property_names.step);
+        const run_decimal_property_keys = b.addRunArtifact(home_tool_exe);
+        run_decimal_property_keys.addArgs(&.{ "run", "packages/runtime/test/tool_modules/decimal_property_keys.mjs" });
+        run_decimal_property_keys.expectStdOutEqual("OK exact decimal string keys and actual Number exponent keys\n");
+        home_tool_smoke_step.dependOn(&run_decimal_property_keys.step);
         const run_async_property_newline = b.addRunArtifact(home_tool_exe);
         run_async_property_newline.addArgs(&.{ "run", "packages/runtime/test/tool_modules/async_property_newline.cjs" });
         run_async_property_newline.expectExitCode(1);
