@@ -75,9 +75,20 @@ is sent to uncaughtExceptionMonitor and uncaughtException with its original
 value and origin. Without a handler it terminates with status 1 before later
 ticks; a throwing handler terminates with status 7. Fatal callbacks emit exit
 and honor an exit listener's explicit status update. Scheduling still uses
-Promise microtasks; this is not Node's complete tick-queue ordering or a general
-unhandled-Promise-rejection hook. Unhandled standalone Promise rejections remain
-an open host limitation, independently of entry-module rejection checking.
+Promise microtasks; this is not Node's complete tick-queue ordering.
+
+With zig-js, the tool consumes real engine rejection notifications through
+ZJSContextTakeUnhandledRejection after entry completion and each rejection-event
+checkpoint. Original reason/Promise values reach unhandledRejection listeners;
+otherwise monitor/uncaughtException handlers receive the rejection, and absent
+handlers cause a nonzero exit. Primitive reasons are wrapped in an Error with
+ERR_UNHANDLED_REJECTION. The private fatal handler stays protected outside
+JS-visible state. Rejections handled during the preceding checkpoint are omitted;
+this does not replace or wrap Promise. Late rejectionHandled notifications and
+a general I/O event loop remain unsupported. System JSC has no corresponding
+hook in this tool's public-C profile and can still return zero for an unrelated
+rejected Promise. The explicit home-tool-rejections-smoke capability gate fails
+on that backend; common host smokes alone do not certify rejection reporting.
 
 The `readline`/`node:readline` adapter supplies cursorTo, moveCursor, clearLine
 and clearScreenDown. These write real ANSI sequences to the supplied destination

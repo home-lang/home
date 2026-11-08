@@ -792,6 +792,30 @@ pub fn build(b: *std.Build) void {
         run_home_tool_package_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_package_smoke.addArgs(&.{ "run", "main.ts" });
         const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
+        // This capability gate is explicit: requesting it on a backend without
+        // an actual rejection checkpoint fails, rather than skipping cases.
+        const home_tool_rejections_step = b.step("home-tool-rejections-smoke", "Verify actual unhandled-rejection status and events");
+        inline for (.{
+            .{ "error", 1, "exit 1\n" },
+            .{ "undefined", 1, "exit 1\n" },
+            .{ "chain", 1, "exit 1\n" },
+            .{ "async", 1, "exit 1\n" },
+            .{ "handled", 0, "handled\nexit 0\n" },
+            .{ "microtask-handled", 0, "microtask handled\nexit 0\n" },
+            .{ "listener", 0, "notification identity\nexit 0\n" },
+            .{ "uncaught", 21, "monitor\nuncaught identity\nexit 21\n" },
+            .{ "wrapped", 22, "wrapped rejection\nexit 22\n" },
+            .{ "listener-throw", 1, "exit 1\n" },
+            .{ "handler-throw", 7, "" },
+            .{ "second", 1, "first notification\nexit 1\n" },
+        }) |case| {
+            const run_home_tool_rejection = b.addRunArtifact(home_tool_exe);
+            run_home_tool_rejection.setCwd(b.path("packages/runtime/test/tool_modules"));
+            run_home_tool_rejection.addArgs(&.{ "run", "unhandled_rejection.cjs", case[0] });
+            run_home_tool_rejection.expectExitCode(case[1]);
+            run_home_tool_rejection.expectStdOutEqual(case[2]);
+            home_tool_rejections_step.dependOn(&run_home_tool_rejection.step);
+        }
         home_tool_smoke_step.dependOn(&run_home_tool_smoke.step);
         home_tool_smoke_step.dependOn(&run_home_tool_package_smoke.step);
         const run_home_tool_argv = b.addRunArtifact(home_tool_exe);

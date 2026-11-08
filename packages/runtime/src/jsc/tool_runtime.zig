@@ -15,6 +15,7 @@ pub const host = @import("tool_host.zig");
 pub const builtins = @import("tool_builtins.zig");
 pub const yaml = @import("tool_yaml.zig");
 pub const modules = @import("tool_modules.zig");
+pub const rejections = @import("tool_rejections.zig");
 pub const evaluate = @import("evaluate.zig");
 pub const extern_fns = @import("extern_fns.zig");
 pub const opaques = @import("opaques.zig");

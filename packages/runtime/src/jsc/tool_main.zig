@@ -50,7 +50,8 @@ fn runSource(
     const ctx = engine.currentContext();
     const global = engine.currentGlobalObject();
     tool_runtime.console.install(allocator, ctx, global);
-    tool_runtime.process.install(allocator, ctx, global, argv);
+    const uncaught_handler = tool_runtime.process.installWithUncaughtHandler(allocator, ctx, global, argv) orelse return error.MissingUncaughtHandler;
+    defer tool_runtime.extern_fns.JSValueUnprotect(ctx, uncaught_handler);
     tool_runtime.host.install(allocator, ctx, global);
     tool_runtime.yaml.install(allocator, ctx, global);
     tool_runtime.tty.install(ctx, global);
@@ -84,6 +85,13 @@ fn runSource(
             const message = try tool_runtime.evaluate.valueToUtf8(allocator, ctx, thrown);
             defer allocator.free(message);
             std.debug.print("home-tool ({s}): {s}\n", .{ build_options.js_engine, message });
+            return 1;
+        }
+    }
+    if (comptime build_options.use_zig_js) {
+        if (try tool_runtime.rejections.checkpoint(allocator, ctx, uncaught_handler)) |diagnostic| {
+            defer allocator.free(diagnostic);
+            std.debug.print("home-tool ({s}): {s}\n", .{ build_options.js_engine, diagnostic });
             return 1;
         }
     }

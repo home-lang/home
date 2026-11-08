@@ -403,12 +403,24 @@ const install_glue =
     \\    return [Number(ns / 1000000000n), Number(ns % 1000000000n)];
     \\  }
     \\  hrtime.bigint = function() { return nowNs(); };
-    \\  function uncaughtTick(error) {
+    \\  function uncaughtTick(error, origin, rejectedPromise) {
     \\    var p = globalThis.process;
+    \\    if (origin === undefined) origin = "uncaughtException";
+    \\    if (origin === "unhandledRejection") {
+    \\      try { if (p.emit("unhandledRejection", error, rejectedPromise)) return; }
+    \\      catch (handlerError) { error = handlerError; origin = "uncaughtException"; }
+    \\      if (origin === "unhandledRejection" && !(error instanceof Error)) {
+    \\        var text;
+    \\        try { text = String(error); } catch (ignored) { text = "<unprintable rejection>"; }
+    \\        error = new Error("Unhandled promise rejection: " + text);
+    \\        error.name = "UnhandledPromiseRejection";
+    \\        error.code = "ERR_UNHANDLED_REJECTION";
+    \\      }
+    \\    }
     \\    var code = 1;
     \\    try {
-    \\      p.emit("uncaughtExceptionMonitor", error, "uncaughtException");
-    \\      if (p.emit("uncaughtException", error, "uncaughtException")) return;
+    \\      p.emit("uncaughtExceptionMonitor", error, origin);
+    \\      if (p.emit("uncaughtException", error, origin)) return;
     \\    } catch (handlerError) {
     \\      error = handlerError;
     \\      code = 7;
@@ -416,7 +428,7 @@ const install_glue =
     \\    // A rejected scheduling Promise is not an uncaught callback report.
     \\    // Terminate through the captured native function so later ticks cannot
     \\    // run and a missing JS rejection hook cannot turn this into exit zero.
-    \\    try { errWriteFn("Uncaught nextTick exception: " + String(error) + "\n"); } catch (ignored) { void ignored; }
+    \\    try { errWriteFn("Uncaught " + origin + ": " + String(error) + "\n"); } catch (ignored) { void ignored; }
     \\    try {
     \\      if (code !== 7) {
     \\        p.exitCode = code;
@@ -540,6 +552,7 @@ const install_glue =
     \\  delete globalThis.__home_process_cpu_usage;
     \\  delete globalThis.__home_process_kill;
     \\  delete globalThis.__home_process_umask;
+    \\  return uncaughtTick;
     \\})();
 ;
 
@@ -547,7 +560,14 @@ const install_glue =
 /// `process.argv` (the slice must outlive the realm). No-op when JSC is not
 /// linked.
 pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject, argv: []const []const u8) void {
-    if (comptime !build_options.enable_jsc) return;
+    const handler = installWithUncaughtHandler(allocator, ctx, global, argv) orelse return;
+    extern_fns.JSValueUnprotect(ctx, handler);
+}
+
+/// The caller owns one protection of the private fatal-callback handler.
+/// Keep it outside JS-visible state while executing untrusted entry modules.
+pub fn installWithUncaughtHandler(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject, argv: []const []const u8) ?*JSValue {
+    if (comptime !build_options.enable_jsc) return null;
 
     g_argv = argv;
     callback.registerCallback(ctx, global, "__home_process_argv", argvNative);
@@ -562,8 +582,12 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_process_kill", killNative);
     callback.registerCallback(ctx, global, "__home_process_umask", umaskNative);
 
-    const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:process-install", 1) catch return;
-    result.deinit(allocator);
+    const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:process-install", 1) catch return null;
+    defer result.deinit(allocator);
+    if (result.exception != null) return null;
+    const handler = result.value orelse return null;
+    extern_fns.JSValueProtect(ctx, handler);
+    return handler;
 }
 
 /// Emit the natural process `exit` event exactly once and return the effective
