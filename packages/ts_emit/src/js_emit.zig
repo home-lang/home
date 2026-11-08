@@ -27,6 +27,7 @@
 const std = @import("std");
 const hir_mod = @import("hir");
 const string_interner = @import("string_interner");
+const string_literal = @import("ts_checker").string_literal;
 
 pub const Hir = hir_mod.Hir;
 pub const NodeId = hir_mod.NodeId;
@@ -274,102 +275,6 @@ const TempScope = struct { mark: usize, start: usize, count: usize, mark_line: u
 /// Uppercase hex nibble (matches js_printer's `hex_chars`).
 fn jsHexNibble(v: u8) u8 {
     return "0123456789ABCDEF"[v & 0xF];
-}
-
-fn jsHexValue(c: u8) ?u8 {
-    if (c >= '0' and c <= '9') return c - '0';
-    if (c >= 'a' and c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' and c <= 'F') return c - 'A' + 10;
-    return null;
-}
-
-/// Decode a raw string-literal's inner bytes to their cooked value. Mirrors the
-/// checker's `appendCookedStringText` so both stages agree on escape handling.
-fn cookStringInto(gpa: std.mem.Allocator, raw: []const u8, out: *std.ArrayListUnmanaged(u8)) !void {
-    var i: usize = 0;
-    while (i < raw.len) {
-        const c = raw[i];
-        if (c == '\r') {
-            try out.append(gpa, '\n');
-            i += if (i + 1 < raw.len and raw[i + 1] == '\n') 2 else 1;
-            continue;
-        }
-        if (c != '\\') {
-            try out.append(gpa, c);
-            i += 1;
-            continue;
-        }
-        if (i + 1 >= raw.len) {
-            try out.append(gpa, c);
-            i += 1;
-            continue;
-        }
-        const esc = raw[i + 1];
-        i += 2;
-        switch (esc) {
-            '0' => try out.append(gpa, 0),
-            'b' => try out.append(gpa, 0x08),
-            'f' => try out.append(gpa, 0x0c),
-            'n' => try out.append(gpa, '\n'),
-            'r' => try out.append(gpa, '\r'),
-            't' => try out.append(gpa, '\t'),
-            'v' => try out.append(gpa, 0x0b),
-            '\n' => {},
-            '\r' => {
-                if (i < raw.len and raw[i] == '\n') i += 1;
-            },
-            'x' => {
-                if (i + 1 < raw.len) {
-                    if (jsHexValue(raw[i])) |hi| {
-                        if (jsHexValue(raw[i + 1])) |lo| {
-                            try out.append(gpa, (hi << 4) | lo);
-                            i += 2;
-                            continue;
-                        }
-                    }
-                }
-                try out.appendSlice(gpa, "\\x");
-            },
-            'u' => {
-                if (try cookUnicodeEscape(gpa, raw, &i, out)) continue;
-                try out.appendSlice(gpa, "\\u");
-            },
-            else => try out.append(gpa, esc),
-        }
-    }
-}
-
-fn cookUnicodeEscape(gpa: std.mem.Allocator, raw: []const u8, index: *usize, out: *std.ArrayListUnmanaged(u8)) !bool {
-    if (index.* < raw.len and raw[index.*] == '{') {
-        var j = index.* + 1;
-        var cp: u21 = 0;
-        var saw_digit = false;
-        while (j < raw.len and raw[j] != '}') : (j += 1) {
-            const v = jsHexValue(raw[j]) orelse return false;
-            saw_digit = true;
-            const next = (@as(u32, cp) << 4) | v;
-            if (next > 0x10ffff) return false;
-            cp = @intCast(next);
-        }
-        if (!saw_digit or j >= raw.len or raw[j] != '}') return false;
-        var enc: [4]u8 = undefined;
-        const len = std.unicode.utf8Encode(cp, &enc) catch return false;
-        try out.appendSlice(gpa, enc[0..len]);
-        index.* = j + 1;
-        return true;
-    }
-    if (index.* + 3 >= raw.len) return false;
-    var cp: u21 = 0;
-    var j = index.*;
-    while (j < index.* + 4) : (j += 1) {
-        const v = jsHexValue(raw[j]) orelse return false;
-        cp = @intCast((@as(u32, cp) << 4) | v);
-    }
-    var enc: [4]u8 = undefined;
-    const len = std.unicode.utf8Encode(cp, &enc) catch return false;
-    try out.appendSlice(gpa, enc[0..len]);
-    index.* += 4;
-    return true;
 }
 
 /// Pick the JS quote char that minimizes escapes. Verbatim mirror of
@@ -9635,7 +9540,7 @@ pub const Printer = struct {
         const needs_decode = std.mem.indexOfScalar(u8, raw, '\\') != null or
             std.mem.indexOfScalar(u8, raw, '\r') != null;
         const cooked = if (needs_decode) blk: {
-            try cookStringInto(self.gpa, raw, &buf);
+            try string_literal.appendCookedStringText(self.gpa, raw, &buf);
             break :blk buf.items;
         } else raw;
 
@@ -9653,8 +9558,10 @@ pub const Printer = struct {
                     continue;
                 };
                 if (i + seq_len <= cooked.len) {
-                    if (std.unicode.utf8Decode(cooked[i .. i + seq_len])) |cp| {
-                        if (cp == 0x2028 or cp == 0x2029 or cp == 0xFEFF) {
+                    if (std.unicode.wtf8Decode(cooked[i .. i + seq_len])) |cp| {
+                        // ECMA-262 string values include lone UTF-16 surrogates.
+                        // Preserve them as escapes instead of emitting invalid UTF-8.
+                        if ((cp >= 0xD800 and cp <= 0xDFFF) or cp == 0x2028 or cp == 0x2029 or cp == 0xFEFF) {
                             try self.writeUnicodeEscape(cp);
                         } else {
                             try self.write(cooked[i .. i + seq_len]);
@@ -10914,6 +10821,24 @@ test "emit: string literal" {
     const out = try emit("\"hello\";");
     defer T.allocator.free(out);
     try T.expectEqualStrings("\"hello\";", out);
+}
+
+test "emit: escaped Unicode preserves JavaScript code units" {
+    const cases = [_]struct { src: []const u8, want: []const u8 }{
+        .{ .src = "'\\uD83D\\uDFE2';", .want = "\"🟢\";" },
+        .{ .src = "'\\uD800';", .want = "\"\\uD800\";" },
+        .{ .src = "'\\uDFFF';", .want = "\"\\uDFFF\";" },
+        .{ .src = "'a\\uD800b\\uDFFF';", .want = "\"a\\uD800b\\uDFFF\";" },
+        .{ .src = "'\\u{D83D}\\u{DFE2}';", .want = "\"🟢\";" },
+        .{ .src = "'\\u{D800}';", .want = "\"\\uD800\";" },
+        .{ .src = "'\\xE9\\xFF';", .want = "\"éÿ\";" },
+        .{ .src = "'\\\\ud800';", .want = "\"\\\\ud800\";" },
+    };
+    for (cases) |case| {
+        const out = try emit(case.src);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings(case.want, out);
+    }
 }
 
 test "emit: string quote selection + escaping (matches Bun js_printer)" {

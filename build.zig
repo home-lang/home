@@ -862,6 +862,11 @@ pub fn build(b: *std.Build) void {
         run_markdown_limits.addArgs(&.{ "run", "bun_markdown_buffer_limits.mjs" });
         run_markdown_limits.expectStdOutEqual("OK Markdown reentrant buffer detachment is explicitly refused\n");
         home_tool_smoke_step.dependOn(&run_markdown_limits.step);
+        const run_string_escape_units = b.addRunArtifact(home_tool_exe);
+        run_string_escape_units.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_string_escape_units.addArgs(&.{ "run", "string_escape_units.mjs" });
+        run_string_escape_units.expectStdOutEqual("OK 16 escaped/literal strings, property keys and function code units\n");
+        home_tool_smoke_step.dependOn(&run_string_escape_units.step);
         const run_contextual_identifiers = b.addRunArtifact(home_tool_exe);
         run_contextual_identifiers.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_contextual_identifiers.addArgs(&.{ "run", "contextual_identifiers.mjs" });

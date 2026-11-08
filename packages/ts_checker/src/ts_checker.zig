@@ -17,6 +17,7 @@
 //! Public re-exports give consumers (the eventual driver, the LSP,
 //! Phase 4's emitter) a stable surface to compile against.
 
+pub const string_literal = @import("string_literal.zig");
 pub const types = @import("types.zig");
 pub const interface_merge = @import("interface_merge.zig");
 pub const interner = @import("interner.zig");
