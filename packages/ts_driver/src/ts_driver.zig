@@ -2166,6 +2166,7 @@ pub fn prepareSource(
             errdefer c.type_engine.deinit();
             c.js = try gpa.dupe(u8, "");
             sortDiagnosticsBySourceOrder(c.diagnostics.items);
+            deduplicateSortedDiagnostics(gpa, &c.diagnostics);
             return c;
         },
     };
@@ -2368,6 +2369,7 @@ pub fn prepareSource(
     errdefer c.type_engine.deinit();
     c.check_state = .bound;
     sortDiagnosticsBySourceOrder(c.diagnostics.items);
+    deduplicateSortedDiagnostics(gpa, &c.diagnostics);
     return c;
 }
 
@@ -2397,6 +2399,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     try reportMissingCompilerTypeReferenceDiagnostics(gpa, c, source, options);
     if (!can_check) {
         sortDiagnosticsBySourceOrder(c.diagnostics.items);
+        deduplicateSortedDiagnostics(gpa, &c.diagnostics);
         c.check_state = .checked;
         return;
     }
@@ -2735,6 +2738,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     // `(line, col)`, so sorting by `pos` is equivalent and avoids
     // re-walking newlines.
     sortDiagnosticsBySourceOrder(c.diagnostics.items);
+    deduplicateSortedDiagnostics(gpa, &c.diagnostics);
 
     try checker.takeCheckedTypes(&c.checked_types);
     c.checked_types_ready = c.root != hir_mod.none_node_id;
@@ -2754,6 +2758,74 @@ fn diagnosticSpanLen(hir: *const Hir, node: NodeId, pos: u32, code: u32) u32 {
     if (span.end <= span.start) return 0;
     if (pos < span.start or pos >= span.end) return 0;
     return span.end - pos;
+}
+
+/// TypeScript's `sortAndDeduplicateDiagnostics` drops exact duplicates after
+/// sorting. The checker can reach one mismatch through more than one
+/// traversal — a tuple-typed target behind an object-literal property or an
+/// array element does so once per path, doubling with every nesting level —
+/// and tsc reports it once. Identity is the whole rendered diagnostic, so two
+/// different messages at the same position both survive.
+///
+/// Each `Compilation` owns one file's diagnostics, so `pos` identifies a
+/// location here. The removed entries own their `message`, `chain` and
+/// `related` allocations, which `Compilation.deinit` frees by walking the
+/// list, so they are freed as they are dropped.
+fn deduplicateSortedDiagnostics(gpa: std.mem.Allocator, diags: *std.ArrayListUnmanaged(Diagnostic)) void {
+    if (diags.items.len < 2) return;
+    var kept: usize = 0;
+    for (diags.items) |candidate| {
+        var duplicate = false;
+        // Only the run sharing this position can hold a duplicate, and
+        // `std.mem.sort` is not stable, so scan that whole run rather than
+        // just the previous entry.
+        var back: usize = kept;
+        while (back > 0) : (back -= 1) {
+            const previous = diags.items[back - 1];
+            if (previous.pos != candidate.pos) break;
+            if (diagnosticsAreIdentical(previous, candidate)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) {
+            gpa.free(candidate.message);
+            freeDiagnosticChain(gpa, candidate.chain);
+            freeDiagnosticRelated(gpa, candidate.related);
+            continue;
+        }
+        diags.items[kept] = candidate;
+        kept += 1;
+    }
+    diags.items.len = kept;
+}
+
+fn diagnosticsAreIdentical(a: Diagnostic, b: Diagnostic) bool {
+    if (a.pos != b.pos or a.line != b.line or a.span_len != b.span_len) return false;
+    if (a.code != b.code or a.code_prefix != b.code_prefix) return false;
+    if (a.category != b.category or a.phase != b.phase) return false;
+    if (a.is_global != b.is_global or a.is_syntactic != b.is_syntactic) return false;
+    if (!std.mem.eql(u8, a.message, b.message)) return false;
+    if (!diagnosticChainsAreIdentical(a.chain, b.chain)) return false;
+    if (a.related.len != b.related.len) return false;
+    for (a.related, b.related) |x, y| {
+        if (x.code != y.code or x.code_prefix != y.code_prefix) return false;
+        if (x.pos != y.pos or x.span_len != y.span_len) return false;
+        if (!std.mem.eql(u8, x.message, y.message)) return false;
+        if ((x.file == null) != (y.file == null)) return false;
+        if (x.file) |xf| if (!std.mem.eql(u8, xf, y.file.?)) return false;
+    }
+    return true;
+}
+
+fn diagnosticChainsAreIdentical(a: []const DiagnosticChainEntry, b: []const DiagnosticChainEntry) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        if (x.code != y.code or x.code_prefix != y.code_prefix) return false;
+        if (!std.mem.eql(u8, x.message, y.message)) return false;
+        if (!diagnosticChainsAreIdentical(x.children, y.children)) return false;
+    }
+    return true;
 }
 
 fn sortDiagnosticsBySourceOrder(diags: []Diagnostic) void {
@@ -9140,4 +9212,80 @@ test "driver: modern module defaults do not invent classic JSON option errors" {
             }
         }
     }
+}
+
+test "driver: identical diagnostics collapse while distinct ones at a position survive" {
+    const gpa = T.allocator;
+    var diags: std.ArrayListUnmanaged(Diagnostic) = .empty;
+    defer {
+        for (diags.items) |d| {
+            gpa.free(d.message);
+            freeDiagnosticChain(gpa, d.chain);
+            freeDiagnosticRelated(gpa, d.related);
+        }
+        diags.deinit(gpa);
+    }
+    const Row = struct { pos: u32, code: u32, message: []const u8 };
+    // A tuple-typed target behind an object-literal property reports the same
+    // mismatch once per traversal, and the paths double with each nesting
+    // level. The second position carries two genuinely different messages.
+    for ([_]Row{
+        .{ .pos = 41, .code = 2322, .message = "Type 'number' is not assignable to type 'string'." },
+        .{ .pos = 41, .code = 2322, .message = "Type 'number' is not assignable to type 'string'." },
+        .{ .pos = 41, .code = 2322, .message = "Type 'number' is not assignable to type 'string'." },
+        .{ .pos = 41, .code = 2322, .message = "Type 'number' is not assignable to type 'string'." },
+        .{ .pos = 70, .code = 2322, .message = "Type 'string' is not assignable to type 'number'." },
+        .{ .pos = 70, .code = 2322, .message = "Type 'number' is not assignable to type 'string'." },
+        .{ .pos = 70, .code = 2345, .message = "Type 'string' is not assignable to type 'number'." },
+    }) |row| {
+        try diags.append(gpa, .{
+            .phase = .bind,
+            .pos = row.pos,
+            .line = 1,
+            .code = row.code,
+            .message = try gpa.dupe(u8, row.message),
+        });
+    }
+    sortDiagnosticsBySourceOrder(diags.items);
+    deduplicateSortedDiagnostics(gpa, &diags);
+    try T.expectEqual(@as(usize, 4), diags.items.len);
+    try T.expectEqual(@as(u32, 41), diags.items[0].pos);
+    var at_second: usize = 0;
+    for (diags.items) |d| {
+        if (d.pos == 70) at_second += 1;
+    }
+    try T.expectEqual(@as(usize, 3), at_second);
+}
+
+test "driver: deduplication keeps diagnostics whose elaboration chains differ" {
+    const gpa = T.allocator;
+    var diags: std.ArrayListUnmanaged(Diagnostic) = .empty;
+    defer {
+        for (diags.items) |d| {
+            gpa.free(d.message);
+            freeDiagnosticChain(gpa, d.chain);
+            freeDiagnosticRelated(gpa, d.related);
+        }
+        diags.deinit(gpa);
+    }
+    const header = "Type 'number[]' is not assignable to type '[string, number]'.";
+    for ([_][]const u8{
+        "Types of property 'length' are incompatible.",
+        "Types of property 'length' are incompatible.",
+        "Type at position 0 in source is not compatible with type at position 0 in target.",
+    }) |nested| {
+        const chain = try gpa.alloc(DiagnosticChainEntry, 1);
+        chain[0] = .{ .message = try gpa.dupe(u8, nested) };
+        try diags.append(gpa, .{
+            .phase = .bind,
+            .pos = 7,
+            .line = 1,
+            .code = 2322,
+            .message = try gpa.dupe(u8, header),
+            .chain = chain,
+        });
+    }
+    sortDiagnosticsBySourceOrder(diags.items);
+    deduplicateSortedDiagnostics(gpa, &diags);
+    try T.expectEqual(@as(usize, 2), diags.items.len);
 }
