@@ -1309,8 +1309,8 @@ pub const Printer = struct {
 
     /// True when an expression statement's leftmost emitted token would be
     /// `{` / `function` / `class`, requiring it to be parenthesized.
-    /// Descends the left edge of left-associative forms; binops /
-    /// conditionals self-parenthesize so they aren't followed here.
+    /// Descends the left edge: binary/logical/conditional expressions need not
+    /// have outer parentheses at statement precedence (notably minified IIFEs).
     fn exprStmtNeedsParens(self: *const Printer, node: NodeId) bool {
         return switch (self.hir.kindOf(node)) {
             // (`fn_decl`/`class_decl` appear here too: the parser emits them
@@ -1320,6 +1320,9 @@ pub const Printer = struct {
             .member_access => self.exprStmtNeedsParens(hir_mod.memberOf(self.hir, node).object),
             .element_access => self.exprStmtNeedsParens(hir_mod.elementOf(self.hir, node).object),
             .assignment => self.exprStmtNeedsParens(hir_mod.assignmentOf(self.hir, node).target),
+            .binary_op => self.exprStmtNeedsParens(hir_mod.binopOf(self.hir, node).lhs),
+            .logical_op => self.exprStmtNeedsParens(hir_mod.logicalOf(self.hir, node).lhs),
+            .conditional => self.exprStmtNeedsParens(hir_mod.conditionalOf(self.hir, node).cond),
             else => false,
         };
     }
@@ -15134,6 +15137,26 @@ test "emit: inline expression statements preserve required parentheses" {
         const out = try emit(source);
         defer T.allocator.free(out);
         try T.expect(std.mem.indexOf(u8, out, "({ a } = x);") != null);
+    }
+}
+
+test "emit: expression statement grouping follows binary logical and conditional left edges" {
+    const sources = [_][]const u8{
+        "(function () {}(), next());",
+        "({ a: 1 }), next();",
+        "(class {}), next();",
+        "(function () {}()) + 1;",
+        "(function () {}()) || next();",
+        "(function () {}()) ? next() : other();",
+        "if (ok) (function () {}(), next());",
+        "label: (function () {}(), next());",
+    };
+    for (sources) |source| {
+        const out = try emit(source);
+        defer T.allocator.free(out);
+        try T.expect(std.mem.indexOf(u8, out, "(function") != null or
+            std.mem.indexOf(u8, out, "({ ") != null or
+            std.mem.indexOf(u8, out, "(class") != null);
     }
 }
 

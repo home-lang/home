@@ -1111,6 +1111,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_computed_sequences.addArgs(&.{ "run", "computed_property_sequences.ts" });
         run_home_tool_computed_sequences.expectStdOutEqual("OK computed sequence keys, getters, setters, fields and binding order\n");
         home_tool_smoke_step.dependOn(&run_home_tool_computed_sequences.step);
+        const run_home_tool_sequence_statements = b.addRunArtifact(home_tool_exe);
+        run_home_tool_sequence_statements.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_sequence_statements.addArgs(&.{ "run", "sequence_expression_statements.ts" });
+        run_home_tool_sequence_statements.expectStdOutEqual("OK sequence expression statements preserve grouping and side-effect order\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_sequence_statements.step);
         const run_home_tool_performance = b.addRunArtifact(home_tool_exe);
         run_home_tool_performance.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_performance.addArgs(&.{ "run", "performance_clock.mjs" });

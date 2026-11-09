@@ -1,0 +1,12 @@
+const events = [];
+let namespace;
+(function(value) { value.answer = 41; })(namespace || (namespace = {})), events.push(namespace.answer);
+if (true) (function() { events.push('if'); }(), events.push('after-if'));
+label: (function() { events.push('label'); }(), events.push('after-label'));
+({ value: events.push('object') }), events.push('after-object');
+(class { static { events.push('class'); } }), events.push('after-class');
+(function() { events.push('binary'); return 1; }()) + 2;
+(function() { events.push('logical'); return false; }()) || events.push('or');
+(function() { events.push('conditional'); return true; }()) ? events.push('then') : events.push('else');
+if (events.join(',') !== '41,if,after-if,label,after-label,object,after-object,class,after-class,binary,logical,or,conditional,then') throw new Error('sequence statement order: ' + events.join(','));
+console.log('OK sequence expression statements preserve grouping and side-effect order');
