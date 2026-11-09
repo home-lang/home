@@ -6,6 +6,12 @@ delegate parsing or execution to Node, Bun, or Python.
 
 Execution parses, binds and emits through Home's TypeScript frontend without running semantic typechecking over application code or bundled JavaScript. Syntax errors remain failures. Static validation remains the separate `home-tsc`/compiler path; the runtime's emission path does not replace an explicit typecheck command.
 
+JSDoc syntax diagnostics inspect comment trivia rather than marker text inside
+strings or template literals. Line comments, ordinary block comments and empty
+`/**/` comments do not introduce nested JSDoc tags. Genuine JSDoc diagnostics,
+including duplicate return tags, remain active. The runtime smoke executes a
+nested regexp-based comment emitter to check both parsing and emitted behavior.
+
 Object-literal async methods accept keyword, string, numeric, BigInt and
 computed property names while enforcing the no-line-terminator restriction
 after async. BigInt names preserve their exact decimal property key; emitted

@@ -1609,7 +1609,35 @@ pub const Parser = struct {
 
     fn reportJSDocTypeArgumentSyntaxDiagnostics(self: *Parser) ParseError!void {
         var i: usize = 0;
+        var token_index: usize = 0;
         while (i + 2 < self.source.len) {
+            // Comments occupy gaps in the scanner's token stream. In particular,
+            // TypeScript's emitter writes "/**" as string data before a nested
+            // function body containing a regexp; none of that is JSDoc syntax.
+            while (token_index < self.tokens.len and self.tokens[token_index].span.end <= i) {
+                token_index += 1;
+            }
+            if (token_index < self.tokens.len and self.tokens[token_index].span.start <= i) {
+                i = self.tokens[token_index].span.end;
+                continue;
+            }
+            const shebang_start = i == 0 or (i == 3 and std.mem.startsWith(u8, self.source, "\xEF\xBB\xBF"));
+            if ((self.source[i] == '/' and self.source[i + 1] == '/') or
+                (shebang_start and self.source[i] == '#' and self.source[i + 1] == '!'))
+            {
+                while (i < self.source.len and self.source[i] != '\n' and self.source[i] != '\r') : (i += 1) {}
+                continue;
+            }
+            if (self.source[i] == '/' and self.source[i + 1] == '*') {
+                const close_rel = std.mem.indexOf(u8, self.source[i + 2 ..], "*/") orelse return;
+                const body_end = i + 2 + close_rel;
+                // Ordinary block comments may contain a nested marker. The
+                // overlapping terminator in /**/ also leaves no JSDoc body.
+                if (self.source[i + 2] != '*' or body_end == i + 2) {
+                    i = body_end + 2;
+                    continue;
+                }
+            }
             if (!(self.source[i] == '/' and self.source[i + 1] == '*' and self.source[i + 2] == '*')) {
                 i += 1;
                 continue;
@@ -34808,6 +34836,55 @@ test "parser: JSDoc template after typedef callback or overload reports TS8039" 
         }
     }
     try T.expectEqual(@as(usize, 4), count);
+}
+
+test "parser: JSDoc diagnostics respect lexical boundaries" {
+    const sources = [_][]const u8{
+        \\function f(){write("/**");if(n){if(t){const lines=text.split(/\r\n?|\n/);for(const line of lines){write(line)}}}write("*/")}
+        ,
+        \\const text = '/** @returns {string} a\n * @returns {number} b */';
+        ,
+        \\const text = `/** @returns {string} a
+        \\ * @returns {number} b */`;
+        ,
+        \\// /** @returns {string} a
+        \\// * @returns {number} b */
+        \\const n = 1;
+        ,
+        \\/* ordinary comment containing /** @returns {string} a
+        \\ * @returns {number} b */
+        \\const n = 1;
+        ,
+    };
+    for (sources) |source| {
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        s.parser.setJavaScriptFile(true);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    }
+}
+
+test "parser: JSDoc diagnostics survive empty and non-comment markers" {
+    var s = try newTestSetup(
+        \\const text = "/**";
+        \\/**/
+        \\/**
+        \\ * @returns {string} first
+        \\ * @returns {number} second
+        \\ */
+        \\function f() { return ""; }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1223) {
+            count += 1;
+            try T.expectEqual(@as(u32, 5), d.line);
+        }
+    }
+    try T.expectEqual(@as(usize, 1), count);
 }
 
 test "parser: duplicate JSDoc @returns reports TS1223" {
