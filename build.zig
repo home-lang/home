@@ -1426,6 +1426,16 @@ pub fn build(b: *std.Build) void {
         run_home_tool_dot_directories.addArgs(&.{ "run", "cjs_dot_directories/bin/check.cjs" });
         run_home_tool_dot_directories.expectStdOutEqual("OK CommonJS dot directories, main, index, resolve, cache and createRequire\n");
         home_tool_smoke_step.dependOn(&run_home_tool_dot_directories.step);
+        const run_home_tool_assertions = b.addRunArtifact(home_tool_exe);
+        run_home_tool_assertions.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_assertions.addArgs(&.{ "run", "assert_core.mjs" });
+        run_home_tool_assertions.expectStdOutEqual("OK core assertions 678 actual truthiness, SameValue, negative, error and argument checks\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_assertions.step);
+        const run_home_tool_assertion_failure = b.addRunArtifact(home_tool_exe);
+        run_home_tool_assertion_failure.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_assertion_failure.addArgs(&.{ "run", "assert_failure.cjs" });
+        run_home_tool_assertion_failure.expectExitCode(1);
+        home_tool_smoke_step.dependOn(&run_home_tool_assertion_failure.step);
         const run_home_tool_path_url = b.addRunArtifact(home_tool_exe);
         run_home_tool_path_url.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_path_url.addArgs(&.{ "run", "node_path_url_entry.cjs" });

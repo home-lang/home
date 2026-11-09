@@ -847,6 +847,65 @@
       return stripControls(text, '');
     },
   };
+  const assertSameValue = Object.is;
+  const assertBaseError = Error;
+  class AssertionError extends assertBaseError {
+    constructor(options) {
+      if (options === null || typeof options !== 'object') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'AssertionError requires an options object');
+      if (options.diff !== undefined) unsupported('Home AssertionError does not implement Node diff formatting');
+      if (options.message !== undefined && typeof options.message !== 'string') unsupported('Home AssertionError requires a string message');
+      const generated = !options.message;
+      // Preserve failing values without inspecting user objects or running
+      // their conversion hooks. Node source excerpts/diffs are not available.
+      const message = options.message !== undefined ? options.message : `Assertion failed (${options.operator || 'assert'})`;
+      super(message);
+      this.name = 'AssertionError';
+      this.code = 'ERR_ASSERTION';
+      this.actual = options.actual;
+      this.expected = options.expected;
+      this.operator = options.operator;
+      this.generatedMessage = generated;
+    }
+    toString() {
+      return `${this.name} [${this.code}]: ${this.message}`;
+    }
+  }
+  function assertionFailure(actual, expected, operator, message, extraMessages) {
+    if (message instanceof assertBaseError) throw message;
+    if (extraMessages || typeof message === 'function') unsupported('Home assertions do not implement lazy or formatted messages');
+    if (message !== undefined && typeof message !== 'string') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'Assertion message must be a string or Error');
+    const error = new AssertionError({ actual: actual, expected: expected, operator: operator, message: message });
+    if (operator === '==' && message !== undefined) error.generatedMessage = false;
+    throw error;
+  }
+  function assertOk(value, message) {
+    if (value) return;
+    if (arguments.length === 0) {
+      const error = new AssertionError({ actual: undefined, expected: true, operator: '==', message: 'No value argument passed to `assert.ok()`' });
+      error.generatedMessage = true;
+      throw error;
+    }
+    assertionFailure(value, true, '==', message, arguments.length > 2);
+  }
+  function assert(value, message) {
+    if (arguments.length === 0) return assertOk();
+    if (arguments.length > 2) return utilApply(assertOk, undefined, arguments);
+    return assertOk(value, message);
+  }
+  assert.ok = assertOk;
+  assert.AssertionError = AssertionError;
+  // Node strict assertions use SameValue: NaN equals itself, +0 differs -0.
+  // https://nodejs.org/api/assert.html#assertstrictequalactual-expected-message
+  assert.strictEqual = function(actual, expected, message) {
+    if (arguments.length < 2) nodeArgumentError('ERR_MISSING_ARGS', 'The actual and expected arguments must be specified');
+    if (!assertSameValue(actual, expected)) assertionFailure(actual, expected, 'strictEqual', message, arguments.length > 3);
+  };
+  assert.notStrictEqual = function(actual, expected, message) {
+    if (arguments.length < 2) nodeArgumentError('ERR_MISSING_ARGS', 'The actual and expected arguments must be specified');
+    if (assertSameValue(actual, expected)) assertionFailure(actual, expected, 'notStrictEqual', message, arguments.length > 3);
+  };
+  builtins.assert = assert;
+  builtins['node:assert'] = assert;
   builtins.util = utilApi;
   builtins.zlib = zlibApi;
   builtins['node:zlib'] = zlibApi;
