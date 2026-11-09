@@ -113582,19 +113582,40 @@ pub const Checker = struct {
         args: []const NodeId,
         callee_t: TypeId,
     ) CheckError!?ArrayStaticCall {
-        if (args.len < 2) return null;
-        if (self.arrayStaticCallKind(callee_t) != ArrayStaticKind.from) return null;
+        if (args.len == 0) return null;
+        // An explicit type argument list owns the result: leave the generic
+        // signature in place for the ordinary instantiation path.
+        if (hir_mod.callTypeArgs(self.hir, node).len > 0) return null;
+        const kind = self.arrayStaticCallKind(callee_t) orelse return null;
         const call = hir_mod.callOf(self.hir, node);
         const first_t = try self.checkExpression(args[0]);
-        const element = try self.arrayStaticSourceElementType(first_t);
-        // The callback's own result is only known once it is checked, so the
-        // provisional return stays a registered `any[]`; the final element is
-        // substituted in `arrayStaticEffectiveSignature`.
-        const provisional = try self.internMutableArrayType(types.Primitive.any);
-        const selected = try self.internArrayFromSignature(element, provisional);
-        try self.lib_cache.array_from_mapped_signatures.put(self.gpa, selected, {});
-        self.hir.setType(call.callee, selected);
-        return .{ .signature = selected, .first_arg_t = first_t };
+        switch (kind) {
+            .of => {
+                const element = self.widenLiteralType(try self.arrayStaticArgumentElement(args[0], first_t));
+                const items = try self.internMutableArrayType(element);
+                const selected = self.interner.internSignature(&.{items}, items, false) catch
+                    return error.OutOfMemory;
+                try self.rest_signatures.put(self.gpa, selected, {});
+                try self.lib_cache.array_of_call_signatures.put(self.gpa, selected, {});
+                self.hir.setType(call.callee, selected);
+                return .{ .signature = selected, .first_arg_t = first_t };
+            },
+            .from => {
+                const element = try self.arrayStaticSourceElementType(first_t);
+                // A mapped callback's own result is only known once it is
+                // checked, so the provisional return stays a registered
+                // `any[]`; the final element is substituted in
+                // `arrayStaticEffectiveSignature`.
+                const provisional = if (args.len > 1)
+                    try self.internMutableArrayType(types.Primitive.any)
+                else
+                    try self.internMutableArrayType(element);
+                const selected = try self.internArrayFromSignature(element, provisional);
+                try self.lib_cache.array_from_mapped_signatures.put(self.gpa, selected, {});
+                self.hir.setType(call.callee, selected);
+                return .{ .signature = selected, .first_arg_t = first_t };
+            },
+        }
     }
 
     /// `Array.of` / `Array.from` resolved against the checked arguments. A
@@ -113604,12 +113625,15 @@ pub const Checker = struct {
     /// type.
     fn arrayStaticEffectiveSignature(
         self: *Checker,
+        node: NodeId,
         callee: NodeId,
         effective_callee_t: TypeId,
         args: []const NodeId,
         arg_types: []const TypeId,
     ) CheckError!?TypeId {
         if (arg_types.len != args.len) return null;
+        // An explicit type argument list owns the result.
+        if (hir_mod.callTypeArgs(self.hir, node).len > 0) return null;
         const kind = self.arrayStaticCallKind(effective_callee_t) orelse return null;
         const selected = switch (kind) {
             .of => blk: {
@@ -113668,6 +113692,41 @@ pub const Checker = struct {
             result,
             false,
         ) catch error.OutOfMemory;
+    }
+
+    /// `of<T>` and `from<T, U = T>` carry real binders, so an explicit type
+    /// argument list instantiates them through the ordinary path instead of
+    /// reporting TS2558. A call without type arguments never reaches that
+    /// path: it is specialized from its arguments first.
+    fn registerArrayStaticTypeParameters(self: *Checker) CheckError!void {
+        // `T[]` / `U[]` in those signatures are real arrays. Registering the
+        // origin is what carries through substitution, so an instantiated
+        // `number[]` elaborates element-wise instead of through its numeric
+        // index signature.
+        for ([_]TypeId{ self.lib_cache.array_of_signature, self.lib_cache.array_from_signature }) |sig| {
+            if (sig == types.Primitive.none) continue;
+            if (self.interner.signatureReturn(sig)) |result| {
+                try self.array_origin_types.put(self.gpa, result, {});
+            }
+        }
+        const of_sig = self.lib_cache.array_of_signature;
+        if (of_sig != types.Primitive.none and !self.generic_signature_params.contains(of_sig)) {
+            const owned = try self.gpa.alloc(TypeId, 1);
+            errdefer self.gpa.free(owned);
+            owned[0] = self.lib_cache.array_of_type_param;
+            try self.generic_signature_params.put(self.gpa, of_sig, owned);
+        }
+        const from_sig = self.lib_cache.array_from_signature;
+        if (from_sig != types.Primitive.none and !self.generic_signature_params.contains(from_sig)) {
+            const owned = try self.gpa.dupe(TypeId, &self.lib_cache.array_from_type_params);
+            errdefer self.gpa.free(owned);
+            try self.generic_signature_params.put(self.gpa, from_sig, owned);
+            // Only the source argument is required. Recording that, rather
+            // than leaving it to be read off the `| undefined` parameter
+            // unions, is what survives instantiation by an explicit type
+            // argument list.
+            try self.signature_min_args.put(self.gpa, from_sig, 1);
+        }
     }
 
     /// Whether this signature is one of the call-site specializations minted
@@ -121607,6 +121666,7 @@ pub const Checker = struct {
                     // argument-driven result here, where the arguments and
                     // any callback return are known.
                     if (try self.arrayStaticEffectiveSignature(
+                        node,
                         c.callee,
                         effective_callee_t,
                         args,
@@ -138672,7 +138732,18 @@ pub const Checker = struct {
         }
         if (subs.count() == 0) return sig;
         used_explicit_type_args.* = true;
-        return self.substituteType(sig, &subs) catch sig;
+        const instantiated = self.substituteType(sig, &subs) catch sig;
+        // Arity metadata lives beside a signature rather than inside it, so
+        // an instantiated copy would otherwise lose a rest parameter and a
+        // synthetic signature's recorded minimum. A declared signature keeps
+        // its optional parameters in its own payload and is unaffected.
+        if (instantiated != sig) {
+            if (self.rest_signatures.contains(sig)) try self.rest_signatures.put(self.gpa, instantiated, {});
+            if (self.signature_min_args.get(sig)) |min_args| {
+                try self.signature_min_args.put(self.gpa, instantiated, min_args);
+            }
+        }
+        return instantiated;
     }
 
     fn instantiateSignatureFromArgs(
@@ -145621,6 +145692,10 @@ pub const Checker = struct {
         }
         if (std.mem.eql(u8, name_str, "Array")) {
             if (lib.arrayGlobal(&self.lib_cache, self.interner, self.string_interner, self.gpa, &self.rest_signatures)) |ag| {
+                // The enclosing lookup cannot fail; a failed registration
+                // only costs the explicit-type-argument path, as the
+                // neighbouring global registrations do.
+                self.registerArrayStaticTypeParameters() catch {};
                 return ag;
             } else |_| {}
         }
@@ -301007,4 +301082,25 @@ test "checker: a synthesized Array static result is a real array" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties_truncated));
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: explicit type arguments instantiate the generic Array statics" {
+    const s = try newSetup(
+        \\declare const iterable: Iterable<string>;
+        \\declare const nums: number[];
+        \\const ofExplicit: string[] = Array.of<number>(1, 2);
+        \\const fromExplicit: string[] = Array.from<number>(nums);
+        \\Array.from<string, number>(iterable, (value) => value.length, {});
+        \\Array.from<string, number>(iterable, (value) => value.bogus.length);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The binders are what keep TS2558 away, and the recorded minimum is what
+    // keeps the trailing parameters optional once the signature is a
+    // substituted copy.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_type_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_does_not_exist, "Property 'bogus' does not exist on type 'string'."));
+    try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
 }

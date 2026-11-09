@@ -111,6 +111,11 @@ pub const LibCache = struct {
     /// structure, so each mint is a distinct identity.
     array_of_call_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     array_from_mapped_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// The binders of those two statics, so the checker can register them as
+    /// the signatures' type parameters and an explicit type argument list
+    /// instantiates them the ordinary way.
+    array_of_type_param: TypeId = types.Primitive.none,
+    array_from_type_params: [2]TypeId = .{ types.Primitive.none, types.Primitive.none },
     /// Signature identities for the built-in `Array.sort` callback, whose
     /// declaration uses `(a: T, b: T) => number` rather than synthesized
     /// positional names. The checker reads this only for diagnostics.
@@ -1173,28 +1178,40 @@ pub fn arrayGlobal(
     const sig_array_construct = try ti.internSignature(&[_]TypeId{any_arr}, any_arr, true);
     try rest_set.put(gpa, sig_array_call, {});
     try rest_set.put(gpa, sig_array_construct, {});
-    // `Array.from` / `Array.of` — modeled loosely as `(...args: any[]): any[]`.
-    // The real lib.d.ts signatures are generic and overloaded; the
-    // checker just needs the member to exist so call sites typecheck
-    // without spurious TS2339. Inference at the call site falls back
-    // to `any[]` which is enough for fixtures that pipe the result
-    // back into a generic param (e.g. neverInference.ts: `f2(Array.from([0]), …)`).
-    // `from` keeps the optional `mapfn` and `thisArg` of the lib overloads
-    // so `Array.from(set, (value) => ...)` neither trips TS2554 nor leaves
-    // the callback parameter without a contextual type.
+    // `Array.of` / `Array.from` — generic in lib.d.ts:
+    // `of<T>(...items: T[]): T[]`, `from<T>(src): T[]` and
+    // `from<T, U>(src, mapfn, thisArg?): U[]`. The binders here are what let
+    // a call supply explicit type arguments; a call without them is resolved
+    // from its arguments at the call site, where they are known. `from`'s
+    // source parameter stays `any`, which is the one place the model is still
+    // loose: nothing infers `T` from it, so an argument keeps whatever
+    // diagnostic it already had. The optional `mapfn` and `thisArg` of the
+    // lib overloads are preserved so `Array.from(set, (value) => ...)`
+    // neither trips TS2554 nor leaves the callback parameter uncontextual.
     const number_t = types.Primitive.number_t;
     const undefined_t = types.Primitive.undefined_t;
-    const sig_map_fn = try ti.internSignature(&[_]TypeId{ any_t, number_t }, any_t, false);
+    const t_name = try sint.intern("T");
+    const u_name = try sint.intern("U");
+    // `of` is a rest signature, so every arity is legal — including no
+    // arguments at all and a spread argument; a single fixed parameter
+    // rejected all three. Signatures are not interned by structure, so
+    // sharing a shape with the `Array(...)` call signature still yields a
+    // distinct identity to recognize.
+    const of_tp = try ti.internTypeParameter(t_name, types.Primitive.none, types.Primitive.none);
+    const of_items = try ti.internArrayType(sint, of_tp);
+    const sig_of = try ti.internSignature(&[_]TypeId{of_items}, of_items, false);
+    try rest_set.put(gpa, sig_of, {});
+    // `U` defaults to `T`, so the single signature covers both overloads:
+    // one explicit type argument leaves the result `T[]`, two make it `U[]`.
+    const from_tp = try ti.internTypeParameter(t_name, types.Primitive.none, types.Primitive.none);
+    const from_result_tp = try ti.internTypeParameter(u_name, types.Primitive.none, from_tp);
+    const from_result = try ti.internArrayType(sint, from_result_tp);
+    const sig_map_fn = try ti.internSignature(&[_]TypeId{ from_tp, number_t }, from_result_tp, false);
     const optional_map_fn = try ti.internUnion(&[_]TypeId{ sig_map_fn, undefined_t });
     const optional_any = try ti.internUnion(&[_]TypeId{ any_t, undefined_t });
-    const sig_from = try ti.internSignature(&[_]TypeId{ any_t, optional_map_fn, optional_any }, any_arr, false);
-    // `of<T>(...items: T[]): T[]` is a rest signature, so every arity is
-    // legal — including no arguments at all and a spread argument. A single
-    // fixed parameter rejected all three. Signatures are not interned by
-    // structure, so sharing this shape with the `Array(...)` call signature
-    // still yields a distinct identity to recognize.
-    const sig_of = try ti.internSignature(&[_]TypeId{any_arr}, any_arr, false);
-    try rest_set.put(gpa, sig_of, {});
+    const sig_from = try ti.internSignature(&[_]TypeId{ any_t, optional_map_fn, optional_any }, from_result, false);
+    cache.array_of_type_param = of_tp;
+    cache.array_from_type_params = .{ from_tp, from_result_tp };
     // Both results are generic in lib.d.ts. The element type lives in the
     // arguments, so the checker resolves it at the call site and needs these
     // identities to tell its own static from a user-declared one.
