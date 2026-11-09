@@ -195978,7 +195978,7 @@ pub const Checker = struct {
                 // Readonly-to-mutable already states the reason for failure;
                 // tsc does not elaborate its element type underneath TS4104.
                 if (entries[0].code == TsCodes.type_not_assignable) {
-                    if (try self.arrayOriginElementMismatchEntry(member, display_target)) |element_mismatch| {
+                    if (try self.arrayOriginElementMismatchEntry(member, display_target, depth)) |element_mismatch| {
                         const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
                         children[0] = element_mismatch;
                         entries[0].children = children;
@@ -196269,7 +196269,7 @@ pub const Checker = struct {
         // an Array<number> -> Array<string> failure, without the index-
         // signature wrapper reserved for structural indexed objects. Keep
         // this keyed to source provenance, not an `X[]` display-name guess.
-        if (try self.arrayOriginElementMismatchEntry(source, target)) |element_mismatch| {
+        if (try self.arrayOriginElementMismatchEntry(source, target, depth)) |element_mismatch| {
             const slice = try arena.alloc(DiagnosticChainEntry, 1);
             slice[0] = element_mismatch;
             return slice;
@@ -196499,13 +196499,31 @@ pub const Checker = struct {
         return empty;
     }
 
-    fn arrayOriginElementMismatchEntry(self: *Checker, source: TypeId, target: TypeId) CheckError!?DiagnosticChainEntry {
+    fn arrayOriginElementMismatchEntry(
+        self: *Checker,
+        source: TypeId,
+        target: TypeId,
+        depth: u8,
+    ) CheckError!?DiagnosticChainEntry {
         if (!self.array_origin_types.contains(source) or !self.array_origin_types.contains(target)) return null;
         const source_elem = self.interner.objectNumberIndex(source);
         const target_elem = self.interner.objectNumberIndex(target);
         if (source_elem == types.Primitive.none or target_elem == types.Primitive.none or
             try self.indexSignatureValueAssignable(source_elem, target_elem)) return null;
-        return try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
+        var entry = try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
+        // The element pair carries its own explanation: a tuple element names
+        // the position that failed, a nested array its own element type.
+        // Readonly-to-mutable states its own reason and is not expanded.
+        if (entry.code == TsCodes.type_not_assignable and depth < 3) {
+            const children = try self.buildAssignabilityElaborationChainDepth(
+                source_elem,
+                target_elem,
+                depth + 1,
+                false,
+            );
+            if (children.len > 0) entry.children = children;
+        }
+        return entry;
     }
 
     fn buildSignatureArityElaborationChain(
@@ -301310,4 +301328,29 @@ test "checker: a readonly template index signature forbids only its own keys" {
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.readonly_index_signature));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.readonly_index_signature, "Index signature in type 'Attributes' only permits reading."));
     try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+}
+
+test "checker: an array element mismatch elaborates through its own chain" {
+    const s = try newSetup(
+        \\declare const tuples: [number, number][];
+        \\declare const nested: number[][];
+        \\const a: [string, number][] = tuples;
+        \\const b: string[][] = nested;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    // A tuple element names the failing position and then explains it; a
+    // nested array element explains its own element type.
+    const tuple_chain = s.checker.diagnostics.items[0].chain;
+    try T.expectEqual(@as(usize, 1), tuple_chain.len);
+    try T.expectEqualStrings("Type '[number, number]' is not assignable to type '[string, number]'.", tuple_chain[0].message);
+    try T.expectEqual(@as(usize, 1), tuple_chain[0].children.len);
+    try T.expectEqualStrings("Type at position 0 in source is not compatible with type at position 0 in target.", tuple_chain[0].children[0].message);
+    try T.expectEqual(@as(usize, 1), tuple_chain[0].children[0].children.len);
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", tuple_chain[0].children[0].children[0].message);
+    const array_chain = s.checker.diagnostics.items[1].chain;
+    try T.expectEqual(@as(usize, 1), array_chain.len);
+    try T.expectEqual(@as(usize, 1), array_chain[0].children.len);
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", array_chain[0].children[0].message);
 }
