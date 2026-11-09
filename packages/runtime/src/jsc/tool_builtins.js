@@ -202,8 +202,13 @@
     return readDirectory(path, options);
   };
   const fsConstants = {};
-  for (const [key, value] of [['F_OK', 0], ['R_OK', 4], ['W_OK', 2], ['X_OK', 1]]) {
-    Object.defineProperty(fsConstants, key, { value, enumerable: true });
+  const legacyConstants = {};
+  const nativeFsConstants = globalThis.__home_tool_fs_constants;
+  delete globalThis.__home_tool_fs_constants;
+  if (!nativeFsConstants) unsupported('Home filesystem constants require a native macOS or Linux host');
+  for (const key of Object.keys(nativeFsConstants)) {
+    Object.defineProperty(fsConstants, key, { value: nativeFsConstants[key], enumerable: true });
+    Object.defineProperty(legacyConstants, key, { value: nativeFsConstants[key], enumerable: true });
   }
   Object.defineProperty(fs, 'constants', { value: fsConstants, enumerable: true });
   function accessMode(mode) {
@@ -916,6 +921,8 @@
   };
   builtins.assert = assert;
   builtins['node:assert'] = assert;
+  builtins.constants = legacyConstants;
+  builtins['node:constants'] = legacyConstants;
   builtins.util = utilApi;
   builtins.zlib = zlibApi;
   builtins['node:zlib'] = zlibApi;

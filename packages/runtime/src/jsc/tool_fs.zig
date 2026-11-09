@@ -52,6 +52,36 @@ pub fn set(ctx: *types.JSContextRef, object: *types.JSObject, name: [:0]const u8
     api.JSObjectSetProperty(ctx, object, key, value, 0, null);
 }
 
+fn constant(ctx: *types.JSContextRef, object: *types.JSObject, name: [:0]const u8, value: anytype) void {
+    set(ctx, object, name, api.JSValueMakeNumber(ctx, @floatFromInt(value)));
+}
+
+fn installConstants(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return;
+    const object = api.JSObjectMake(ctx, null, null) orelse return;
+    constant(ctx, object, "F_OK", std.c.F_OK);
+    constant(ctx, object, "R_OK", std.c.R_OK);
+    constant(ctx, object, "W_OK", std.c.W_OK);
+    constant(ctx, object, "X_OK", std.c.X_OK);
+    inline for (.{ "RDONLY", "WRONLY", "RDWR" }) |name| {
+        const flags: std.c.O = .{ .ACCMODE = @field(std.posix.ACCMODE, name) };
+        constant(ctx, object, "O_" ++ name, @as(u32, @bitCast(flags)));
+    }
+    inline for (.{ "APPEND", "CREAT", "EXCL", "NOCTTY", "TRUNC", "DIRECTORY", "NOFOLLOW", "SYNC", "DSYNC", "SYMLINK", "NONBLOCK", "DIRECT" }) |name| {
+        if (@hasField(std.c.O, name)) {
+            var flags: std.c.O = .{};
+            @field(flags, name) = true;
+            // Linux O_SYNC includes the O_DSYNC bit, not just __O_SYNC.
+            if (builtin.os.tag == .linux and comptime std.mem.eql(u8, name, "SYNC")) flags.DSYNC = true;
+            constant(ctx, object, "O_" ++ name, @as(u32, @bitCast(flags)));
+        }
+    }
+    inline for (.{ "IFMT", "IFREG", "IFDIR", "IFCHR", "IFBLK", "IFIFO", "IFLNK", "IFSOCK", "IRWXU", "IRUSR", "IWUSR", "IXUSR", "IRWXG", "IRGRP", "IWGRP", "IXGRP", "IRWXO", "IROTH", "IWOTH", "IXOTH" }) |name| {
+        constant(ctx, object, "S_" ++ name, @field(std.c.S, name));
+    }
+    set(ctx, @ptrCast(global), "__home_tool_fs_constants", @ptrCast(object));
+}
+
 pub fn failure(ctx: *types.JSContextRef, object: *types.JSObject, err: anyerror) ?*types.JSValue {
     const code: []const u8 = switch (err) {
         error.FileNotFound => "ENOENT",
@@ -196,6 +226,7 @@ pub const Host = struct {
     pub fn install(self: *Host, global: *types.JSGlobalObject) void {
         self.previous = active;
         active = self;
+        installConstants(self.ctx, global);
         callback.registerCallback(self.ctx, global, "__home_tool_fs_operation", operation);
         callback.registerCallback(self.ctx, global, "__home_tool_fd_operation", descriptorOperation);
     }
@@ -473,6 +504,7 @@ fn operation(
             else => .unknown,
         };
         set(c, object, "kind", text(c, @tagName(kind)));
+        set(c, object, "mode", api.JSValueMakeNumber(c, @floatFromInt(stat.mode)));
         set(c, object, "size", api.JSValueMakeNumber(c, @floatFromInt(stat.size)));
         set(c, object, "ino", api.JSValueMakeNumber(c, @floatFromInt(stat.ino)));
         set(c, object, "nlink", api.JSValueMakeNumber(c, @floatFromInt(stat.nlink)));

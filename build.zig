@@ -1441,6 +1441,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_tmpdir.addArgs(&.{ "run", "os_tmpdir.mjs" });
         run_home_tool_tmpdir.expectStdOutEqual("OK POSIX os.tmpdir 14 environment, precedence, lexical and repeated-call cases\n");
         home_tool_smoke_step.dependOn(&run_home_tool_tmpdir.step);
+        const run_home_tool_constants = b.addRunArtifact(home_tool_exe);
+        run_home_tool_constants.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_constants.addArgs(&.{ "run", "fs_constants.mjs" });
+        run_home_tool_constants.expectStdOutEqual("OK native POSIX filesystem constants, aliases, descriptors, platform flags and actual metadata\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_constants.step);
         const run_home_tool_path_url = b.addRunArtifact(home_tool_exe);
         run_home_tool_path_url.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_path_url.addArgs(&.{ "run", "node_path_url_entry.cjs" });
