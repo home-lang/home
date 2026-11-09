@@ -539,6 +539,23 @@
       result = normalizedSegments(result, !absolute);
       return `${absolute ? '/' : ''}${result}` || '.';
     },
+    relative: function(from, to) {
+      pathString(from);
+      pathString(to);
+      if (from === to) return '';
+      const source = posixPath.resolve(from);
+      const target = posixPath.resolve(to);
+      if (source === target) return '';
+      // Compare whole resolved segments: /foo must not match /foobar.
+      const left = source === '/' ? [] : source.slice(1).split('/');
+      const right = target === '/' ? [] : target.slice(1).split('/');
+      let common = 0;
+      while (common < left.length && common < right.length && left[common] === right[common]) common++;
+      const result = [];
+      for (let index = common; index < left.length; index++) result.push('..');
+      for (let index = common; index < right.length; index++) result.push(right[index]);
+      return result.join('/');
+    },
     basename: function(path, suffix) {
       if (suffix !== undefined) pathString(suffix);
       pathString(path);

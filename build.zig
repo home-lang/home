@@ -1431,6 +1431,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_path_parse.addArgs(&.{ "run", "path_parse.mjs" });
         run_home_tool_path_parse.expectStdOutEqual("OK POSIX path.parse lexical roots, directories, extensions, unicode and validation\n");
         home_tool_smoke_step.dependOn(&run_home_tool_path_parse.step);
+        const run_home_tool_path_relative = b.addRunArtifact(home_tool_exe);
+        run_home_tool_path_relative.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_path_relative.addArgs(&.{ "run", "path_relative.mjs" });
+        run_home_tool_path_relative.expectStdOutEqual("OK POSIX path.relative, segment boundaries, cwd, roots, unicode and validation\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_path_relative.step);
         const run_home_tool_child = b.addRunArtifact(home_tool_exe);
         run_home_tool_child.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_child.addArgs(&.{ "run", "node_child_entry.cjs" });
