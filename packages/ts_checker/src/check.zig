@@ -92913,6 +92913,16 @@ pub const Checker = struct {
         try self.tuple_origin_types.put(self.gpa, target, {});
     }
 
+    /// Record a synthetic iterator's yielded tuple so it is recognized as a
+    /// tuple of its own fixed length. A yield that is not a tuple-shaped
+    /// object — every element type that is not an entry pair — is left alone.
+    fn markSyntheticTupleYield(self: *Checker, yielded: TypeId) CheckError!void {
+        if (yielded >= self.interner.pool.typeCount()) return;
+        if (self.isActualTupleType(yielded)) return;
+        if (self.fixedTupleLength(yielded) == null) return;
+        try self.markTupleOrigin(yielded);
+    }
+
     fn isActualTupleType(self: *Checker, target: TypeId) bool {
         if (target >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(target);
@@ -113869,6 +113879,12 @@ pub const Checker = struct {
             const iterator = self.interner.signatureReturn(member) orelse continue;
             const yielded = self.interner.objectNumberIndex(iterator);
             if (yielded == types.Primitive.none) continue;
+            // `entries()` yields `[number, T]`. The tuple is built in
+            // lib.zig, which cannot reach `tuple_origin_types`, and without
+            // that record its fixed length is unknown: it renders and relates
+            // as a tuple with a trailing rest element whose type is the union
+            // of its own members. Mark it before the display name is built.
+            try self.markSyntheticTupleYield(yielded);
             try self.nameIteratorObjectType(iterator, "ArrayIterator", yielded);
         }
     }
@@ -152030,17 +152046,10 @@ pub const Checker = struct {
     }
 
     fn builtinSetLikeInstanceType(self: *Checker, value_t: TypeId, is_readonly: bool) CheckError!TypeId {
-        const entry_union = value_t;
-        var entry_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
-        defer entry_members.deinit(self.gpa);
-        const zero_id = self.string_interner.intern("0") catch return error.OutOfMemory;
-        const one_id = self.string_interner.intern("1") catch return error.OutOfMemory;
-        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
-        try entry_members.append(self.gpa, .{ .name = zero_id, .type = value_t, .is_optional = false, .is_readonly = false, .is_method = false });
-        try entry_members.append(self.gpa, .{ .name = one_id, .type = value_t, .is_optional = false, .is_readonly = false, .is_method = false });
-        const length_t = self.interner.internNumberLiteral(2) catch types.Primitive.number_t;
-        try entry_members.append(self.gpa, .{ .name = length_id, .type = length_t, .is_optional = false, .is_readonly = true, .is_method = false });
-        const entry_t = self.interner.internObjectTypeWithIndex(entry_members.items, types.Primitive.none, entry_union) catch return error.OutOfMemory;
+        // `Set<T>` iterates `[T, T]` entry tuples, the same shape `Map` uses.
+        // Building the members by hand left the tuple unrecorded, so it
+        // rendered with a trailing rest element.
+        const entry_t = try self.internTupleFromTypesWithMinRequired(&.{ value_t, value_t }, 2, false);
         const value_iter_t = lib.iteratorObjectType(self.interner, self.string_interner, value_t, false) catch return error.OutOfMemory;
         const entry_iter_t = lib.iteratorObjectType(self.interner, self.string_interner, entry_t, false) catch return error.OutOfMemory;
         try self.nameIteratorObjectType(value_iter_t, "SetIterator", value_t);
@@ -301103,4 +301112,25 @@ test "checker: explicit type arguments instantiate the generic Array statics" {
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_does_not_exist, "Property 'bogus' does not exist on type 'string'."));
     try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
+}
+
+test "checker: iteration entry tuples are recorded with their fixed length" {
+    const s = try newSetup(
+        \\declare const nums: number[];
+        \\declare const ro: readonly string[];
+        \\declare const setOf: Set<number>;
+        \\const a: never = nums.entries();
+        \\const b: never = ro.entries();
+        \\const c: never = setOf.entries();
+        \\const d: never = [...nums.entries()];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // Without the tuple record the fixed length is unknown and a trailing
+    // `...X[]` rest is rendered, where X is the union of the members.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'ArrayIterator<[number, number]>' is not assignable to type 'never'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'ArrayIterator<[number, string]>' is not assignable to type 'never'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'SetIterator<[number, number]>' is not assignable to type 'never'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '[number, number][]' is not assignable to type 'never'."));
+    try T.expectEqual(@as(usize, 4), s.checker.diagnostics.items.len);
 }
