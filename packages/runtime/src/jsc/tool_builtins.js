@@ -600,6 +600,9 @@
       return directory;
     },
   };
+  // EOL is platform metadata fixed when the OS module initializes; unlike
+  // platform(), later writes to process.platform must not change its value.
+  Object.defineProperty(osApi, 'EOL', { value: osProcess.platform === 'win32' ? '\r\n' : '\n', enumerable: true, configurable: true });
   const eventsApi = globalThis.__home_tool_events;
   delete globalThis.__home_tool_events;
   const streamsFactory = globalThis.__home_tool_streams_factory;

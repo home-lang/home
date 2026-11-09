@@ -347,6 +347,11 @@ under property redefinition; replacing globalThis.process keeps the original
 binding. Bun 1.4.4 retains its native platform constant in that experiment, and
 the reference difference remains explicit.
 
+`os.EOL` is initialized from the native platform (`\n` on supported POSIX
+hosts) and remains fixed when callers later redefine process.platform. Module
+aliases and named imports share that value. It is an enumerable, configurable,
+nonwritable data property, matching Node; Bun exposes an accessor instead.
+
 The adapter also implements POSIX `homedir`: it honors string HOME
 values (including empty strings), then queries the real current-user account
 via reentrant `getpwuid_r` when HOME is absent, on macOS/Linux. Native lookup
