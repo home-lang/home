@@ -1436,6 +1436,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_assertion_failure.addArgs(&.{ "run", "assert_failure.cjs" });
         run_home_tool_assertion_failure.expectExitCode(1);
         home_tool_smoke_step.dependOn(&run_home_tool_assertion_failure.step);
+        const run_home_tool_tmpdir = b.addRunArtifact(home_tool_exe);
+        run_home_tool_tmpdir.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_tmpdir.addArgs(&.{ "run", "os_tmpdir.mjs" });
+        run_home_tool_tmpdir.expectStdOutEqual("OK POSIX os.tmpdir 14 environment, precedence, lexical and repeated-call cases\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_tmpdir.step);
         const run_home_tool_path_url = b.addRunArtifact(home_tool_exe);
         run_home_tool_path_url.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_path_url.addArgs(&.{ "run", "node_path_url_entry.cjs" });

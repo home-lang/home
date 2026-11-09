@@ -671,6 +671,7 @@
   const accountHomedir = globalThis.__home_tool_account_homedir;
   delete globalThis.__home_tool_account_homedir;
   const osProcess = process;
+  const osNativePlatform = osProcess.platform;
   const osApi = {
     platform: function() {
       return osProcess.platform;
@@ -683,6 +684,15 @@
       const directory = accountHomedir();
       if (directory === null) throw new Error('Cannot query the native POSIX home directory');
       return directory;
+    },
+    tmpdir: function() {
+      if (osNativePlatform === 'win32') unsupported('Home os.tmpdir currently implements POSIX environment selection only');
+      // Node's POSIX policy is lexical: read these variables each call and
+      // remove one trailing separator, without resolving or creating a path.
+      // https://nodejs.org/api/os.html#ostmpdir
+      const directory = osProcess.env.TMPDIR || osProcess.env.TMP || osProcess.env.TEMP || '/tmp';
+      if (typeof directory !== 'string' || directory.indexOf('\0') !== -1) unsupported('Home os.tmpdir requires environment strings without NUL bytes');
+      return directory.length > 1 && directory.endsWith('/') ? directory.slice(0, -1) : directory;
     },
   };
   // EOL is platform metadata fixed when the OS module initializes; unlike
