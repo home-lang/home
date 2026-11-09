@@ -18521,8 +18521,17 @@ pub const Parser = struct {
         return arrow_index;
     }
 
+    fn arrowReturnTypeHasStatementBoundary(self: *const Parser, idx: u32) bool {
+        const kind = self.tokens[idx].kind;
+        // Neither an assignment nor a function declaration belongs to a
+        // return type. A keyword-named property in `typeof x.function` does.
+        return kind == .equal or (kind == .kw_function and
+            (idx == 0 or self.tokens[idx - 1].kind != .dot));
+    }
+
     /// From `idx` (right after `:`), scan past a type annotation and
-    /// return true if we eventually hit `=>` at the top level.
+    /// return true if we eventually hit `=>` at the top level. Don't cross
+    /// ASI into a later statement and attach its arrow to a ternary arm.
     fn scanForArrowAfterColon(self: *Parser, idx: u32) bool {
         var depth: i32 = 0;
         var i: u32 = idx;
@@ -18530,7 +18539,7 @@ pub const Parser = struct {
             const tk = self.tokens[i].kind;
             if (depth == 0) {
                 if (tk == .arrow) return true;
-                if (tk == .semicolon or tk == .comma or tk == .close_paren or
+                if (self.arrowReturnTypeHasStatementBoundary(i) or tk == .semicolon or tk == .comma or tk == .close_paren or
                     tk == .close_brace or tk == .close_bracket or tk == .eof)
                 {
                     return false;
@@ -18555,7 +18564,7 @@ pub const Parser = struct {
             const tk = self.tokens[i].kind;
             if (depth == 0) {
                 if (tk == .open_brace) return saw_type_token;
-                if (tk == .semicolon or tk == .comma or tk == .close_paren or
+                if (self.arrowReturnTypeHasStatementBoundary(i) or tk == .semicolon or tk == .comma or tk == .close_paren or
                     tk == .close_brace or tk == .close_bracket or tk == .eof)
                 {
                     return false;
@@ -18581,7 +18590,7 @@ pub const Parser = struct {
             const kind = self.tokens[i].kind;
             if (depth == 0) {
                 if (kind == .semicolon) return saw_type_token;
-                if (kind == .arrow or kind == .comma or kind == .close_paren or
+                if (self.arrowReturnTypeHasStatementBoundary(i) or kind == .arrow or kind == .comma or kind == .close_paren or
                     kind == .close_brace or kind == .close_bracket or kind == .eof)
                 {
                     return false;
@@ -24456,6 +24465,25 @@ test "parser: instantiation expression ambiguities preserve TypeScript shapes" {
     const negative_gt = hir_mod.binopOf(&s.hir, negative);
     try T.expectEqual(hir_mod.BinOp.gt, negative_gt.op);
     try T.expectEqual(hir_mod.BinOp.lt, hir_mod.binopOf(&s.hir, negative_gt.lhs).op);
+}
+
+test "parser: arrow return lookahead stops before later statements" {
+    const cases = [_][]const u8{
+        "function probe(heartbeat) { const interval = typeof heartbeat === 'object' ? (heartbeat.interval ?? 10) : 10\nconst next = () => 42\nreturn [interval, next()] }",
+        "function probe(heartbeat) { const interval = typeof heartbeat === 'object' ? (heartbeat.interval ?? 10) : 10\nlet next\nnext = () => 42\nreturn [interval, next()] }",
+        "function probe(heartbeat) { const interval = typeof heartbeat === 'object' ? (heartbeat.interval ?? 10) : 10\nfunction next() { return 42 }\nreturn [interval, next()] }",
+    };
+    for (cases) |source| {
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const stmts = hir_mod.blockStmts(&s.hir, root);
+        try T.expectEqual(@as(usize, 1), stmts.len);
+        try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(stmts[0]));
+        const body = hir_mod.blockStmts(&s.hir, hir_mod.fnDeclOf(&s.hir, stmts[0]).body);
+        try T.expectEqual(hir_mod.NodeKind.conditional, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, body[0]).init));
+    }
 }
 
 test "parser: logical comparison chains are not generic calls" {
