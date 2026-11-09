@@ -341,6 +341,16 @@ Home's ESM lowering currently lacks implicit strict assignment errors. The
 readonly-property witness uses explicit strict code; that separate semantic
 gap remains outside the supported profile.
 
+`fs.statSync` and `fs.lstatSync` query native metadata synchronously, following
+or retaining the final symlink respectively. The bounded numeric metadata
+profile exposes size, inode, link count, timestamps/Date values and seven file
+kind predicates, sharing conversion with promised stat. String paths and
+`bigint: false` are supported; BigInt metadata and additional options are
+explicitly refused. With `throwIfNoEntry: false`, stat suppresses ENOENT and
+ENOTDIR; lstat suppresses ENOENT while retaining ENOTDIR, matching Node 26.
+Permission and symlink-loop errors remain failures. Bun's ENOTDIR suppression
+and empty-path error-property differences are retained as reference differences.
+
 The `os`/`node:os` adapter supplies platform from the original native process
 object. Reads follow that object's current platform property, matching Node 26
 under property redefinition; replacing globalThis.process keeps the original

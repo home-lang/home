@@ -841,6 +841,12 @@ pub fn build(b: *std.Build) void {
         run_realpath.addFileArg(b.path("packages/runtime/test/tool_modules/fs_realpath.mjs"));
         run_realpath.expectStdOutEqual("OK actual canonical paths, symlink traversal/mutation, native alias, errno and promise rejections\n");
         home_tool_smoke_step.dependOn(&run_realpath.step);
+        const run_stat_sync = b.addSystemCommand(&.{"python3"});
+        run_stat_sync.addFileArg(b.path("packages/runtime/test/tool_stat_fixture.py"));
+        run_stat_sync.addArtifactArg(home_tool_exe);
+        run_stat_sync.addFileArg(b.path("packages/runtime/test/tool_modules/fs_stat_sync.mjs"));
+        run_stat_sync.expectStdOutEqual("OK native sync stat and lstat, seven predicates, metadata, symlinks, mutations and actual errno\n");
+        home_tool_smoke_step.dependOn(&run_stat_sync.step);
         const run_access = b.addSystemCommand(&.{"python3"});
         run_access.addFileArg(b.path("packages/runtime/test/tool_access_fixture.py"));
         run_access.addArtifactArg(home_tool_exe);

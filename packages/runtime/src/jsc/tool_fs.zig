@@ -1,5 +1,6 @@
 //! Real filesystem operations for the repository-tool Node adapter.
 const std = @import("std");
+const builtin = @import("builtin");
 const bun = @import("bun");
 const callback = @import("callback.zig");
 const api = @import("extern_fns.zig");
@@ -439,17 +440,51 @@ fn operation(
                 return failure(c, object, err);
             };
         }
-    } else if (std.mem.eql(u8, op, "stat")) {
-        const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| return failure(c, object, err);
-        set(c, object, "kind", text(c, @tagName(stat.kind)));
+    } else if (std.mem.eql(u8, op, "stat") or std.mem.eql(u8, op, "lstat")) {
+        const path_z = allocator.dupeSentinel(u8, path, 0) catch |err| return failure(c, object, err);
+        defer allocator.free(path_z);
+        const native_linux = builtin.os.tag == .linux;
+        var stat: if (native_linux) std.os.linux.Statx else std.c.Stat = undefined;
+        const flags: u32 = if (std.mem.eql(u8, op, "lstat")) std.c.AT.SYMLINK_NOFOLLOW else 0;
+        // Dir.statFile folds ENOTDIR into ENOENT. Preserve the kernel errno
+        // before applying Node's distinct stat/lstat throwIfNoEntry policies.
+        while (true) {
+            const result = if (native_linux)
+                std.c.statx(std.c.AT.FDCWD, path_z, flags, std.os.linux.STATX.BASIC_STATS, &stat)
+            else
+                std.c.fstatat(std.c.AT.FDCWD, path_z, &stat, flags);
+            const err = std.posix.errno(result);
+            if (err == .SUCCESS) break;
+            if (err != .INTR) return nativeFailure(c, object, err, op);
+        }
+        if (native_linux) {
+            const available: u32 = @bitCast(stat.mask);
+            const required: u32 = @bitCast(std.os.linux.STATX.BASIC_STATS);
+            if (available & required != required) return failure(c, object, error.Unsupported);
+        }
+        const kind: std.Io.File.Kind = switch (stat.mode & std.c.S.IFMT) {
+            std.c.S.IFREG => .file,
+            std.c.S.IFDIR => .directory,
+            std.c.S.IFLNK => .sym_link,
+            std.c.S.IFBLK => .block_device,
+            std.c.S.IFCHR => .character_device,
+            std.c.S.IFIFO => .named_pipe,
+            std.c.S.IFSOCK => .unix_domain_socket,
+            else => .unknown,
+        };
+        set(c, object, "kind", text(c, @tagName(kind)));
         set(c, object, "size", api.JSValueMakeNumber(c, @floatFromInt(stat.size)));
-        set(c, object, "ino", api.JSValueMakeNumber(c, @floatFromInt(stat.inode)));
+        set(c, object, "ino", api.JSValueMakeNumber(c, @floatFromInt(stat.ino)));
         set(c, object, "nlink", api.JSValueMakeNumber(c, @floatFromInt(stat.nlink)));
-        set(c, object, "mtimeMs", api.JSValueMakeNumber(c, @as(f64, @floatFromInt(stat.mtime.nanoseconds)) / 1_000_000));
-        set(c, object, "ctimeMs", api.JSValueMakeNumber(c, @as(f64, @floatFromInt(stat.ctime.nanoseconds)) / 1_000_000));
-        if (stat.atime) |time| set(c, object, "atimeMs", api.JSValueMakeNumber(c, @as(f64, @floatFromInt(time.nanoseconds)) / 1_000_000));
+        set(c, object, "mtimeMs", api.JSValueMakeNumber(c, statTimeMillis(if (native_linux) stat.mtime else stat.mtime())));
+        set(c, object, "ctimeMs", api.JSValueMakeNumber(c, statTimeMillis(if (native_linux) stat.ctime else stat.ctime())));
+        set(c, object, "atimeMs", api.JSValueMakeNumber(c, statTimeMillis(if (native_linux) stat.atime else stat.atime())));
     } else return failure(c, object, error.Unsupported);
     return @ptrCast(object);
+}
+
+fn statTimeMillis(time: anytype) f64 {
+    return @as(f64, @floatFromInt(time.sec)) * 1000 + @as(f64, @floatFromInt(time.nsec)) / 1_000_000;
 }
 
 test "native directory names and kinds release partial allocations" {

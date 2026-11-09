@@ -290,6 +290,35 @@
   }
   fs.appendFileSync = appendFile;
   fs.writeFileSync = writeFile;
+  function statResult(result) {
+    const kind = result.kind;
+    delete result.kind;
+    result.isFile = function() { return kind === 'file'; };
+    result.isDirectory = function() { return kind === 'directory'; };
+    result.isSymbolicLink = function() { return kind === 'sym_link'; };
+    result.isBlockDevice = function() { return kind === 'block_device'; };
+    result.isCharacterDevice = function() { return kind === 'character_device'; };
+    result.isFIFO = function() { return kind === 'named_pipe'; };
+    result.isSocket = function() { return kind === 'unix_domain_socket'; };
+    result.mtime = new Date(result.mtimeMs);
+    result.ctime = new Date(result.ctimeMs);
+    if (result.atimeMs !== undefined) result.atime = new Date(result.atimeMs);
+    return result;
+  }
+  function syncStat(operation, path, options) {
+    options = fsOptions(options, ['bigint', 'throwIfNoEntry']);
+    if (booleanFsOption(options, 'bigint')) unsupported('Home filesystem BigInt metadata is unsupported');
+    booleanFsOption(options, 'throwIfNoEntry');
+    try { return statResult(fsOperation(operation, path, false, false)); }
+    catch (error) {
+      // Node statSync suppresses ENOTDIR as well as ENOENT when requested;
+      // lstatSync preserves ENOTDIR. Never hide permissions, loops or refusals.
+      if (options.throwIfNoEntry === false && (error.code === 'ENOENT' || (operation === 'stat' && error.code === 'ENOTDIR'))) return undefined;
+      throw error;
+    }
+  }
+  fs.statSync = function(path, options) { return syncStat('stat', path, options); };
+  fs.lstatSync = function(path, options) { return syncStat('lstat', path, options); };
   const fsPromises = {
     constants: fsConstants,
     realpath: async function(path, options) {
@@ -322,34 +351,7 @@
     },
     stat: async function(path, options) {
       fsOptions(options, []);
-      const result = fsOperation('stat', path, false, false);
-      const kind = result.kind;
-      delete result.kind;
-      result.isFile = function() {
-        return kind === 'file';
-      };
-      result.isDirectory = function() {
-        return kind === 'directory';
-      };
-      result.isSymbolicLink = function() {
-        return kind === 'sym_link';
-      };
-      result.isBlockDevice = function() {
-        return kind === 'block_device';
-      };
-      result.isCharacterDevice = function() {
-        return kind === 'character_device';
-      };
-      result.isFIFO = function() {
-        return kind === 'named_pipe';
-      };
-      result.isSocket = function() {
-        return kind === 'unix_domain_socket';
-      };
-      result.mtime = new Date(result.mtimeMs);
-      result.ctime = new Date(result.ctimeMs);
-      if (result.atimeMs !== undefined) result.atime = new Date(result.atimeMs);
-      return result;
+      return statResult(fsOperation('stat', path, false, false));
     },
   };
   fs.promises = fsPromises;
