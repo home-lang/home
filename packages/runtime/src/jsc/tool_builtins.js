@@ -945,7 +945,7 @@
   builtins['node:os'] = osApi;
   builtins.process = globalThis.process;
   builtins['node:process'] = globalThis.process;
-  const perfHooks = { performance: globalThis.performance, Performance: globalThis.Performance };
+  const perfHooks = { performance: globalThis.performance, Performance: globalThis.Performance, PerformanceEntry: globalThis.PerformanceEntry, PerformanceMark: globalThis.PerformanceMark };
   builtins.perf_hooks = perfHooks;
   builtins['node:perf_hooks'] = perfHooks;
   builtins['fs/promises'] = fsPromises;

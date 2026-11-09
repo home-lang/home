@@ -1143,6 +1143,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_performance.addArgs(&.{ "run", "performance_clock.mjs" });
         run_home_tool_performance.expectStdOutEqual("OK actual native monotonic Performance clock\n");
         home_tool_smoke_step.dependOn(&run_home_tool_performance.step);
+        const run_home_tool_user_timing = b.addRunArtifact(home_tool_exe);
+        run_home_tool_user_timing.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_user_timing.addArgs(&.{ "run", "user_timing.mjs" });
+        run_home_tool_user_timing.expectStdOutEqual("OK real native User Timing marks, entries, order, queries, clearing, brands and validation\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_user_timing.step);
         const run_home_tool_overloads = b.addRunArtifact(home_tool_exe);
         run_home_tool_overloads.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_overloads.addArgs(&.{ "run", "overload_entry.ts" });
