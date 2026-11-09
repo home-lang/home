@@ -16798,11 +16798,16 @@ pub const Parser = struct {
                         i = after - 1; // -1 because the loop increments
                     } else return null;
                 },
-                // Tokens that disqualify this from being type args.
+                // Logical operators cannot occur in a type-argument list.
+                // Otherwise `x < (a ? b : c) || x > (d)` is mistaken for
+                // a generic call spanning both relational expressions.
                 .equal,
                 .semicolon,
                 .arrow,
                 .question_dot,
+                .pipe_pipe,
+                .ampersand_ampersand,
+                .question_question,
                 .invalid,
                 .eof,
                 => return null,
@@ -16845,6 +16850,9 @@ pub const Parser = struct {
                 .semicolon,
                 .arrow,
                 .question_dot,
+                .pipe_pipe,
+                .ampersand_ampersand,
+                .question_question,
                 .invalid,
                 .eof,
                 => return null,
@@ -24448,6 +24456,32 @@ test "parser: instantiation expression ambiguities preserve TypeScript shapes" {
     const negative_gt = hir_mod.binopOf(&s.hir, negative);
     try T.expectEqual(hir_mod.BinOp.gt, negative_gt.op);
     try T.expectEqual(hir_mod.BinOp.lt, hir_mod.binopOf(&s.hir, negative_gt.lhs).op);
+}
+
+test "parser: logical comparison chains are not generic calls" {
+    const cases = [_][]const u8{
+        "const result = hours < (parts.hours12 ? 1 : 0) || hours > (parts.hours12 ? 12 : 23);",
+        "const result = hours < (parts.hours12 ? 1 : 0) && hours > (parts.hours12 ? 12 : 23);",
+        "const result = hours < (parts.hours12 ? 1 : 0) ?? hours > (parts.hours12 ? 12 : 23);",
+        "const result = hours < low || hours > high;",
+        "const result = hours < low && hours > high;",
+        "const result = hours < low ?? hours > high;",
+    };
+    for (cases) |source| {
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const stmts = hir_mod.blockStmts(&s.hir, root);
+        try T.expectEqual(@as(usize, 1), stmts.len);
+        const init = hir_mod.varDeclOf(&s.hir, stmts[0]).init;
+        try T.expectEqual(hir_mod.NodeKind.logical_op, s.hir.kindOf(init));
+        const logical = hir_mod.logicalOf(&s.hir, init);
+        try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(logical.lhs));
+        try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(logical.rhs));
+        try T.expectEqual(hir_mod.BinOp.lt, hir_mod.binopOf(&s.hir, logical.lhs).op);
+        try T.expectEqual(hir_mod.BinOp.gt, hir_mod.binopOf(&s.hir, logical.rhs).op);
+    }
 }
 
 test "parser: instantiation expression follow tokens mirror TypeScript" {
