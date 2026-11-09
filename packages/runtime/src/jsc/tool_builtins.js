@@ -323,6 +323,27 @@
   }
   fs.statSync = function(path, options) { return syncStat('stat', path, options); };
   fs.lstatSync = function(path, options) { return syncStat('lstat', path, options); };
+  function callbackStat(operation, path, options, callback) {
+    if (typeof options === 'function') { callback = options; options = undefined; }
+    if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'stat callback must be a function');
+    path = stringPath(path);
+    options = fsOptions(options === null ? undefined : options, ['bigint', 'throwIfNoEntry']);
+    if (booleanFsOption(options, 'bigint')) unsupported('Home filesystem BigInt metadata is unsupported');
+    booleanFsOption(options, 'throwIfNoEntry');
+    const throwIfNoEntry = operation === 'lstat' || options.throwIfNoEntry !== false;
+    // Defer the actual POSIX operation on the protected host task queue. This
+    // is owner-thread I/O, not a worker pool. Callback throws must reach the
+    // host uncaught-exception policy rather than become Promise rejections.
+    scheduleFilesystemTask(function() {
+      let result, error;
+      try { result = syncStat(operation, path, { throwIfNoEntry }); }
+      catch (caught) { error = caught; }
+      if (error) callback(error);
+      else callback(null, result);
+    }, 0);
+  }
+  fs.stat = function(path, options, callback) { callbackStat('stat', path, options, callback); };
+  fs.lstat = function(path, options, callback) { callbackStat('lstat', path, options, callback); };
   const fsPromises = {
     constants: fsConstants,
     realpath: async function(path, options) {
@@ -688,6 +709,7 @@
   delete globalThis.__home_tool_get_async_context;
   delete globalThis.__home_tool_swap_async_context;
   const timers = timerFactory(timerSchedule, timerControl, getAsyncContext, swapAsyncContext);
+  const scheduleFilesystemTask = timers.setTimeout;
   globalThis.setTimeout = timers.setTimeout;
   globalThis.clearTimeout = timers.clearTimeout;
   globalThis.setInterval = timers.setInterval;
@@ -726,7 +748,42 @@
       return nativeIsProxy(value);
     },
   };
+  const utilPromise = Promise;
+  const utilApply = Reflect.apply;
+  const utilPush = Array.prototype.push;
+  const utilDefine = Object.defineProperty;
+  const utilDescriptors = Object.getOwnPropertyDescriptors;
+  const utilDefineProperties = Object.defineProperties;
+  const utilGetPrototype = Object.getPrototypeOf;
+  const utilSetPrototype = Object.setPrototypeOf;
+  const customPromisify = Symbol.for('nodejs.util.promisify.custom');
+  function promisify(original) {
+    if (typeof original !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'promisify original must be a function');
+    if (original[customPromisify]) {
+      const custom = original[customPromisify];
+      if (typeof custom !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'promisify custom must be a function');
+      return utilDefine(custom, customPromisify, { __proto__: null, value: custom, writable: false, enumerable: false, configurable: true });
+    }
+    function wrapped(...args) {
+      const receiver = this;
+      return new utilPromise(function(resolve, reject) {
+        utilApply(utilPush, args, [function(error, value) {
+          if (error) reject(error);
+          else resolve(value);
+        }]);
+        utilApply(original, receiver, args);
+      });
+    }
+    utilSetPrototype(wrapped, utilGetPrototype(original));
+    utilDefine(wrapped, customPromisify, { __proto__: null, value: wrapped, writable: false, enumerable: false, configurable: true });
+    const descriptors = utilDescriptors(original);
+    for (const key of Reflect.ownKeys(descriptors)) utilSetPrototype(descriptors[key], null);
+    utilDefineProperties(wrapped, descriptors);
+    return wrapped;
+  }
+  promisify.custom = customPromisify;
   const utilApi = {
+    promisify,
     types: utilTypes,
     stripVTControlCharacters: function(text) {
       if (typeof text !== 'string') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'stripVTControlCharacters requires a string');

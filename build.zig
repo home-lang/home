@@ -847,6 +847,17 @@ pub fn build(b: *std.Build) void {
         run_stat_sync.addFileArg(b.path("packages/runtime/test/tool_modules/fs_stat_sync.mjs"));
         run_stat_sync.expectStdOutEqual("OK native sync stat and lstat, seven predicates, metadata, symlinks, mutations and actual errno\n");
         home_tool_smoke_step.dependOn(&run_stat_sync.step);
+        const run_stat_callback = b.addSystemCommand(&.{"python3"});
+        run_stat_callback.addFileArg(b.path("packages/runtime/test/tool_stat_fixture.py"));
+        run_stat_callback.addArtifactArg(home_tool_exe);
+        run_stat_callback.addFileArg(b.path("packages/runtime/test/tool_modules/promisify_stat.mjs"));
+        run_stat_callback.expectStdOutEqual("OK native callback stat/lstat, errno, deferred delivery and genuine promisify contracts\n");
+        home_tool_smoke_step.dependOn(&run_stat_callback.step);
+        const run_stat_callback_throw = b.addRunArtifact(home_tool_exe);
+        run_stat_callback_throw.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_stat_callback_throw.addArgs(&.{ "run", "fs_stat_callback_throw.cjs" });
+        run_stat_callback_throw.expectStdOutEqual("OK native stat callback exception dispatch\n");
+        home_tool_smoke_step.dependOn(&run_stat_callback_throw.step);
         const run_read_buffer = b.addSystemCommand(&.{"python3"});
         run_read_buffer.addFileArg(b.path("packages/runtime/test/tool_read_buffer_fixture.py"));
         run_read_buffer.addArtifactArg(home_tool_exe);
