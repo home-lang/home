@@ -1446,6 +1446,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_constants.addArgs(&.{ "run", "fs_constants.mjs" });
         run_home_tool_constants.expectStdOutEqual("OK native POSIX filesystem constants, aliases, descriptors, platform flags and actual metadata\n");
         home_tool_smoke_step.dependOn(&run_home_tool_constants.step);
+        const run_home_tool_global_alias = b.addRunArtifact(home_tool_exe);
+        run_home_tool_global_alias.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_global_alias.addArgs(&.{ "run", "node_global.cjs" });
+        run_home_tool_global_alias.expectStdOutEqual("OK actual Node global alias, descriptor, shared mutations, eval and deletion\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_global_alias.step);
         const run_home_tool_path_url = b.addRunArtifact(home_tool_exe);
         run_home_tool_path_url.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_path_url.addArgs(&.{ "run", "node_path_url_entry.cjs" });

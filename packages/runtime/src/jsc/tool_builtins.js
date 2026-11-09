@@ -1,4 +1,6 @@
 (function() {
+  // Node's legacy alias refers to this realm's actual global object.
+  globalThis.global = globalThis;
   function unsupported(message) {
     const error = new Error(message);
     error.code = 'ERR_HOME_UNSUPPORTED';
