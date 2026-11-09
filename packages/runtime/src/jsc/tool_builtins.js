@@ -577,6 +577,29 @@
       if (root && end === 1) return '//';
       return path.slice(0, end);
     },
+    parse: function(path) {
+      pathString(path);
+      // Parse lexically: retain directory separators and dot segments rather
+      // than resolving them or looking at the host filesystem/cwd.
+      const root = path.startsWith('/') ? '/' : '';
+      let end = path.length;
+      while (end > root.length && path[end - 1] === '/') end--;
+      let start = end;
+      while (start > root.length && path[start - 1] !== '/') start--;
+      const base = path.slice(start, end);
+      const dot = base.lastIndexOf('.');
+      // Match Node's first absolute `/..` component, whose extension is a dot;
+      // relative and nested `..` components instead have no extension.
+      const leadingParent = root !== '' && start === root.length && base === '..';
+      const ext = dot > 0 && (base !== '..' || leadingParent) ? base.slice(dot) : '';
+      return {
+        root,
+        dir: start > root.length ? path.slice(0, start - 1) : root,
+        base,
+        ext,
+        name: base.slice(0, base.length - ext.length),
+      };
+    },
   };
   posixPath.posix = posixPath;
   const urlApi = {
