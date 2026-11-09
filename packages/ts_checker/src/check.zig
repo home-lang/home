@@ -193106,6 +193106,26 @@ pub const Checker = struct {
     /// get per-element TS2322 for array-literal arguments when the
     /// offending element is known. Tuple-shaped parameters keep using
     /// the tuple path above so arity prose remains intact.
+    /// Whether every element of this array literal is a spread of something
+    /// that is neither an array literal nor a tuple. Such a literal has the
+    /// spread's own array type: TypeScript reports it as a whole value, while
+    /// a fixed element, a spread of a literal, or a tuple spread each keep the
+    /// positional reporting.
+    fn arrayLiteralIsOnlyNonTupleSpreads(self: *Checker, node: NodeId) CheckError!bool {
+        const elements = hir_mod.arrayLiteralElements(self.hir, node);
+        if (elements.len == 0) return false;
+        for (elements) |element| {
+            if (element == hir_mod.none_node_id) return false;
+            if (self.hir.kindOf(element) != .spread) return false;
+            const operand = hir_mod.spreadOf(self.hir, element).expression;
+            if (self.hir.kindOf(operand) == .array_literal) return false;
+            var operand_t = self.hir.typeOf(operand);
+            if (operand_t == types.Primitive.none) operand_t = try self.checkExpression(operand);
+            if (self.isActualTupleType(operand_t)) return false;
+        }
+        return true;
+    }
+
     fn tryReportArrayLiteralArrayElementMismatch(
         self: *Checker,
         init_node: NodeId,
@@ -193122,6 +193142,11 @@ pub const Checker = struct {
         // widened source array against that named target instead of reducing
         // the error to the first incompatible spread element.
         if (self.namedTypeForId(resolved_target) != null) return false;
+        // Same consideration, different condition: an array literal made only
+        // of spreads of non-tuple arrays has the spread's own array type
+        // rather than a fresh element-wise literal, so the whole value is
+        // reported against the target.
+        if (try self.arrayLiteralIsOnlyNonTupleSpreads(init_node)) return false;
         const elem_target_t = self.interner.objectNumberIndex(resolved_target);
         if (elem_target_t == types.Primitive.none or
             elem_target_t == types.Primitive.any or
@@ -301133,4 +301158,24 @@ test "checker: iteration entry tuples are recorded with their fixed length" {
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'SetIterator<[number, number]>' is not assignable to type 'never'."));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '[number, number][]' is not assignable to type 'never'."));
     try T.expectEqual(@as(usize, 4), s.checker.diagnostics.items.len);
+}
+
+test "checker: an all-spread array literal is reported against the whole target" {
+    const s = try newSetup(
+        \\declare const nums: number[];
+        \\declare const pair: [number, number];
+        \\const whole: string[] = [...nums];
+        \\const wholeTwice: string[] = [...nums, ...nums];
+        \\const positional: string[] = [1, ...nums];
+        \\const literalSpread: string[] = [...[1, 2], ...nums];
+        \\const tupleSpread: string[] = [...pair];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The spread's own array type reaches the target, so the whole value is
+    // reported rather than the first incompatible spread element.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number[]' is not assignable to type 'string[]'."));
+    // A fixed element, a spread of a literal and a tuple spread each keep the
+    // positional reporting: two, two and one element diagnostics.
+    try T.expectEqual(@as(usize, 7), checkerCountCode(s, TsCodes.type_not_assignable));
 }
