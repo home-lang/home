@@ -899,6 +899,11 @@ pub fn build(b: *std.Build) void {
         run_jsdoc_boundaries.addFileArg(b.path("packages/runtime/test/tool_modules/jsdoc_literal_boundaries.mjs"));
         run_jsdoc_boundaries.expectStdOutEqual("OK JSDoc literal boundaries and actual nested regexp execution\n");
         home_tool_smoke_step.dependOn(&run_jsdoc_boundaries.step);
+        const run_quoted_property_names = b.addRunArtifact(home_tool_exe);
+        run_quoted_property_names.addArg("run");
+        run_quoted_property_names.addFileArg(b.path("packages/runtime/test/tool_modules/quoted_property_names.mjs"));
+        run_quoted_property_names.expectStdOutEqual("OK exact quoted property names and TypeScript character map\n");
+        home_tool_smoke_step.dependOn(&run_quoted_property_names.step);
         inline for (.{
             .{ "contextual_type_assignment.mjs", "OK actual contextual type assignments across blocks and exported function bodies\n" },
             .{ "contextual_type_alias.ts", "OK actual type aliases erase without consuming contextual assignments\n" },

@@ -277,9 +277,9 @@ fn jsHexNibble(v: u8) u8 {
     return "0123456789ABCDEF"[v & 0xF];
 }
 
-/// Pick the JS quote char that minimizes escapes. Verbatim mirror of
-/// js_printer `bestQuoteCharForString` (backticks allowed for string literals).
-fn bestQuoteChar(cooked: []const u8) u8 {
+/// Pick the JS quote char that minimizes escapes, matching
+/// js_printer `bestQuoteCharForString`, restricted by the syntactic context.
+fn bestQuoteChar(cooked: []const u8, allow_template: bool) u8 {
     var single: usize = 0;
     var double: usize = 0;
     var backtick: usize = 0;
@@ -300,7 +300,7 @@ fn bestQuoteChar(cooked: []const u8) u8 {
             else => {},
         }
     }
-    if (backtick < @min(single, double)) return '`';
+    if (allow_template and backtick < @min(single, double)) return '`';
     if (single < double) return '\'';
     return '"';
 }
@@ -7892,8 +7892,8 @@ pub const Printer = struct {
             // raw string content, so both arms handle it: a plain identifier `A`
             // yields `"A"`, while a name containing `"` yields valid,
             // Bun-matching JS (`'say "hi"'`) instead of the old `"say \"hi\""`.
-            .identifier => try self.printQuotedString(self.interner.get(hir_mod.identifierOf(self.hir, key).name)),
-            .literal_string => try self.printQuotedString(self.interner.get(hir_mod.literalStringOf(self.hir, key).value)),
+            .identifier => try self.printQuotedString(self.interner.get(hir_mod.identifierOf(self.hir, key).name), true),
+            .literal_string => try self.printQuotedString(self.interner.get(hir_mod.literalStringOf(self.hir, key).value), true),
             else => {
                 try self.write("\"");
                 try self.printExpression(key);
@@ -8514,7 +8514,7 @@ pub const Printer = struct {
             },
             .literal_string => {
                 const s = hir_mod.literalStringOf(self.hir, node);
-                try self.printQuotedString(self.interner.get(s.value));
+                try self.printQuotedString(self.interner.get(s.value), true);
             },
             .template_literal => try self.printTemplateLiteral(node),
             .literal_number => {
@@ -9545,7 +9545,7 @@ pub const Printer = struct {
     /// its cooked bytes first. Previously the printer wrote the raw value
     /// verbatim between `"` quotes, which produced INVALID JS for any string
     /// containing a `"` (e.g. `'say "hi"'` → `"say "hi""`).
-    fn printQuotedString(self: *Printer, raw: []const u8) !void {
+    fn printQuotedString(self: *Printer, raw: []const u8, allow_template: bool) !void {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(self.gpa);
         const needs_decode = std.mem.indexOfScalar(u8, raw, '\\') != null or
@@ -9555,7 +9555,7 @@ pub const Printer = struct {
             break :blk buf.items;
         } else raw;
 
-        const q = bestQuoteChar(cooked);
+        const q = bestQuoteChar(cooked, allow_template);
         try self.write(&[_]u8{q});
         var i: usize = 0;
         while (i < cooked.len) {
@@ -10298,11 +10298,18 @@ pub const Printer = struct {
             if (isValidPropertyIdentifier(name) or isNumericPropertyKey(name)) {
                 try self.write(name);
             } else {
-                try self.printQuotedString(name);
+                // ECMA-262 PropertyName permits StringLiteral, not a bare
+                // TemplateLiteral. Newlines and mixed quotes must remain
+                // escaped here even when a template is cheaper as a value.
+                try self.printQuotedString(name, false);
             }
             return;
         }
-        try self.printExpression(key);
+        if (self.hir.kindOf(key) == .literal_string) {
+            try self.printQuotedString(self.interner.get(hir_mod.literalStringOf(self.hir, key).value), false);
+        } else {
+            try self.printExpression(key);
+        }
     }
 
     fn printObjectProp(self: *Printer, p: NodeId) !void {
@@ -10827,6 +10834,19 @@ test "emit: object property key unquotes only valid identifiers" {
         .{ .src = "const o = { 0: 1 };", .want = "const o = { 0: 1 };" },
         // A plain identifier key is unchanged.
         .{ .src = "const o = { foo: 1 };", .want = "const o = { foo: 1 };" },
+    };
+    for (cases) |c| {
+        const out = try emit(c.src);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings(c.want, out);
+    }
+}
+
+test "emit: property names never become template literals" {
+    const cases = [_]struct { src: []const u8, want: []const u8 }{
+        .{ .src = "const o = { \"\\n\": 1 };", .want = "const o = { \"\\n\": 1 };" },
+        .{ .src = "const o = { \"\\r\\n\": 1 };", .want = "const o = { \"\\r\\n\": 1 };" },
+        .{ .src = "const o = { 'a\\'b\"c': 1 };", .want = "const o = { \"a'b\\\"c\": 1 };" },
     };
     for (cases) |c| {
         const out = try emit(c.src);

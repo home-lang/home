@@ -12,6 +12,11 @@ strings or template literals. Line comments, ordinary block comments and empty
 including duplicate return tags, remain active. The runtime smoke executes a
 nested regexp-based comment emitter to check both parsing and emitted behavior.
 
+Noncomputed object and method names use string-literal quoting even when a
+template would need fewer escapes. Newlines, CRLF, mixed quotes and lone
+surrogates retain their exact property keys. Ordinary string expressions can
+still use template-literal quoting.
+
 Object-literal async methods accept keyword, string, numeric, BigInt and
 computed property names while enforcing the no-line-terminator restriction
 after async. BigInt names preserve their exact decimal property key; emitted
