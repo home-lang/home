@@ -171,6 +171,37 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
     return selected === 'hex' ? hex : decodeUtf8Hex(hex);
   };
   Buffer.prototype.toLocaleString = Buffer.prototype.toString;
+  // Fixed-width reads use the visible byte window, including subarrays. Keep
+  // offset validation before the short-buffer check, as Node does for invalid
+  // types/fractions, without coercing strings or boxed numbers into offsets.
+  function readInteger(buffer, offset, width, littleEndian, signed) {
+    if (typeof offset !== 'number') fail('ERR_INVALID_ARG_TYPE', 'Buffer offset must be a number', TypeError);
+    if (Math.floor(offset) !== offset) fail('ERR_OUT_OF_RANGE', 'Buffer offset must be an integer', RangeError);
+    if (buffer.length < width) fail('ERR_BUFFER_OUT_OF_BOUNDS', 'Attempt to access memory outside buffer bounds', RangeError);
+    if (offset < 0 || offset > buffer.length - width) fail('ERR_OUT_OF_RANGE', 'Buffer offset is outside the buffer', RangeError);
+    let value = 0;
+    for (let index = 0; index < width; index++) {
+      const position = littleEndian ? width - index - 1 : index;
+      value = value * 256 + buffer[offset + position];
+    }
+    const limit = 2 ** (width * 8);
+    return signed && value >= limit / 2 ? value - limit : value;
+  }
+  Object.assign(Buffer.prototype, {
+    readUInt8(offset = 0) { return readInteger(this, offset, 1, false, false); },
+    readInt8(offset = 0) { return readInteger(this, offset, 1, false, true); },
+    readUInt16LE(offset = 0) { return readInteger(this, offset, 2, true, false); },
+    readUInt16BE(offset = 0) { return readInteger(this, offset, 2, false, false); },
+    readInt16LE(offset = 0) { return readInteger(this, offset, 2, true, true); },
+    readInt16BE(offset = 0) { return readInteger(this, offset, 2, false, true); },
+    readUInt32LE(offset = 0) { return readInteger(this, offset, 4, true, false); },
+    readUInt32BE(offset = 0) { return readInteger(this, offset, 4, false, false); },
+    readInt32LE(offset = 0) { return readInteger(this, offset, 4, true, true); },
+    readInt32BE(offset = 0) { return readInteger(this, offset, 4, false, true); },
+  });
+  for (const name of ['readUInt8', 'readUInt16LE', 'readUInt16BE', 'readUInt32LE', 'readUInt32BE']) {
+    Buffer.prototype[name.replace('UInt', 'Uint')] = Buffer.prototype[name];
+  }
   function search(buffer, value, offset, name, reverse) {
     if (typeof offset === 'string') {
       name = offset;
