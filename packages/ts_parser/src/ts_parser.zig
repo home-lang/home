@@ -12410,6 +12410,10 @@ pub const Parser = struct {
     }
 
     fn parenStartsDirectFunctionType(self: *const Parser) bool {
+        // TypeScript's isUnambiguouslyStartOfFunctionType requires a
+        // parameter start. A grouped function type begins with another `(`
+        // or `<`; its following arrow belongs to the surrounding expression.
+        if (self.peekAt(1).kind == .open_paren or self.peekAt(1).kind == .less_than) return false;
         var depth: i32 = 0;
         var i = self.cursor;
         while (i < self.tokens.len) : (i += 1) {
@@ -13298,43 +13302,10 @@ pub const Parser = struct {
 
     /// `(T)` (paren type) or `(a: T) => U` (function type).
     fn parseParenOrFnType(self: *Parser) ParseError!NodeId {
-        // Speculative: snapshot cursor; if we see `=>` after the close
-        // paren, it's a function type. Otherwise reset and parse as a
-        // grouped type.
         const start = self.cursor;
-        const open_tok = self.advance(); // '('
-
-        // Quick scan for `=>` ignoring matched delimiters.
-        var depth: i32 = 1;
-        var i = self.cursor;
-        var is_fn = false;
-        var is_zero_arg = false;
-        if (self.peek().kind == .close_paren) is_zero_arg = true;
-        while (i < self.tokens.len) : (i += 1) {
-            const tk = self.tokens[i].kind;
-            if (tk == .open_paren or tk == .open_bracket or tk == .open_brace or tk == .less_than) depth += 1;
-            if (tk == .close_paren or tk == .close_bracket or tk == .close_brace or
-                tk == .greater_than or tk == .greater_greater or tk == .greater_greater_greater)
-            {
-                const count: u8 = switch (tk) {
-                    .greater_greater => 2,
-                    .greater_greater_greater => 3,
-                    else => 1,
-                };
-                var n: u8 = 0;
-                while (n < count) : (n += 1) {
-                    depth -= 1;
-                    if (depth == 0) {
-                        if (i + 1 < self.tokens.len and self.tokens[i + 1].kind == .arrow) {
-                            is_fn = true;
-                        }
-                        break;
-                    }
-                }
-                if (depth == 0) break;
-            }
-            if (tk == .eof) break;
-        }
+        const is_fn = self.parenStartsDirectFunctionType();
+        const open_tok = self.advance();
+        const is_zero_arg = self.peek().kind == .close_paren;
 
         if (is_fn or is_zero_arg) {
             // Reset to before the open paren and parse fn type.
@@ -37600,5 +37571,27 @@ test "parser: contextual identifier references start object values and array ele
         defer destroyTestSetup(setup);
         _ = try setup.parser.parseSourceFile();
         try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+    }
+}
+
+test "parser: parenthesized function return types leave the expression arrow" {
+    for ([_][]const u8{
+        "const f = (): (() => number) => { return () => 1; };",
+        "const f = (fn: (...args: unknown[]) => string): ((...args: unknown[]) => string) => { return (...args: unknown[]) => String(fn(...args)); };",
+        "const f = (): (((x: string) => string)) => x => x;",
+        "const f = (): (<T>(value: T) => T) => value => value;",
+        "const f = (): ((x: number) => (value: string) => string) => x => value => value;",
+        "const f = async (): (() => Promise<number>) => { return async () => 1; };",
+    }) |source| {
+        var setup = try newTestSetup(source);
+        defer destroyTestSetup(setup);
+        const root = try setup.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+        const declaration = hir_mod.blockStmts(&setup.hir, root)[0];
+        const initializer = hir_mod.varDeclOf(&setup.hir, declaration).init;
+        try T.expectEqual(hir_mod.NodeKind.arrow_fn, setup.hir.kindOf(initializer));
+        const function = hir_mod.fnDeclOf(&setup.hir, initializer);
+        try T.expectEqual(hir_mod.NodeKind.fn_type, setup.hir.kindOf(function.return_type));
+        try T.expect(function.body != hir_mod.none_node_id);
     }
 }

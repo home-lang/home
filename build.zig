@@ -1074,6 +1074,11 @@ pub fn build(b: *std.Build) void {
         run_string_escape_units.addArgs(&.{ "run", "string_escape_units.mjs" });
         run_string_escape_units.expectStdOutEqual("OK 16 escaped/literal strings, property keys and function code units\n");
         home_tool_smoke_step.dependOn(&run_string_escape_units.step);
+        const run_parenthesized_return = b.addRunArtifact(home_tool_exe);
+        run_parenthesized_return.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_parenthesized_return.addArgs(&.{ "run", "parenthesized_return.ts" });
+        run_parenthesized_return.expectStdOutEqual("OK Home parenthesized function return annotations\n");
+        home_tool_smoke_step.dependOn(&run_parenthesized_return.step);
         const run_contextual_identifiers = b.addRunArtifact(home_tool_exe);
         run_contextual_identifiers.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_contextual_identifiers.addArgs(&.{ "run", "contextual_identifiers.mjs" });
