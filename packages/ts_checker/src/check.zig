@@ -56241,17 +56241,7 @@ pub const Checker = struct {
         const source_args = self.alias_type_args.get(source) orelse return null;
         const target_args = self.alias_type_args.get(target) orelse return null;
         if (source_args.len != target_args.len) return null;
-        const same_base = blk: {
-            const source_named = self.namedTypeForId(source);
-            const target_named = self.namedTypeForId(target);
-            if (source_named != null and target_named != null) {
-                break :blk source_named.? == target_named.?;
-            }
-            const source_name = (try self.genericInstanceBaseName(source)) orelse return null;
-            const target_name = (try self.genericInstanceBaseName(target)) orelse return null;
-            break :blk source_name == target_name;
-        };
-        if (!same_base) return null;
+        if (!((try self.genericInstancesShareBase(source, target)) orelse return null)) return null;
         for (source_args, target_args) |source_arg, target_arg| {
             if (!try self.heritageAssignableDepth(source_arg, target_arg, depth + 1)) return false;
         }
@@ -196062,6 +196052,20 @@ pub const Checker = struct {
         include_object_hint: bool,
     ) CheckError![]const DiagnosticChainEntry {
         const empty: []const DiagnosticChainEntry = &.{};
+        // Two references to the same generic origin relate their type
+        // arguments, so `Map<string, string>` -> `Map<string, number>`
+        // elaborates straight to `Type 'string' is not assignable to type
+        // 'number'.` A structural walk of the expanded pair instead reaches
+        // whatever the origin happens to declare — an index signature and
+        // then its entry tuple for `Map`, a property for `Box`, and an
+        // internal field name for `Promise`. This has to run before the
+        // resolution below, which expands both references and throws away the
+        // identity that makes the argument pair the right explanation.
+        if (try self.genericArgumentMismatchEntry(source, target, depth)) |argument_mismatch| {
+            const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+            slice[0] = argument_mismatch;
+            return slice;
+        }
         const resolved_source = try self.resolveGenericType(source);
         const resolved_target = try self.resolveGenericType(target);
         if (resolved_source != source or resolved_target != target) {
@@ -196610,6 +196614,68 @@ pub const Checker = struct {
         }
 
         return empty;
+    }
+
+    /// Whether two materialized generic instances came from the same generic.
+    /// `null` means unknown — one of them has no name to compare — which is
+    /// not the same answer as "different", and callers must keep treating it
+    /// as "no opinion". Extracted from `heritageGenericInstantiationAssignable`
+    /// so the relation and its diagnostic agree on what "same generic" means.
+    fn genericInstancesShareBase(self: *Checker, source: TypeId, target: TypeId) CheckError!?bool {
+        const source_named = self.namedTypeForId(source);
+        const target_named = self.namedTypeForId(target);
+        if (source_named != null and target_named != null) return source_named.? == target_named.?;
+        const source_name = (try self.genericInstanceBaseName(source)) orelse return null;
+        const target_name = (try self.genericInstanceBaseName(target)) orelse return null;
+        return source_name == target_name;
+    }
+
+    /// The first type-argument pair that fails between two instances of the
+    /// same generic, as its own chain entry. TypeScript explains such a
+    /// failure with that pair alone; walking the expanded bodies instead
+    /// reaches whatever the generic happens to declare — a property for
+    /// `Box<T>`, an index signature and then an entry tuple for `Map`, and an
+    /// internal field name for `Promise`. Mirrors
+    /// `arrayOriginElementMismatchEntry`, which does the same for the element
+    /// an array carries in its index signature.
+    fn genericArgumentMismatchEntry(
+        self: *Checker,
+        source: TypeId,
+        target: TypeId,
+        depth: u8,
+    ) CheckError!?DiagnosticChainEntry {
+        if (source >= self.interner.pool.typeCount() or
+            target >= self.interner.pool.typeCount()) return null;
+        // A union or intersection instantiation is explained by the member
+        // that failed, not by its type arguments: `Container<number>` against
+        // `Container<string>`, where `Container<T> = T | { ... }`, reports
+        // `Type 'number' is not assignable to type 'Container<string>'.` The
+        // member branch below owns that, so leave it alone.
+        for ([_]TypeId{ source, target }) |side| {
+            const flags = self.interner.pool.flagsOf(side);
+            if (flags.is_union or flags.is_intersection or flags.is_signature) return null;
+        }
+        const source_args = self.alias_type_args.get(source) orelse return null;
+        const target_args = self.alias_type_args.get(target) orelse return null;
+        if (source_args.len == 0 or source_args.len != target_args.len) return null;
+        if (!((try self.genericInstancesShareBase(source, target)) orelse return null)) return null;
+        for (source_args, target_args) |source_arg, target_arg| {
+            if (source_arg == target_arg) continue;
+            if (source_arg == types.Primitive.any or target_arg == types.Primitive.any) continue;
+            if (self.engine.isAssignableTo(source_arg, target_arg) catch true) continue;
+            var entry = try self.typeNotAssignableChainEntry(source_arg, target_arg, false);
+            if (entry.code == TsCodes.type_not_assignable and depth < 3) {
+                const children = try self.buildAssignabilityElaborationChainDepth(
+                    source_arg,
+                    target_arg,
+                    depth + 1,
+                    false,
+                );
+                if (children.len > 0) entry.children = children;
+            }
+            return entry;
+        }
+        return null;
     }
 
     fn arrayOriginElementMismatchEntry(
@@ -301612,4 +301678,44 @@ test "checker: an interface that only indexes keeps the index signature wrapper"
     // base, so it does not become an array either.
     const array_plus = s.checker.type_names.get(try s.sint.intern("ArrayPlus")) orelse return error.TestUnexpectedResult;
     try T.expect(!s.checker.array_origin_types.contains(array_plus));
+}
+
+test "checker: a generic instance mismatch is explained by its type arguments" {
+    const s = try newSetup(
+        \\interface Box<T> { value: T }
+        \\declare const boxed: Box<string>;
+        \\declare const promised: Promise<string>;
+        \\declare const mapped: Map<string, string>;
+        \\const box: Box<number> = boxed;
+        \\const promise: Promise<number> = promised;
+        \\const map: Map<string, number> = mapped;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'Box<string>' is not assignable to type 'Box<number>'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'Promise<string>' is not assignable to type 'Promise<number>'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'Map<string, string>' is not assignable to type 'Map<string, number>'."));
+    // The argument pair is the whole explanation. No property level, no index
+    // signature detour, and above all no internal modelling field name from
+    // the generic's own body reaching a user-visible diagnostic.
+    try T.expectEqual(@as(usize, 0), checkerCountChainCode(s, TsCodes.types_of_property_incompatible));
+    try T.expectEqual(@as(usize, 0), checkerCountChainCode(s, TsCodes.index_signatures_incompatible));
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "__home_") == null);
+        for (d.chain) |entry| try T.expect(std.mem.indexOf(u8, entry.message, "__home_") == null);
+    }
+}
+
+test "checker: a union generic instance keeps its failing member" {
+    const s = try newSetup(
+        \\type Container<T> = T | { tag: T };
+        \\declare const numbers: Container<number>;
+        \\const strings: Container<string> = numbers;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // A union instantiation is explained by the member that failed, so the
+    // type-argument shortcut must decline rather than take it over.
+    try T.expect(checkerHasAnyCode(s, TsCodes.type_not_assignable));
+    try T.expect(!checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
 }
