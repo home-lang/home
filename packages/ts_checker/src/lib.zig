@@ -85,19 +85,32 @@ pub const LibCache = struct {
     /// user-declared `flat`. Object types are not interned by structure, so
     /// comparing against a freshly rebuilt prototype is not reliable.
     flat_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
-    /// Iterator-helper signature -> the element type the receiver yields.
-    /// TypeScript overloads `filter` and `find` on a type predicate and
-    /// `reduce` on the presence of an initial value; the checker resolves
-    /// those at the call site, where the argument and the arity are known,
-    /// and needs to recognize its own synthetic member first.
     /// Element type -> the `ConcatArray<T>` stand-in handed to `concat`.
     /// Object types are not interned by structure, so minting one per member
     /// lookup would both grow the pool and move interner storage while a
     /// caller holds a live member slice.
     concat_item_by_elem: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    /// Iterator-helper signature -> the element type the receiver yields.
+    /// TypeScript overloads `filter` and `find` on a type predicate and
+    /// `reduce` on the presence of an initial value; the checker resolves
+    /// those at the call site, where the argument and the arity are known,
+    /// and needs to recognize its own synthetic member first.
     iterator_filter_signatures: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     iterator_find_signatures: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     iterator_reduce_signatures: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    /// `Array.of` / `Array.from` signature identities. Both are declared
+    /// generic in lib.d.ts, so their results come from the arguments; the
+    /// checker recognizes its own static here and resolves the element type
+    /// at the call site.
+    array_of_signature: TypeId = types.Primitive.none,
+    array_from_signature: TypeId = types.Primitive.none,
+    /// Call-site specializations of those two statics, minted once the
+    /// source argument's type is known. A mapped `from` still depends on its
+    /// callback, which is only checked afterwards, so the call has to be
+    /// recognizable again at the tail. Signatures are not interned by
+    /// structure, so each mint is a distinct identity.
+    array_of_call_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    array_from_mapped_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Signature identities for the built-in `Array.sort` callback, whose
     /// declaration uses `(a: T, b: T) => number` rather than synthesized
     /// positional names. The checker reads this only for diagnostics.
@@ -122,6 +135,8 @@ pub const LibCache = struct {
         self.iterator_filter_signatures.deinit(gpa);
         self.iterator_find_signatures.deinit(gpa);
         self.iterator_reduce_signatures.deinit(gpa);
+        self.array_of_call_signatures.deinit(gpa);
+        self.array_from_mapped_signatures.deinit(gpa);
     }
 };
 
@@ -1173,7 +1188,18 @@ pub fn arrayGlobal(
     const optional_map_fn = try ti.internUnion(&[_]TypeId{ sig_map_fn, undefined_t });
     const optional_any = try ti.internUnion(&[_]TypeId{ any_t, undefined_t });
     const sig_from = try ti.internSignature(&[_]TypeId{ any_t, optional_map_fn, optional_any }, any_arr, false);
-    const sig_of = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
+    // `of<T>(...items: T[]): T[]` is a rest signature, so every arity is
+    // legal — including no arguments at all and a spread argument. A single
+    // fixed parameter rejected all three. Signatures are not interned by
+    // structure, so sharing this shape with the `Array(...)` call signature
+    // still yields a distinct identity to recognize.
+    const sig_of = try ti.internSignature(&[_]TypeId{any_arr}, any_arr, false);
+    try rest_set.put(gpa, sig_of, {});
+    // Both results are generic in lib.d.ts. The element type lives in the
+    // arguments, so the checker resolves it at the call site and needs these
+    // identities to tell its own static from a user-declared one.
+    cache.array_of_signature = sig_of;
+    cache.array_from_signature = sig_from;
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("__call"), .type = sig_array_call, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("__construct"), .type = sig_array_construct, .is_optional = false, .is_readonly = false, .is_method = true },

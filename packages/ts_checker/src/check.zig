@@ -33244,6 +33244,11 @@ pub const Checker = struct {
             return signature;
         }
         if (self.hir.kindOf(call.callee) == .member_access) {
+            // A call-site specialization already recorded on the callee node
+            // outranks re-reading the generic member off the receiver, which
+            // is the whole point of recording it: `Array.from`'s callback has
+            // to see the source's element type, not the synthetic `any`.
+            if (self.arrayStaticSignatureIsSpecialized(callee_t)) return callee_t;
             const member = hir_mod.memberOf(self.hir, call.callee);
             const receiver_t = if (try self.staticClassMemberAccess(member.object, member.name)) |static_access|
                 static_access.receiver_t
@@ -113543,6 +113548,219 @@ pub const Checker = struct {
         return selected;
     }
 
+    const ArrayStaticKind = enum { of, from };
+
+    /// The specialization a `from` call needs before its callback is
+    /// checked, plus the source argument's type so the argument loop does
+    /// not check that argument a second time.
+    const ArrayStaticCall = struct { signature: TypeId, first_arg_t: TypeId };
+
+    /// Which generic `Array` static this signature is. Both are handed out
+    /// only as members of the synthetic `Array` global, so the identity is
+    /// exact: a user-declared or augmented `Array` keeps its own signatures
+    /// and never reaches here.
+    fn arrayStaticCallKind(self: *Checker, callee_t: TypeId) ?ArrayStaticKind {
+        // An optional-chained member access records `signature | undefined`.
+        const resolved = self.subtractNullUndefined(callee_t) catch callee_t;
+        if (self.lib_cache.array_of_signature != types.Primitive.none and
+            resolved == self.lib_cache.array_of_signature) return .of;
+        if (self.lib_cache.array_from_signature != types.Primitive.none and
+            resolved == self.lib_cache.array_from_signature) return .from;
+        if (self.lib_cache.array_from_mapped_signatures.contains(resolved)) return .from;
+        if (self.lib_cache.array_of_call_signatures.contains(resolved)) return .of;
+        return null;
+    }
+
+    /// `from<T, U>(src, mapfn)` types the callback against the element type
+    /// of `src`. Contextual typing reads the callee node's recorded type, so
+    /// the specialization has to reach the node before the callback is
+    /// checked — which means the source argument has to be checked first.
+    /// Its type is handed back so the argument loop reuses it.
+    fn arrayStaticCallSignature(
+        self: *Checker,
+        node: NodeId,
+        args: []const NodeId,
+        callee_t: TypeId,
+    ) CheckError!?ArrayStaticCall {
+        if (args.len < 2) return null;
+        if (self.arrayStaticCallKind(callee_t) != ArrayStaticKind.from) return null;
+        const call = hir_mod.callOf(self.hir, node);
+        const first_t = try self.checkExpression(args[0]);
+        const element = try self.arrayStaticSourceElementType(first_t);
+        // The callback's own result is only known once it is checked, so the
+        // provisional return stays a registered `any[]`; the final element is
+        // substituted in `arrayStaticEffectiveSignature`.
+        const provisional = try self.internMutableArrayType(types.Primitive.any);
+        const selected = try self.internArrayFromSignature(element, provisional);
+        try self.lib_cache.array_from_mapped_signatures.put(self.gpa, selected, {});
+        self.hir.setType(call.callee, selected);
+        return .{ .signature = selected, .first_arg_t = first_t };
+    }
+
+    /// `Array.of` / `Array.from` resolved against the checked arguments. A
+    /// member call re-reads its signature from the receiver, so the generic
+    /// result has to be substituted here: this is the signature the
+    /// arguments are checked against and whose return becomes the call's
+    /// type.
+    fn arrayStaticEffectiveSignature(
+        self: *Checker,
+        callee: NodeId,
+        effective_callee_t: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!?TypeId {
+        if (arg_types.len != args.len) return null;
+        const kind = self.arrayStaticCallKind(effective_callee_t) orelse return null;
+        const selected = switch (kind) {
+            .of => blk: {
+                // `of<T>(...items: T[]): T[]` infers `T` from the arguments.
+                // TypeScript takes the first candidate and checks the rest
+                // against it, so a mismatched later argument is reported
+                // against that element rather than collapsing to a union.
+                // With no arguments the binder keeps its implicit `unknown`.
+                const element = if (args.len == 0)
+                    types.Primitive.unknown
+                else
+                    self.widenLiteralType(try self.arrayStaticArgumentElement(args[0], arg_types[0]));
+                const items = try self.internMutableArrayType(element);
+                const sig = self.interner.internSignature(&.{items}, items, false) catch
+                    return error.OutOfMemory;
+                try self.rest_signatures.put(self.gpa, sig, {});
+                try self.lib_cache.array_of_call_signatures.put(self.gpa, sig, {});
+                break :blk sig;
+            },
+            .from => blk: {
+                // `from()` keeps its own arity diagnostic.
+                if (args.len == 0) return null;
+                const element = try self.arrayStaticSourceElementType(arg_types[0]);
+                // With a mapper the result is the callback's own return type.
+                const result_element = if (args.len > 1) mapped: {
+                    const sig = self.firstCallableSignatureForContextualReturn(arg_types[1]) orelse
+                        break :mapped element;
+                    const mapped_t = self.interner.signatureReturn(sig) orelse break :mapped element;
+                    if (mapped_t == types.Primitive.none) break :mapped element;
+                    break :mapped self.widenLiteralType(mapped_t);
+                } else element;
+                const result = try self.internMutableArrayType(result_element);
+                break :blk try self.internArrayFromSignature(element, result);
+            },
+        };
+        self.hir.setType(callee, selected);
+        return selected;
+    }
+
+    /// `from(src, mapfn?, thisArg?)` over a known element type. Both
+    /// trailing parameters stay optional, as the lib overloads have them,
+    /// and the source parameter stays `any` so that argument keeps whatever
+    /// diagnostic it already had.
+    fn internArrayFromSignature(self: *Checker, element: TypeId, result: TypeId) CheckError!TypeId {
+        const map_fn = self.interner.internSignature(
+            &.{ element, types.Primitive.number_t },
+            types.Primitive.any,
+            false,
+        ) catch return error.OutOfMemory;
+        const optional_map_fn = self.interner.internUnion(&.{ map_fn, types.Primitive.undefined_t }) catch
+            return error.OutOfMemory;
+        const optional_any = self.interner.internUnion(&.{ types.Primitive.any, types.Primitive.undefined_t }) catch
+            return error.OutOfMemory;
+        return self.interner.internSignature(
+            &.{ types.Primitive.any, optional_map_fn, optional_any },
+            result,
+            false,
+        ) catch error.OutOfMemory;
+    }
+
+    /// Whether this signature is one of the call-site specializations minted
+    /// for `Array.of` / `Array.from`, rather than the generic lib member.
+    fn arrayStaticSignatureIsSpecialized(self: *Checker, t: TypeId) bool {
+        return self.lib_cache.array_of_call_signatures.contains(t) or
+            self.lib_cache.array_from_mapped_signatures.contains(t);
+    }
+
+    /// A spread argument contributes the element type of what it spreads.
+    fn arrayStaticArgumentElement(self: *Checker, arg: NodeId, arg_t: TypeId) CheckError!TypeId {
+        if (self.hir.kindOf(arg) == .spread) return try self.arrayStaticSourceElementType(arg_t);
+        return arg_t;
+    }
+
+    /// The element type `Array.from` reads from its source: an array, tuple
+    /// or array-like numeric index, the iteration protocol, or an array-like
+    /// object's numeric-named members. `any` keeps the previous fallback for
+    /// a source whose element type is not statically known, so no stream
+    /// that relied on it changes.
+    fn arrayStaticSourceElementType(self: *Checker, src_t: TypeId) CheckError!TypeId {
+        if (src_t == types.Primitive.none) return types.Primitive.any;
+        if (types.Primitive.isAnyLike(src_t)) return types.Primitive.any;
+        const element = try self.arrayElementType(src_t);
+        if (element != types.Primitive.none) return element;
+        if (self.isIterableLikeType(src_t)) return try self.iterableElementType(src_t);
+        if (try self.arrayLikeNumericMemberElement(src_t)) |numeric| return numeric;
+        return types.Primitive.any;
+    }
+
+    /// `{ length: 2, 0: 1, 1: 2 }` satisfies `ArrayLike<T>` through its
+    /// numeric-named members rather than an index signature, and TypeScript
+    /// infers `T` from them.
+    fn arrayLikeNumericMemberElement(self: *Checker, t: TypeId) CheckError!?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return null;
+        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+        if (self.interner.objectMember(t, length_id) == null) return null;
+        // Interning the union below moves the member pool, so do not hold a
+        // live slice into it across that call.
+        const members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(t));
+        defer self.gpa.free(members);
+        var elements: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer elements.deinit(self.gpa);
+        for (members) |member| {
+            const name = self.string_interner.get(member.name);
+            if (name.len == 0) continue;
+            var numeric = true;
+            for (name) |c| {
+                if (c < '0' or c > '9') {
+                    numeric = false;
+                    break;
+                }
+            }
+            if (!numeric) continue;
+            try elements.append(self.gpa, self.widenLiteralType(member.type));
+        }
+        if (elements.items.len == 0) return null;
+        if (elements.items.len == 1) return elements.items[0];
+        return self.interner.internUnion(elements.items) catch return error.OutOfMemory;
+    }
+
+    /// `Array.of(1)` widens its literal argument, but a literal contextual
+    /// element type keeps it: TypeScript accepts `const x: 1[] =
+    /// Array.of(1)`. Argument inference still outranks the contextual type,
+    /// so a widened element that already fits the target is left alone —
+    /// `Array.of(1, "a")` keeps `T = number` and its TS2345 even against a
+    /// `(string | number)[]` target.
+    fn arrayStaticContextualResult(self: *Checker, node: NodeId, target_t: TypeId) CheckError!?TypeId {
+        if (self.hir.kindOf(node) != .call_expr) return null;
+        const call = hir_mod.callOf(self.hir, node);
+        if (!self.lib_cache.array_of_call_signatures.contains(self.hir.typeOf(call.callee))) return null;
+        const args = hir_mod.callArgs(self.hir, node);
+        if (args.len == 0) return null;
+        const target_element = try self.arrayElementType(target_t);
+        if (target_element == types.Primitive.none) return null;
+        const first_t = self.hir.typeOf(args[0]);
+        if (first_t == types.Primitive.none) return null;
+        const candidate = try self.arrayStaticArgumentElement(
+            args[0],
+            try self.expressionLiteralType(args[0], first_t),
+        );
+        if (try self.checkerAssignableTo(self.widenLiteralType(candidate), target_element)) return null;
+        if (!try self.checkerAssignableTo(candidate, target_element)) return null;
+        for (args[1..]) |arg| {
+            const arg_t = self.hir.typeOf(arg);
+            if (arg_t == types.Primitive.none) return null;
+            if (!try self.checkerAssignableTo(arg_t, target_element)) return null;
+        }
+        return try self.internMutableArrayType(candidate);
+    }
+
     /// `depth` steps below the receiver, or null when the argument's depth is
     /// not statically known (TypeScript then keeps the unresolved
     /// conditional) or is below `-1` (TypeScript indexes its decrement tuple
@@ -120921,12 +121139,26 @@ pub const Checker = struct {
                 // callback is contextually typed against the generic one.
                 callee_t = try self.iteratorReduceSignatureForArity(node, callee_t);
                 const args = hir_mod.callArgs(self.hir, node);
+                // `Array.of` / `Array.from` are generic: their result, and
+                // the contextual type of a `from` callback, come from the
+                // arguments. Resolving that needs the source argument
+                // checked first, so its type is carried into the loop below
+                // rather than the argument being checked twice.
+                var array_static_source_t = types.Primitive.none;
+                if (try self.arrayStaticCallSignature(node, args, callee_t)) |selected| {
+                    callee_t = selected.signature;
+                    array_static_source_t = selected.first_arg_t;
+                }
                 const commonjs_define_property_call = (try self.commonJsDefinePropertyCall(node)) != null;
                 var arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer arg_types.deinit(self.gpa);
                 for (args, 0..) |arg, arg_index| {
                     if (commonjs_define_property_call and arg_index == 2) {
                         try arg_types.append(self.gpa, types.Primitive.any);
+                        continue;
+                    }
+                    if (arg_index == 0 and array_static_source_t != types.Primitive.none) {
+                        try arg_types.append(self.gpa, array_static_source_t);
                         continue;
                     }
                     const t = try self.checkExpression(arg);
@@ -121368,6 +121600,19 @@ pub const Checker = struct {
                                 effective_callee_t = self.subtractNullUndefined(effective_callee_t) catch effective_callee_t;
                             }
                         }
+                    }
+                    // `Array.of` / `Array.from` are generic in lib.d.ts.
+                    // The member lookup above re-reads the synthetic
+                    // signature from the receiver, so substitute the
+                    // argument-driven result here, where the arguments and
+                    // any callback return are known.
+                    if (try self.arrayStaticEffectiveSignature(
+                        c.callee,
+                        effective_callee_t,
+                        args,
+                        arg_types.items,
+                    )) |specialized| {
+                        effective_callee_t = specialized;
                     }
                 }
                 if (self.hir.kindOf(c.callee) == .element_access) {
@@ -161982,6 +162227,7 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .call_expr) return null;
         if (target_t == types.Primitive.none or target_t == types.Primitive.any or target_t == types.Primitive.unknown) return null;
         if (try self.contextualPromiseInstanceCallResult(node, target_t)) |contextual_t| return contextual_t;
+        if (try self.arrayStaticContextualResult(node, target_t)) |contextual_t| return contextual_t;
         if (!self.typeIsOrContainsUnknown(source_t) and !self.containsFreeTypeParameter(source_t)) return null;
         const c = hir_mod.callOf(self.hir, node);
         var callee_t = self.hir.typeOf(c.callee);
@@ -215143,6 +215389,7 @@ test "checker: an indexed source alias keeps the general TS2322 relation" {
         "Type 'NumberToNumber' is not assignable to type 'Obj'.",
     ));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties_truncated));
 }
 
 test "checker: TS2740 truncates >5 missing properties with 'and N more'" {
@@ -217104,6 +217351,7 @@ test "checker: noLib ignores reference lib DOM types in favor of local declarati
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties_truncated));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties_truncated));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_literal_excess_property));
 }
 
@@ -218756,6 +219004,7 @@ test "checker: empty JSX attributes infer empty generic props before defaults" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties_truncated));
 }
 
 test "checker: constrained empty JSX props preserve the constraint name" {
@@ -258835,6 +259084,7 @@ test "checker: const type-parameter calls accept their inferred nested literal s
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties_truncated));
 }
 
 test "checker: const tuple paths reduce recursive conditional aliases" {
@@ -265324,6 +265574,7 @@ test "checker: checkjs object declaration conflicting with ambient class reports
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_redeclare_block_scoped));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties_truncated));
 }
 
 test "checker: checked JS callable container conflicts with TypeScript var declaration" {
@@ -300700,4 +300951,60 @@ test "checker: JSDoc object members split only at top-level delimiters" {
     try T.expectEqualStrings("inner: { count: number; readonly name: string; flag?: boolean }", members.next().?);
     try T.expectEqualStrings("items: number[]", members.next().?);
     try T.expect(members.next() == null);
+}
+
+test "checker: Array.of accepts every arity and takes its element from the first argument" {
+    const s = try newSetup(
+        \\declare const nums: number[];
+        \\const three: string = Array.of(1, 2, 3);
+        \\const none: string = Array.of();
+        \\const spread: string = Array.of(...nums);
+        \\const nested: string = Array.of(nums);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // A single fixed parameter used to reject all three of these arities.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.spread_argument_requires_tuple_or_rest));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number[]' is not assignable to type 'string'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'unknown[]' is not assignable to type 'string'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number[][]' is not assignable to type 'string'."));
+    try T.expectEqual(@as(usize, 4), s.checker.diagnostics.items.len);
+}
+
+test "checker: Array.from resolves its element and hands it to the mapper" {
+    const s = try newSetup(
+        \\declare const iterable: Iterable<string>;
+        \\declare const nums: number[];
+        \\const plain: number = Array.from(iterable);
+        \\const indexed: string = Array.from(nums);
+        \\const mapped: string = Array.from(iterable, (value) => value.length);
+        \\const arrayLike: string = Array.from({ length: 2, 0: 1, 1: 2 });
+        \\Array.from(iterable, (value) => value.bogus);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string[]' is not assignable to type 'number'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number[]' is not assignable to type 'string'."));
+    // The callback parameter carries the source's element type, so a member
+    // that `string` does not have is reported there.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_does_not_exist, "Property 'bogus' does not exist on type 'string'."));
+    try T.expectEqual(@as(usize, 5), s.checker.diagnostics.items.len);
+}
+
+test "checker: a synthesized Array static result is a real array" {
+    const s = try newSetup(
+        \\declare const nums: number[];
+        \\const readonlyTarget: readonly number[] = Array.of(1);
+        \\const readonlyFrom: ReadonlyArray<number> = Array.from(nums);
+        \\const joined: string = Array.from(nums).join(",");
+        \\const literalElement: 1[] = Array.of(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The lib-built `any[]` carried only `length` and a numeric index, so a
+    // readonly array target reported every missing method (TS2740).
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties_truncated));
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
