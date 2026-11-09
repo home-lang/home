@@ -870,6 +870,17 @@ pub fn build(b: *std.Build) void {
         run_access.addFileArg(b.path("packages/runtime/test/tool_modules/fs_access.mjs"));
         run_access.expectStdOutEqual("OK native access permissions, all mode bits, aliases, symlinks, errno and rejected promises\n");
         home_tool_smoke_step.dependOn(&run_access.step);
+        const run_access_callback = b.addSystemCommand(&.{"python3"});
+        run_access_callback.addFileArg(b.path("packages/runtime/test/tool_access_fixture.py"));
+        run_access_callback.addArtifactArg(home_tool_exe);
+        run_access_callback.addFileArg(b.path("packages/runtime/test/tool_modules/fs_access_callback.mjs"));
+        run_access_callback.expectStdOutEqual("OK callback access, actual permissions and errno, all modes, mutation and promisify\n");
+        home_tool_smoke_step.dependOn(&run_access_callback.step);
+        const run_access_callback_throw = b.addRunArtifact(home_tool_exe);
+        run_access_callback_throw.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_access_callback_throw.addArgs(&.{ "run", "fs_access_callback_throw.cjs" });
+        run_access_callback_throw.expectStdOutEqual("OK native access callback exception dispatch\n");
+        home_tool_smoke_step.dependOn(&run_access_callback_throw.step);
         const run_append = b.addSystemCommand(&.{"python3"});
         run_append.addFileArg(b.path("packages/runtime/test/tool_append_fixture.py"));
         run_append.addArtifactArg(home_tool_exe);

@@ -206,15 +206,32 @@
     Object.defineProperty(fsConstants, key, { value, enumerable: true });
   }
   Object.defineProperty(fs, 'constants', { value: fsConstants, enumerable: true });
-  function accessFile(path, mode) {
+  function accessMode(mode) {
     if (mode == null) mode = 0;
     if (typeof mode !== 'number') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'access mode must be a number');
     // Node truncates numeric modes before validating the three access bits.
     mode = Math.trunc(mode);
     if (!Number.isFinite(mode) || mode < 0 || mode > 7) nodeArgumentError('ERR_OUT_OF_RANGE', 'access mode must be between 0 and 7', true);
-    fsOperation('access', path, mode, false);
+    return mode;
+  }
+  function accessFile(path, mode) {
+    fsOperation('access', path, accessMode(mode), false);
   }
   fs.accessSync = accessFile;
+  fs.access = function(path, mode, callback) {
+    if (typeof mode === 'function') { callback = mode; mode = undefined; }
+    if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'access callback must be a function');
+    mode = accessMode(mode);
+    if (typeof path === 'string' && path.indexOf('\0') !== -1) nodeArgumentError('ERR_INVALID_ARG_VALUE', 'File paths cannot contain NUL bytes');
+    path = stringPath(path);
+    scheduleFilesystemTask(function() {
+      let error;
+      try { accessFile(path, mode); }
+      catch (caught) { error = caught; }
+      // Keep user callback failures outside native-operation error handling.
+      callback(error || null);
+    }, 0);
+  };
   function creationMode(mode, fallback) {
     if (mode == null) return fallback;
     if (typeof mode === 'string') {
