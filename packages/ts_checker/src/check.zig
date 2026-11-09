@@ -176082,7 +176082,19 @@ pub const Checker = struct {
             }
             if (!ok and !contextual_ok and !emitted_2556 and !pattern_source_diag) {
                 var emitted = false;
-                if (self.hir.kindOf(args[i]) == .array_literal) {
+                // A mismatch already anchored strictly inside this argument
+                // is the specific one TypeScript reports. It does not also
+                // report the argument, or one of the literal's properties, on
+                // top of it: a nested tuple target reached through a property
+                // or an element otherwise produced both, with the outer
+                // message comparing the widened literal.
+                if ((self.hir.kindOf(args[i]) == .array_literal or
+                    self.hir.kindOf(args[i]) == .object_literal) and
+                    self.argumentHasInnerTypeMismatchDiagnostic(args[i]))
+                {
+                    emitted = true;
+                }
+                if (!emitted and self.hir.kindOf(args[i]) == .array_literal) {
                     // Per-element TS2322 prose when the array literal
                     // is a length-matching fixed tuple ÃÂ¢ÃÂÃÂ mirrors tsc's
                     // mutually-exclusive behavior where each offending
@@ -190313,6 +190325,20 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Whether a type-mismatch diagnostic is already anchored strictly inside
+    /// this argument. Unlike the contextual-shape query, this ignores one
+    /// anchored at the argument itself, which is the diagnostic the caller is
+    /// deciding whether to emit.
+    fn argumentHasInnerTypeMismatchDiagnostic(self: *Checker, arg_node: NodeId) bool {
+        const span = self.hir.spanOf(arg_node);
+        for (self.diagnostics.items) |d| {
+            if (d.code != TsCodes.type_not_assignable) continue;
+            const start = self.diagnosticStart(d);
+            if (start > span.start and start < span.end) return true;
+        }
+        return false;
+    }
+
     fn isContextualCallShapeDiagnosticAlreadyEmitted(
         self: *Checker,
         call_node: NodeId,
@@ -196071,6 +196097,17 @@ pub const Checker = struct {
         const arena = self.diag_arena.allocator();
         if (try self.typeProvidesNoMatchForSignatureChain(source, target)) |chain| {
             return chain;
+        }
+        // An array's length is not statically known, so TypeScript explains a
+        // fixed tuple target by its arity. The structural walk would instead
+        // reach the `length` member and compare `number` with the tuple's
+        // literal length.
+        if (self.isTupleShapedTarget(target) and !self.isTupleShapedTarget(source) and
+            self.array_origin_types.contains(source) and
+            self.fixedTupleLength(source) == null)
+        {
+            const array_width_chain = try self.tupleWidthElaborationChain(source, target);
+            if (array_width_chain.len != 0) return array_width_chain;
         }
         if (self.isTupleShapedTarget(source) and self.isTupleShapedTarget(target)) {
             const symbolic_tuple_chain = try self.symbolicTupleLayoutMismatchChain(source, target);
@@ -301353,4 +301390,36 @@ test "checker: an array element mismatch elaborates through its own chain" {
     try T.expectEqual(@as(usize, 1), array_chain.len);
     try T.expectEqual(@as(usize, 1), array_chain[0].children.len);
     try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", array_chain[0].children[0].message);
+}
+
+test "checker: an argument's inner mismatch owns the diagnostic" {
+    const s = try newSetup(
+        \\declare const nums: number[];
+        \\declare function takeObj(x: { v: [string, number] }): void;
+        \\declare function takeTupleArr(x: [string, number][]): void;
+        \\declare function takeTuple(x: [string, number]): void;
+        \\takeObj({ v: [1, 2] });
+        \\takeTupleArr([[1, 2]]);
+        \\takeTuple(nums);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The first two calls report their element and nothing else: the outer
+    // report compared the widened literal against the tuple, so its absence
+    // is what this asserts. (Counting diagnostics here would also count the
+    // duplicate traversals the driver deduplicates.)
+    try T.expect(!checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number[]' is not assignable to type '[string, number]'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
+    // The third call has nothing inside it, so the argument still owns a
+    // diagnostic — explained by the target's arity rather than by the
+    // `length` member a structural walk would reach.
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    var saw_arity_chain = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.argument_type_mismatch) continue;
+        try T.expectEqual(@as(usize, 1), d.chain.len);
+        try T.expectEqualStrings("Target requires 2 element(s) but source may have fewer.", d.chain[0].message);
+        saw_arity_chain = true;
+    }
+    try T.expect(saw_arity_chain);
 }
