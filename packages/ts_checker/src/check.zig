@@ -113608,7 +113608,9 @@ pub const Checker = struct {
             try self.nameArrayIteratorResults(proto);
             return proto;
         }
-        const proto = lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, flat_elem, &self.rest_signatures) catch return error.OutOfMemory;
+        // `concat` takes `ConcatArray<T>` even on a mutable receiver.
+        const concat_item = try self.concatItemArrayType(element);
+        const proto = lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, flat_elem, concat_item, &self.rest_signatures) catch return error.OutOfMemory;
         try self.nameArrayIteratorResults(proto);
         return proto;
     }
@@ -137508,7 +137510,11 @@ pub const Checker = struct {
                 receiver_t < self.interner.pool.typeCount() and
                 self.interner.pool.flagsOf(receiver_t).is_union;
             if (receiver_is_union) {
-                for (self.interner.unionMembers(receiver_t)) |branch| {
+                // Collecting a branch's signatures can intern new types,
+                // which moves the pool's union-member storage; walk a copy.
+                const branches = try self.gpa.dupe(TypeId, self.interner.unionMembers(receiver_t));
+                defer self.gpa.free(branches);
+                for (branches) |branch| {
                     var branch_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
                     defer branch_sigs.deinit(self.gpa);
                     try self.collectNamedMemberSignatures(branch, m.name, &branch_sigs);
@@ -170572,6 +170578,14 @@ pub const Checker = struct {
         return array_t;
     }
 
+    /// The memoized `ConcatArray<T>` surface for `concat`'s items.
+    fn concatItemArrayType(self: *Checker, element: TypeId) CheckError!TypeId {
+        if (self.lib_cache.concat_item_by_elem.get(element)) |cached| return cached;
+        const item = try self.internReadonlyArrayType(element);
+        try self.lib_cache.concat_item_by_elem.put(self.gpa, element, item);
+        return item;
+    }
+
     fn internReadonlyArrayType(self: *Checker, element: TypeId) CheckError!TypeId {
         const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
         const members = [_]types.ObjectMember{.{
@@ -178520,6 +178534,20 @@ pub const Checker = struct {
         param_t: TypeId,
         position: usize,
     ) CheckError![]const u8 {
+        // `readonly` belongs to the argument's name here. The general
+        // diagnostic namer prefers a bare alias or class name, which drops
+        // the modifier and would print the two sides identically.
+        if (self.readonlyArrayLikeAssignedToMutable(arg_t, param_t)) {
+            if (try self.typeArgConstraintTypeName(arg_t, false)) |arg_name| {
+                if (try self.simpleDiagnosticTypeName(param_t)) |param_name| {
+                    return try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                        .{ arg_name, param_name },
+                    );
+                }
+            }
+        }
         if (self.qualifiedClassArgumentDiagnosticName(arg_node, arg_t)) |arg_name| {
             if (try self.simpleDiagnosticTypeName(param_t)) |param_name| {
                 return try std.fmt.allocPrint(
@@ -184840,6 +184868,12 @@ pub const Checker = struct {
         if (try self.resolveExactIndexedAccessForArgument(param_t, 0)) |resolved| {
             if (resolved != param_t) return self.isArgumentAssignableToParam(arg_node, arg_t, resolved);
         }
+        // A readonly array or tuple argument cannot satisfy a mutable array
+        // parameter: `ReadonlyArray<T>` has none of the mutators the
+        // parameter's own surface promises. The assignment position already
+        // rejects the same pair, and the shared chain entry carries
+        // TypeScript's readonly explanation underneath TS2345.
+        if (self.readonlyArrayLikeAssignedToMutable(arg_t, param_t)) return false;
         if (self.isContextualFunctionExpressionLike(arg_node) and
             self.interner.isSignature(arg_t) and
             self.interner.isSignature(param_t) and
@@ -198898,6 +198932,15 @@ pub const Checker = struct {
     ) CheckError![]const DiagnosticChainEntry {
         const empty: []const DiagnosticChainEntry = &.{};
         if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return empty;
+
+        // A readonly array or tuple reaching a mutable one is explained by
+        // the modifier, not by its element type; the shared entry carries
+        // TypeScript's wording.
+        if (self.readonlyArrayLikeAssignedToMutable(source, target)) {
+            const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+            slice[0] = try self.typeNotAssignableChainEntry(source, target, false);
+            return slice;
+        }
 
         // A direct nullish source is already fully described by the TS2345
         // header. Only a union source needs a child identifying which member
@@ -216161,6 +216204,37 @@ test "checker: program array projection retains array origin separately from ind
         .is_method = false,
     }}, types.Primitive.none, types.Primitive.number_t);
     try T.expect(!s.checker.array_origin_types.contains(indexed_object));
+}
+
+test "checker: readonly array argument does not satisfy a mutable array parameter" {
+    const s = try newSetup(
+        \\declare const readonlyValues: readonly number[];
+        \\declare const values: number[];
+        \\declare function takesMutable(items: number[]): void;
+        \\declare function takesReadonly(items: readonly number[]): void;
+        \\takesMutable(readonlyValues);
+        \\takesMutable([...readonlyValues]);
+        \\takesMutable(values);
+        \\takesReadonly(readonlyValues);
+        \\takesReadonly(values);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // Only the first call is rejected; a spread copy and a mutable source are
+    // fine, and a readonly parameter accepts both directions.
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    const diagnostic = for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) break d;
+    } else return error.MissingArgumentDiagnostic;
+    try T.expectEqualStrings(
+        "Argument of type 'readonly number[]' is not assignable to parameter of type 'number[]'.",
+        diagnostic.message,
+    );
+    try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
+    try T.expectEqualStrings(
+        "The type 'readonly number[]' is 'readonly' and cannot be assigned to the mutable type 'number[]'.",
+        diagnostic.chain[0].message,
+    );
 }
 
 test "checker: array element display parenthesizes only looser syntax" {

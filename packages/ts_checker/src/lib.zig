@@ -73,7 +73,7 @@ pub const LibCache = struct {
     /// Element-type → `Array<T>.prototype` shape mapping. Cached so a
     /// repeated `T[]` member access doesn't re-intern the dozen-ish
     /// methods on every lookup.
-    array_proto_by_elem: std.AutoHashMapUnmanaged(struct { elem: TypeId, flat_elem: TypeId }, TypeId) = .empty,
+    array_proto_by_elem: std.AutoHashMapUnmanaged(struct { elem: TypeId, flat_elem: TypeId, concat_item: TypeId }, TypeId) = .empty,
     /// `ReadonlyArray<T>` has a distinct method surface. It shares many
     /// non-mutating signatures with `Array<T>`, but never inherits mutation
     /// members merely because both types have a numeric index signature.
@@ -90,6 +90,11 @@ pub const LibCache = struct {
     /// `reduce` on the presence of an initial value; the checker resolves
     /// those at the call site, where the argument and the arity are known,
     /// and needs to recognize its own synthetic member first.
+    /// Element type -> the `ConcatArray<T>` stand-in handed to `concat`.
+    /// Object types are not interned by structure, so minting one per member
+    /// lookup would both grow the pool and move interner storage while a
+    /// caller holds a live member slice.
+    concat_item_by_elem: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     iterator_filter_signatures: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     iterator_find_signatures: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     iterator_reduce_signatures: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
@@ -113,6 +118,7 @@ pub const LibCache = struct {
         self.every_guard_type_params.deinit(gpa);
         self.flat_map_type_params.deinit(gpa);
         self.flat_signatures.deinit(gpa);
+        self.concat_item_by_elem.deinit(gpa);
         self.iterator_filter_signatures.deinit(gpa);
         self.iterator_find_signatures.deinit(gpa);
         self.iterator_reduce_signatures.deinit(gpa);
@@ -590,9 +596,13 @@ pub fn arrayProto(
     gpa: std.mem.Allocator,
     elem: TypeId,
     flat_elem: TypeId,
+    /// `concat` accepts `ConcatArray<T>`, whose index signature is readonly,
+    /// so a readonly array is a legal argument even on a mutable receiver.
+    /// `none` falls back to the mutable `T[]`.
+    concat_item: TypeId,
     rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
 ) !TypeId {
-    if (cache.array_proto_by_elem.get(.{ .elem = elem, .flat_elem = flat_elem })) |cached| return cached;
+    if (cache.array_proto_by_elem.get(.{ .elem = elem, .flat_elem = flat_elem, .concat_item = concat_item })) |cached| return cached;
 
     const number_t = types.Primitive.number_t;
     const boolean_t = types.Primitive.boolean_t;
@@ -724,12 +734,13 @@ pub fn arrayProto(
     const sig_find = try ti.internSignature(&[_]TypeId{ cb_t_unknown, any_t }, t_or_undef, false);
     // Preserve lib.d.ts's two concat overloads so failed calls report
     // against an overload set instead of collapsing to a single TS2345.
-    const concat_array_rest = try ti.internArrayType(sint, arr_t);
+    const concat_item_t = if (concat_item == types.Primitive.none) arr_t else concat_item;
+    const concat_array_rest = try ti.internArrayType(sint, concat_item_t);
     const sig_concat_arrays = try ti.internSignature(&[_]TypeId{concat_array_rest}, arr_t, false);
     try rest_set.put(gpa, sig_concat_arrays, {});
-    // `concat(...items: (T | T[])[]): T[]` accepts both individual
+    // `concat(...items: (T | ConcatArray<T>)[]): T[]` accepts both individual
     // values and arrays of values as varargs.
-    const t_or_arr_t = try ti.internUnion(&[_]TypeId{ elem, arr_t });
+    const t_or_arr_t = try ti.internUnion(&[_]TypeId{ elem, concat_item_t });
     const concat_rest_arr = try ti.internArrayType(sint, t_or_arr_t);
     const sig_concat = try ti.internSignature(&[_]TypeId{concat_rest_arr}, arr_t, false);
     try rest_set.put(gpa, sig_concat, {});
@@ -862,7 +873,7 @@ pub fn arrayProto(
         .is_method = false,
     });
     const proto = try ti.internObjectType(proto_members.items);
-    try cache.array_proto_by_elem.put(gpa, .{ .elem = elem, .flat_elem = flat_elem }, proto);
+    try cache.array_proto_by_elem.put(gpa, .{ .elem = elem, .flat_elem = flat_elem, .concat_item = concat_item }, proto);
     return proto;
 }
 
@@ -909,7 +920,7 @@ pub fn readonlyArrayProto(
     rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
 ) !TypeId {
     if (cache.readonly_array_proto_by_elem.get(.{ .elem = elem, .flat_elem = flat_elem })) |cached| return cached;
-    const mutable = try arrayProto(cache, ti, sint, gpa, elem, flat_elem, rest_set);
+    const mutable = try arrayProto(cache, ti, sint, gpa, elem, flat_elem, readonly_array, rest_set);
     // Keep the declaration order of ReadonlyArray across lib.es5 and the
     // later array libraries. Missing-property diagnostics use this order;
     // Array<T>'s mutable declaration has a different method order.
@@ -1607,7 +1618,7 @@ test "lib: arrayProto exposes length/push/map/flatMap" {
     var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
     defer rest_set.deinit(T.allocator);
 
-    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, &rest_set);
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, types.Primitive.none, &rest_set);
     const length_id = try sint.intern("length");
     const push_id = try sint.intern("push");
     const map_id = try sint.intern("map");
@@ -1668,7 +1679,7 @@ test "lib: mutable array unscopables include mutator flags" {
     defer cache.deinit(T.allocator);
     var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
     defer rest_set.deinit(T.allocator);
-    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, &rest_set);
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, types.Primitive.none, &rest_set);
     const symbol = try sint.intern("Symbol.unscopables");
     const flags = ti.objectMember(proto, symbol) orelse return error.TestUnexpectedResult;
     try T.expectEqual(@as(usize, 41), ti.objectMembers(flags).len);
@@ -1690,7 +1701,7 @@ test "lib: array entries iterator preserves index and element tuple types" {
     var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
     defer rest_set.deinit(T.allocator);
 
-    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.string_t, types.Primitive.string_t, &rest_set);
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.string_t, types.Primitive.string_t, types.Primitive.none, &rest_set);
     const entries = ti.objectMember(proto, try sint.intern("entries")).?;
     const iterator = ti.signatureReturn(entries).?;
     const next = ti.objectMember(iterator, try sint.intern("next")).?;
@@ -1710,7 +1721,7 @@ test "lib: arrayProto map/flatMap/reduce signatures are generic over U" {
     var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
     defer rest_set.deinit(T.allocator);
 
-    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, &rest_set);
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, types.Primitive.none, &rest_set);
 
     // `map<U>`: callback param is `(value: number) => U` and the return
     // is `U[]`, where `U` is a (free) type parameter. The element type
@@ -1797,7 +1808,7 @@ test "lib: arrayProto leaves iterator helper toArray on iterator receivers" {
     var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
     defer rest_set.deinit(T.allocator);
 
-    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, &rest_set);
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, types.Primitive.none, &rest_set);
     const to_array_id = try sint.intern("toArray");
     try T.expect(ti.objectMember(proto, to_array_id) == null);
 }
@@ -1812,7 +1823,7 @@ test "lib: arrayProto exposes reduce/flat/findLast/at and rest methods" {
     var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
     defer rest_set.deinit(T.allocator);
 
-    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, &rest_set);
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, types.Primitive.none, &rest_set);
     // es5/es2015/es2019/es2022/es2023 members that previously tripped TS2339.
     for ([_][]const u8{
         "reduce",      "reduceRight", "findIndex", "findLast", "findLastIndex",
@@ -1846,20 +1857,20 @@ test "lib: arrayProto flat() unwraps one level for nested element arrays" {
     // `number[][]` → element type is `number[]`; `flat()` yields `number[]`
     // (one level unwrapped), so the flat return's number-index is `number`.
     const number_arr = try ti.internArrayType(&sint, types.Primitive.number_t);
-    const nested = try arrayProto(&cache, &ti, &sint, T.allocator, number_arr, types.Primitive.number_t, &rest_set);
+    const nested = try arrayProto(&cache, &ti, &sint, T.allocator, number_arr, types.Primitive.number_t, types.Primitive.none, &rest_set);
     const flat_ret_nested = ti.signatureReturn(ti.objectMember(nested, try sint.intern("flat")).?).?;
     try T.expect(flat_ret_nested != types.Primitive.none);
     try T.expectEqual(types.Primitive.number_t, ti.objectNumberIndex(flat_ret_nested));
 
     // `string[]` (already flat) → `flat()` returns `string[]` unchanged,
     // NOT `any[]`; the flat return's number-index is `string`.
-    const flat_proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.string_t, types.Primitive.string_t, &rest_set);
+    const flat_proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.string_t, types.Primitive.string_t, types.Primitive.none, &rest_set);
     const flat_ret_flat = ti.signatureReturn(ti.objectMember(flat_proto, try sint.intern("flat")).?).?;
     try T.expectEqual(types.Primitive.string_t, ti.objectNumberIndex(flat_ret_flat));
 
     const string_arr = try ti.internArrayType(&sint, types.Primitive.string_t);
     const nested_union = try ti.internUnion(&.{ number_arr, string_arr });
-    const union_proto = try arrayProto(&cache, &ti, &sint, T.allocator, nested_union, try ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.string_t }), &rest_set);
+    const union_proto = try arrayProto(&cache, &ti, &sint, T.allocator, nested_union, try ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.string_t }), types.Primitive.none, &rest_set);
     const flat_ret_union = ti.signatureReturn(ti.objectMember(union_proto, try sint.intern("flat")).?).?;
     const flat_elem_union = ti.objectNumberIndex(flat_ret_union);
     try T.expectEqual(try ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.string_t }), flat_elem_union);
