@@ -1,0 +1,10 @@
+import {pathToFileURL} from 'node:url';
+import fs from 'node:fs';
+const paths=['/','/tmp/config/ui.ts','/tmp/a/../b','/tmp/a/','//host///file','/tmp/%2e/%2f','/C:/path','/c:/path','/tmp/é/中文/😀','/tmp/\ud800','/tmp/\udc00','/tmp/\ud800x\udfff'];
+for(let c=0;c<256;c++)paths.push('/tmp/start'+String.fromCharCode(c)+'end');
+for(const value of ['#?%','[]{}^|`"<>','\\\\server\\share','...','.hidden','a/../b/','a/./','%','é','😀'])paths.push('/tmp/'+value);
+paths.push('/tmp/'+String.fromCharCode(0xd800), '/tmp/'+String.fromCharCode(0xdc00), '/tmp/'+String.fromCharCode(0xd800)+'x'+String.fromCharCode(0xdfff), '/tmp/'+String.fromCharCode(0xd83d,0xde00));
+const cases=paths.map(path=>{const u=pathToFileURL(path);return {path,href:u.href,pathname:u.pathname,protocol:u.protocol,host:u.host,search:u.search,hash:u.hash,origin:u.origin}});
+const errors=[null,42,true,{},[],{href:'file:///tmp'}].map(path=>{try{pathToFileURL(path);throw Error('accepted')}catch(e){return {path,error:{name:e.name,code:e.code}}}});
+fs.writeFileSync(process.argv[2],JSON.stringify({node:process.version,cases,errors},null,2)+'\n');
+console.log(`Generated ${cases.length} POSIX file URL vectors and ${errors.length} invalid-path controls using ${process.version}`);

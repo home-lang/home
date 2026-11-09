@@ -1489,6 +1489,18 @@ pub fn build(b: *std.Build) void {
         run_home_tool_path_url.addArgs(&.{ "run", "node_path_url_entry.cjs" });
         run_home_tool_path_url.expectStdOutEqual("OK home-tool POSIX path and file URL operations\n");
         home_tool_smoke_step.dependOn(&run_home_tool_path_url.step);
+        const file_url_step = b.step("home-tool-file-url-smoke", "Verify actual provider-backed POSIX file URLs and explicit unsupported options");
+        inline for (.{
+            .{ "node_path_to_url.mjs", "OK Home provider-backed POSIX file URLs: 282 paths, 9 invalid paths, 6 relative paths, 3 runtime surrogate controls and retained constructor\n" },
+            .{ "node_path_to_url_profile.mjs", "OK Home file URL options remain explicitly unsupported\n" },
+        }) |case| {
+            const run_file_url = b.addRunArtifact(home_tool_exe);
+            run_file_url.setCwd(b.path("packages/runtime/test/tool_modules"));
+            run_file_url.addArgs(&.{ "run", case[0] });
+            run_file_url.expectStdOutEqual(case[1]);
+            file_url_step.dependOn(&run_file_url.step);
+        }
+
         const run_home_tool_path_parse = b.addRunArtifact(home_tool_exe);
         run_home_tool_path_parse.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_path_parse.addArgs(&.{ "run", "path_parse.mjs" });

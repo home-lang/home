@@ -1,0 +1,2871 @@
+{
+  "node": "v26.10.0",
+  "cases": [
+    {
+      "path": "/",
+      "href": "file:///",
+      "pathname": "/",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/config/ui.ts",
+      "href": "file:///tmp/config/ui.ts",
+      "pathname": "/tmp/config/ui.ts",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/a/../b",
+      "href": "file:///tmp/b",
+      "pathname": "/tmp/b",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/a/",
+      "href": "file:///tmp/a/",
+      "pathname": "/tmp/a/",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "//host///file",
+      "href": "file:///host/file",
+      "pathname": "/host/file",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/%2e/%2f",
+      "href": "file:///tmp/%252e/%252f",
+      "pathname": "/tmp/%252e/%252f",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/C:/path",
+      "href": "file:///C:/path",
+      "pathname": "/C:/path",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/c:/path",
+      "href": "file:///c:/path",
+      "pathname": "/c:/path",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/é/中文/😀",
+      "href": "file:///tmp/%C3%A9/%E4%B8%AD%E6%96%87/%F0%9F%98%80",
+      "pathname": "/tmp/%C3%A9/%E4%B8%AD%E6%96%87/%F0%9F%98%80",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/\ud800",
+      "href": "file:///tmp/%EF%BF%BD",
+      "pathname": "/tmp/%EF%BF%BD",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/\udc00",
+      "href": "file:///tmp/%EF%BF%BD",
+      "pathname": "/tmp/%EF%BF%BD",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/\ud800x\udfff",
+      "href": "file:///tmp/%EF%BF%BDx%EF%BF%BD",
+      "pathname": "/tmp/%EF%BF%BDx%EF%BF%BD",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0000end",
+      "href": "file:///tmp/start%00end",
+      "pathname": "/tmp/start%00end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0001end",
+      "href": "file:///tmp/start%01end",
+      "pathname": "/tmp/start%01end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0002end",
+      "href": "file:///tmp/start%02end",
+      "pathname": "/tmp/start%02end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0003end",
+      "href": "file:///tmp/start%03end",
+      "pathname": "/tmp/start%03end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0004end",
+      "href": "file:///tmp/start%04end",
+      "pathname": "/tmp/start%04end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0005end",
+      "href": "file:///tmp/start%05end",
+      "pathname": "/tmp/start%05end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0006end",
+      "href": "file:///tmp/start%06end",
+      "pathname": "/tmp/start%06end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0007end",
+      "href": "file:///tmp/start%07end",
+      "pathname": "/tmp/start%07end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\bend",
+      "href": "file:///tmp/start%08end",
+      "pathname": "/tmp/start%08end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\tend",
+      "href": "file:///tmp/start%09end",
+      "pathname": "/tmp/start%09end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\nend",
+      "href": "file:///tmp/start%0Aend",
+      "pathname": "/tmp/start%0Aend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u000bend",
+      "href": "file:///tmp/start%0Bend",
+      "pathname": "/tmp/start%0Bend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\fend",
+      "href": "file:///tmp/start%0Cend",
+      "pathname": "/tmp/start%0Cend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\rend",
+      "href": "file:///tmp/start%0Dend",
+      "pathname": "/tmp/start%0Dend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u000eend",
+      "href": "file:///tmp/start%0Eend",
+      "pathname": "/tmp/start%0Eend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u000fend",
+      "href": "file:///tmp/start%0Fend",
+      "pathname": "/tmp/start%0Fend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0010end",
+      "href": "file:///tmp/start%10end",
+      "pathname": "/tmp/start%10end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0011end",
+      "href": "file:///tmp/start%11end",
+      "pathname": "/tmp/start%11end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0012end",
+      "href": "file:///tmp/start%12end",
+      "pathname": "/tmp/start%12end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0013end",
+      "href": "file:///tmp/start%13end",
+      "pathname": "/tmp/start%13end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0014end",
+      "href": "file:///tmp/start%14end",
+      "pathname": "/tmp/start%14end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0015end",
+      "href": "file:///tmp/start%15end",
+      "pathname": "/tmp/start%15end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0016end",
+      "href": "file:///tmp/start%16end",
+      "pathname": "/tmp/start%16end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0017end",
+      "href": "file:///tmp/start%17end",
+      "pathname": "/tmp/start%17end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0018end",
+      "href": "file:///tmp/start%18end",
+      "pathname": "/tmp/start%18end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u0019end",
+      "href": "file:///tmp/start%19end",
+      "pathname": "/tmp/start%19end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u001aend",
+      "href": "file:///tmp/start%1Aend",
+      "pathname": "/tmp/start%1Aend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u001bend",
+      "href": "file:///tmp/start%1Bend",
+      "pathname": "/tmp/start%1Bend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u001cend",
+      "href": "file:///tmp/start%1Cend",
+      "pathname": "/tmp/start%1Cend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u001dend",
+      "href": "file:///tmp/start%1Dend",
+      "pathname": "/tmp/start%1Dend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u001eend",
+      "href": "file:///tmp/start%1Eend",
+      "pathname": "/tmp/start%1Eend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\u001fend",
+      "href": "file:///tmp/start%1Fend",
+      "pathname": "/tmp/start%1Fend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start end",
+      "href": "file:///tmp/start%20end",
+      "pathname": "/tmp/start%20end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start!end",
+      "href": "file:///tmp/start!end",
+      "pathname": "/tmp/start!end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\"end",
+      "href": "file:///tmp/start%22end",
+      "pathname": "/tmp/start%22end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start#end",
+      "href": "file:///tmp/start%23end",
+      "pathname": "/tmp/start%23end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start$end",
+      "href": "file:///tmp/start$end",
+      "pathname": "/tmp/start$end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start%end",
+      "href": "file:///tmp/start%25end",
+      "pathname": "/tmp/start%25end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start&end",
+      "href": "file:///tmp/start&end",
+      "pathname": "/tmp/start&end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start'end",
+      "href": "file:///tmp/start'end",
+      "pathname": "/tmp/start'end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start(end",
+      "href": "file:///tmp/start(end",
+      "pathname": "/tmp/start(end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start)end",
+      "href": "file:///tmp/start)end",
+      "pathname": "/tmp/start)end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start*end",
+      "href": "file:///tmp/start*end",
+      "pathname": "/tmp/start*end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start+end",
+      "href": "file:///tmp/start+end",
+      "pathname": "/tmp/start+end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start,end",
+      "href": "file:///tmp/start,end",
+      "pathname": "/tmp/start,end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start-end",
+      "href": "file:///tmp/start-end",
+      "pathname": "/tmp/start-end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start.end",
+      "href": "file:///tmp/start.end",
+      "pathname": "/tmp/start.end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start/end",
+      "href": "file:///tmp/start/end",
+      "pathname": "/tmp/start/end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start0end",
+      "href": "file:///tmp/start0end",
+      "pathname": "/tmp/start0end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start1end",
+      "href": "file:///tmp/start1end",
+      "pathname": "/tmp/start1end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start2end",
+      "href": "file:///tmp/start2end",
+      "pathname": "/tmp/start2end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start3end",
+      "href": "file:///tmp/start3end",
+      "pathname": "/tmp/start3end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start4end",
+      "href": "file:///tmp/start4end",
+      "pathname": "/tmp/start4end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start5end",
+      "href": "file:///tmp/start5end",
+      "pathname": "/tmp/start5end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start6end",
+      "href": "file:///tmp/start6end",
+      "pathname": "/tmp/start6end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start7end",
+      "href": "file:///tmp/start7end",
+      "pathname": "/tmp/start7end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start8end",
+      "href": "file:///tmp/start8end",
+      "pathname": "/tmp/start8end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start9end",
+      "href": "file:///tmp/start9end",
+      "pathname": "/tmp/start9end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start:end",
+      "href": "file:///tmp/start:end",
+      "pathname": "/tmp/start:end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start;end",
+      "href": "file:///tmp/start;end",
+      "pathname": "/tmp/start;end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start<end",
+      "href": "file:///tmp/start%3Cend",
+      "pathname": "/tmp/start%3Cend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start=end",
+      "href": "file:///tmp/start=end",
+      "pathname": "/tmp/start=end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start>end",
+      "href": "file:///tmp/start%3Eend",
+      "pathname": "/tmp/start%3Eend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start?end",
+      "href": "file:///tmp/start%3Fend",
+      "pathname": "/tmp/start%3Fend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start@end",
+      "href": "file:///tmp/start@end",
+      "pathname": "/tmp/start@end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startAend",
+      "href": "file:///tmp/startAend",
+      "pathname": "/tmp/startAend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startBend",
+      "href": "file:///tmp/startBend",
+      "pathname": "/tmp/startBend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startCend",
+      "href": "file:///tmp/startCend",
+      "pathname": "/tmp/startCend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startDend",
+      "href": "file:///tmp/startDend",
+      "pathname": "/tmp/startDend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startEend",
+      "href": "file:///tmp/startEend",
+      "pathname": "/tmp/startEend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startFend",
+      "href": "file:///tmp/startFend",
+      "pathname": "/tmp/startFend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startGend",
+      "href": "file:///tmp/startGend",
+      "pathname": "/tmp/startGend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startHend",
+      "href": "file:///tmp/startHend",
+      "pathname": "/tmp/startHend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startIend",
+      "href": "file:///tmp/startIend",
+      "pathname": "/tmp/startIend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startJend",
+      "href": "file:///tmp/startJend",
+      "pathname": "/tmp/startJend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startKend",
+      "href": "file:///tmp/startKend",
+      "pathname": "/tmp/startKend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startLend",
+      "href": "file:///tmp/startLend",
+      "pathname": "/tmp/startLend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startMend",
+      "href": "file:///tmp/startMend",
+      "pathname": "/tmp/startMend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startNend",
+      "href": "file:///tmp/startNend",
+      "pathname": "/tmp/startNend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startOend",
+      "href": "file:///tmp/startOend",
+      "pathname": "/tmp/startOend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startPend",
+      "href": "file:///tmp/startPend",
+      "pathname": "/tmp/startPend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startQend",
+      "href": "file:///tmp/startQend",
+      "pathname": "/tmp/startQend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startRend",
+      "href": "file:///tmp/startRend",
+      "pathname": "/tmp/startRend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startSend",
+      "href": "file:///tmp/startSend",
+      "pathname": "/tmp/startSend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startTend",
+      "href": "file:///tmp/startTend",
+      "pathname": "/tmp/startTend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startUend",
+      "href": "file:///tmp/startUend",
+      "pathname": "/tmp/startUend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startVend",
+      "href": "file:///tmp/startVend",
+      "pathname": "/tmp/startVend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startWend",
+      "href": "file:///tmp/startWend",
+      "pathname": "/tmp/startWend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startXend",
+      "href": "file:///tmp/startXend",
+      "pathname": "/tmp/startXend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startYend",
+      "href": "file:///tmp/startYend",
+      "pathname": "/tmp/startYend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startZend",
+      "href": "file:///tmp/startZend",
+      "pathname": "/tmp/startZend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start[end",
+      "href": "file:///tmp/start%5Bend",
+      "pathname": "/tmp/start%5Bend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start\\end",
+      "href": "file:///tmp/start%5Cend",
+      "pathname": "/tmp/start%5Cend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start]end",
+      "href": "file:///tmp/start%5Dend",
+      "pathname": "/tmp/start%5Dend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start^end",
+      "href": "file:///tmp/start%5Eend",
+      "pathname": "/tmp/start%5Eend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start_end",
+      "href": "file:///tmp/start_end",
+      "pathname": "/tmp/start_end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start`end",
+      "href": "file:///tmp/start%60end",
+      "pathname": "/tmp/start%60end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startaend",
+      "href": "file:///tmp/startaend",
+      "pathname": "/tmp/startaend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startbend",
+      "href": "file:///tmp/startbend",
+      "pathname": "/tmp/startbend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startcend",
+      "href": "file:///tmp/startcend",
+      "pathname": "/tmp/startcend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startdend",
+      "href": "file:///tmp/startdend",
+      "pathname": "/tmp/startdend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/starteend",
+      "href": "file:///tmp/starteend",
+      "pathname": "/tmp/starteend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startfend",
+      "href": "file:///tmp/startfend",
+      "pathname": "/tmp/startfend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startgend",
+      "href": "file:///tmp/startgend",
+      "pathname": "/tmp/startgend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/starthend",
+      "href": "file:///tmp/starthend",
+      "pathname": "/tmp/starthend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startiend",
+      "href": "file:///tmp/startiend",
+      "pathname": "/tmp/startiend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startjend",
+      "href": "file:///tmp/startjend",
+      "pathname": "/tmp/startjend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startkend",
+      "href": "file:///tmp/startkend",
+      "pathname": "/tmp/startkend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startlend",
+      "href": "file:///tmp/startlend",
+      "pathname": "/tmp/startlend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startmend",
+      "href": "file:///tmp/startmend",
+      "pathname": "/tmp/startmend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startnend",
+      "href": "file:///tmp/startnend",
+      "pathname": "/tmp/startnend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startoend",
+      "href": "file:///tmp/startoend",
+      "pathname": "/tmp/startoend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startpend",
+      "href": "file:///tmp/startpend",
+      "pathname": "/tmp/startpend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startqend",
+      "href": "file:///tmp/startqend",
+      "pathname": "/tmp/startqend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startrend",
+      "href": "file:///tmp/startrend",
+      "pathname": "/tmp/startrend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startsend",
+      "href": "file:///tmp/startsend",
+      "pathname": "/tmp/startsend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/starttend",
+      "href": "file:///tmp/starttend",
+      "pathname": "/tmp/starttend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startuend",
+      "href": "file:///tmp/startuend",
+      "pathname": "/tmp/startuend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startvend",
+      "href": "file:///tmp/startvend",
+      "pathname": "/tmp/startvend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startwend",
+      "href": "file:///tmp/startwend",
+      "pathname": "/tmp/startwend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startxend",
+      "href": "file:///tmp/startxend",
+      "pathname": "/tmp/startxend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startyend",
+      "href": "file:///tmp/startyend",
+      "pathname": "/tmp/startyend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startzend",
+      "href": "file:///tmp/startzend",
+      "pathname": "/tmp/startzend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start{end",
+      "href": "file:///tmp/start%7Bend",
+      "pathname": "/tmp/start%7Bend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start|end",
+      "href": "file:///tmp/start%7Cend",
+      "pathname": "/tmp/start%7Cend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start}end",
+      "href": "file:///tmp/start%7Dend",
+      "pathname": "/tmp/start%7Dend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start~end",
+      "href": "file:///tmp/start%7Eend",
+      "pathname": "/tmp/start%7Eend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%7Fend",
+      "pathname": "/tmp/start%7Fend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%80end",
+      "pathname": "/tmp/start%C2%80end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%81end",
+      "pathname": "/tmp/start%C2%81end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%82end",
+      "pathname": "/tmp/start%C2%82end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%83end",
+      "pathname": "/tmp/start%C2%83end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%84end",
+      "pathname": "/tmp/start%C2%84end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%85end",
+      "pathname": "/tmp/start%C2%85end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%86end",
+      "pathname": "/tmp/start%C2%86end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%87end",
+      "pathname": "/tmp/start%C2%87end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%88end",
+      "pathname": "/tmp/start%C2%88end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%89end",
+      "pathname": "/tmp/start%C2%89end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%8Aend",
+      "pathname": "/tmp/start%C2%8Aend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%8Bend",
+      "pathname": "/tmp/start%C2%8Bend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%8Cend",
+      "pathname": "/tmp/start%C2%8Cend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%8Dend",
+      "pathname": "/tmp/start%C2%8Dend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%8Eend",
+      "pathname": "/tmp/start%C2%8Eend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%8Fend",
+      "pathname": "/tmp/start%C2%8Fend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%90end",
+      "pathname": "/tmp/start%C2%90end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%91end",
+      "pathname": "/tmp/start%C2%91end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%92end",
+      "pathname": "/tmp/start%C2%92end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%93end",
+      "pathname": "/tmp/start%C2%93end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%94end",
+      "pathname": "/tmp/start%C2%94end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%95end",
+      "pathname": "/tmp/start%C2%95end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%96end",
+      "pathname": "/tmp/start%C2%96end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%97end",
+      "pathname": "/tmp/start%C2%97end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%98end",
+      "pathname": "/tmp/start%C2%98end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%99end",
+      "pathname": "/tmp/start%C2%99end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%9Aend",
+      "pathname": "/tmp/start%C2%9Aend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%9Bend",
+      "pathname": "/tmp/start%C2%9Bend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%9Cend",
+      "pathname": "/tmp/start%C2%9Cend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%9Dend",
+      "pathname": "/tmp/start%C2%9Dend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%9Eend",
+      "pathname": "/tmp/start%C2%9Eend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startend",
+      "href": "file:///tmp/start%C2%9Fend",
+      "pathname": "/tmp/start%C2%9Fend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start end",
+      "href": "file:///tmp/start%C2%A0end",
+      "pathname": "/tmp/start%C2%A0end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¡end",
+      "href": "file:///tmp/start%C2%A1end",
+      "pathname": "/tmp/start%C2%A1end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¢end",
+      "href": "file:///tmp/start%C2%A2end",
+      "pathname": "/tmp/start%C2%A2end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start£end",
+      "href": "file:///tmp/start%C2%A3end",
+      "pathname": "/tmp/start%C2%A3end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¤end",
+      "href": "file:///tmp/start%C2%A4end",
+      "pathname": "/tmp/start%C2%A4end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¥end",
+      "href": "file:///tmp/start%C2%A5end",
+      "pathname": "/tmp/start%C2%A5end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¦end",
+      "href": "file:///tmp/start%C2%A6end",
+      "pathname": "/tmp/start%C2%A6end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start§end",
+      "href": "file:///tmp/start%C2%A7end",
+      "pathname": "/tmp/start%C2%A7end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¨end",
+      "href": "file:///tmp/start%C2%A8end",
+      "pathname": "/tmp/start%C2%A8end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start©end",
+      "href": "file:///tmp/start%C2%A9end",
+      "pathname": "/tmp/start%C2%A9end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startªend",
+      "href": "file:///tmp/start%C2%AAend",
+      "pathname": "/tmp/start%C2%AAend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start«end",
+      "href": "file:///tmp/start%C2%ABend",
+      "pathname": "/tmp/start%C2%ABend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¬end",
+      "href": "file:///tmp/start%C2%ACend",
+      "pathname": "/tmp/start%C2%ACend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start­end",
+      "href": "file:///tmp/start%C2%ADend",
+      "pathname": "/tmp/start%C2%ADend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start®end",
+      "href": "file:///tmp/start%C2%AEend",
+      "pathname": "/tmp/start%C2%AEend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¯end",
+      "href": "file:///tmp/start%C2%AFend",
+      "pathname": "/tmp/start%C2%AFend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start°end",
+      "href": "file:///tmp/start%C2%B0end",
+      "pathname": "/tmp/start%C2%B0end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start±end",
+      "href": "file:///tmp/start%C2%B1end",
+      "pathname": "/tmp/start%C2%B1end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start²end",
+      "href": "file:///tmp/start%C2%B2end",
+      "pathname": "/tmp/start%C2%B2end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start³end",
+      "href": "file:///tmp/start%C2%B3end",
+      "pathname": "/tmp/start%C2%B3end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start´end",
+      "href": "file:///tmp/start%C2%B4end",
+      "pathname": "/tmp/start%C2%B4end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startµend",
+      "href": "file:///tmp/start%C2%B5end",
+      "pathname": "/tmp/start%C2%B5end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¶end",
+      "href": "file:///tmp/start%C2%B6end",
+      "pathname": "/tmp/start%C2%B6end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start·end",
+      "href": "file:///tmp/start%C2%B7end",
+      "pathname": "/tmp/start%C2%B7end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¸end",
+      "href": "file:///tmp/start%C2%B8end",
+      "pathname": "/tmp/start%C2%B8end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¹end",
+      "href": "file:///tmp/start%C2%B9end",
+      "pathname": "/tmp/start%C2%B9end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startºend",
+      "href": "file:///tmp/start%C2%BAend",
+      "pathname": "/tmp/start%C2%BAend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start»end",
+      "href": "file:///tmp/start%C2%BBend",
+      "pathname": "/tmp/start%C2%BBend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¼end",
+      "href": "file:///tmp/start%C2%BCend",
+      "pathname": "/tmp/start%C2%BCend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start½end",
+      "href": "file:///tmp/start%C2%BDend",
+      "pathname": "/tmp/start%C2%BDend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¾end",
+      "href": "file:///tmp/start%C2%BEend",
+      "pathname": "/tmp/start%C2%BEend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start¿end",
+      "href": "file:///tmp/start%C2%BFend",
+      "pathname": "/tmp/start%C2%BFend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÀend",
+      "href": "file:///tmp/start%C3%80end",
+      "pathname": "/tmp/start%C3%80end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÁend",
+      "href": "file:///tmp/start%C3%81end",
+      "pathname": "/tmp/start%C3%81end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÂend",
+      "href": "file:///tmp/start%C3%82end",
+      "pathname": "/tmp/start%C3%82end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÃend",
+      "href": "file:///tmp/start%C3%83end",
+      "pathname": "/tmp/start%C3%83end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÄend",
+      "href": "file:///tmp/start%C3%84end",
+      "pathname": "/tmp/start%C3%84end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÅend",
+      "href": "file:///tmp/start%C3%85end",
+      "pathname": "/tmp/start%C3%85end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÆend",
+      "href": "file:///tmp/start%C3%86end",
+      "pathname": "/tmp/start%C3%86end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÇend",
+      "href": "file:///tmp/start%C3%87end",
+      "pathname": "/tmp/start%C3%87end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÈend",
+      "href": "file:///tmp/start%C3%88end",
+      "pathname": "/tmp/start%C3%88end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÉend",
+      "href": "file:///tmp/start%C3%89end",
+      "pathname": "/tmp/start%C3%89end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÊend",
+      "href": "file:///tmp/start%C3%8Aend",
+      "pathname": "/tmp/start%C3%8Aend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startËend",
+      "href": "file:///tmp/start%C3%8Bend",
+      "pathname": "/tmp/start%C3%8Bend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÌend",
+      "href": "file:///tmp/start%C3%8Cend",
+      "pathname": "/tmp/start%C3%8Cend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÍend",
+      "href": "file:///tmp/start%C3%8Dend",
+      "pathname": "/tmp/start%C3%8Dend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÎend",
+      "href": "file:///tmp/start%C3%8Eend",
+      "pathname": "/tmp/start%C3%8Eend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÏend",
+      "href": "file:///tmp/start%C3%8Fend",
+      "pathname": "/tmp/start%C3%8Fend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÐend",
+      "href": "file:///tmp/start%C3%90end",
+      "pathname": "/tmp/start%C3%90end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÑend",
+      "href": "file:///tmp/start%C3%91end",
+      "pathname": "/tmp/start%C3%91end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÒend",
+      "href": "file:///tmp/start%C3%92end",
+      "pathname": "/tmp/start%C3%92end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÓend",
+      "href": "file:///tmp/start%C3%93end",
+      "pathname": "/tmp/start%C3%93end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÔend",
+      "href": "file:///tmp/start%C3%94end",
+      "pathname": "/tmp/start%C3%94end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÕend",
+      "href": "file:///tmp/start%C3%95end",
+      "pathname": "/tmp/start%C3%95end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÖend",
+      "href": "file:///tmp/start%C3%96end",
+      "pathname": "/tmp/start%C3%96end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start×end",
+      "href": "file:///tmp/start%C3%97end",
+      "pathname": "/tmp/start%C3%97end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startØend",
+      "href": "file:///tmp/start%C3%98end",
+      "pathname": "/tmp/start%C3%98end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÙend",
+      "href": "file:///tmp/start%C3%99end",
+      "pathname": "/tmp/start%C3%99end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÚend",
+      "href": "file:///tmp/start%C3%9Aend",
+      "pathname": "/tmp/start%C3%9Aend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÛend",
+      "href": "file:///tmp/start%C3%9Bend",
+      "pathname": "/tmp/start%C3%9Bend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÜend",
+      "href": "file:///tmp/start%C3%9Cend",
+      "pathname": "/tmp/start%C3%9Cend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÝend",
+      "href": "file:///tmp/start%C3%9Dend",
+      "pathname": "/tmp/start%C3%9Dend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÞend",
+      "href": "file:///tmp/start%C3%9Eend",
+      "pathname": "/tmp/start%C3%9Eend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startßend",
+      "href": "file:///tmp/start%C3%9Fend",
+      "pathname": "/tmp/start%C3%9Fend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startàend",
+      "href": "file:///tmp/start%C3%A0end",
+      "pathname": "/tmp/start%C3%A0end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startáend",
+      "href": "file:///tmp/start%C3%A1end",
+      "pathname": "/tmp/start%C3%A1end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startâend",
+      "href": "file:///tmp/start%C3%A2end",
+      "pathname": "/tmp/start%C3%A2end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startãend",
+      "href": "file:///tmp/start%C3%A3end",
+      "pathname": "/tmp/start%C3%A3end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startäend",
+      "href": "file:///tmp/start%C3%A4end",
+      "pathname": "/tmp/start%C3%A4end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startåend",
+      "href": "file:///tmp/start%C3%A5end",
+      "pathname": "/tmp/start%C3%A5end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startæend",
+      "href": "file:///tmp/start%C3%A6end",
+      "pathname": "/tmp/start%C3%A6end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startçend",
+      "href": "file:///tmp/start%C3%A7end",
+      "pathname": "/tmp/start%C3%A7end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startèend",
+      "href": "file:///tmp/start%C3%A8end",
+      "pathname": "/tmp/start%C3%A8end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startéend",
+      "href": "file:///tmp/start%C3%A9end",
+      "pathname": "/tmp/start%C3%A9end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startêend",
+      "href": "file:///tmp/start%C3%AAend",
+      "pathname": "/tmp/start%C3%AAend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startëend",
+      "href": "file:///tmp/start%C3%ABend",
+      "pathname": "/tmp/start%C3%ABend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startìend",
+      "href": "file:///tmp/start%C3%ACend",
+      "pathname": "/tmp/start%C3%ACend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startíend",
+      "href": "file:///tmp/start%C3%ADend",
+      "pathname": "/tmp/start%C3%ADend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startîend",
+      "href": "file:///tmp/start%C3%AEend",
+      "pathname": "/tmp/start%C3%AEend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startïend",
+      "href": "file:///tmp/start%C3%AFend",
+      "pathname": "/tmp/start%C3%AFend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startðend",
+      "href": "file:///tmp/start%C3%B0end",
+      "pathname": "/tmp/start%C3%B0end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startñend",
+      "href": "file:///tmp/start%C3%B1end",
+      "pathname": "/tmp/start%C3%B1end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startòend",
+      "href": "file:///tmp/start%C3%B2end",
+      "pathname": "/tmp/start%C3%B2end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startóend",
+      "href": "file:///tmp/start%C3%B3end",
+      "pathname": "/tmp/start%C3%B3end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startôend",
+      "href": "file:///tmp/start%C3%B4end",
+      "pathname": "/tmp/start%C3%B4end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startõend",
+      "href": "file:///tmp/start%C3%B5end",
+      "pathname": "/tmp/start%C3%B5end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startöend",
+      "href": "file:///tmp/start%C3%B6end",
+      "pathname": "/tmp/start%C3%B6end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/start÷end",
+      "href": "file:///tmp/start%C3%B7end",
+      "pathname": "/tmp/start%C3%B7end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startøend",
+      "href": "file:///tmp/start%C3%B8end",
+      "pathname": "/tmp/start%C3%B8end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startùend",
+      "href": "file:///tmp/start%C3%B9end",
+      "pathname": "/tmp/start%C3%B9end",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startúend",
+      "href": "file:///tmp/start%C3%BAend",
+      "pathname": "/tmp/start%C3%BAend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startûend",
+      "href": "file:///tmp/start%C3%BBend",
+      "pathname": "/tmp/start%C3%BBend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startüend",
+      "href": "file:///tmp/start%C3%BCend",
+      "pathname": "/tmp/start%C3%BCend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startýend",
+      "href": "file:///tmp/start%C3%BDend",
+      "pathname": "/tmp/start%C3%BDend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startþend",
+      "href": "file:///tmp/start%C3%BEend",
+      "pathname": "/tmp/start%C3%BEend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/startÿend",
+      "href": "file:///tmp/start%C3%BFend",
+      "pathname": "/tmp/start%C3%BFend",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/#?%",
+      "href": "file:///tmp/%23%3F%25",
+      "pathname": "/tmp/%23%3F%25",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/[]{}^|`\"<>",
+      "href": "file:///tmp/%5B%5D%7B%7D%5E%7C%60%22%3C%3E",
+      "pathname": "/tmp/%5B%5D%7B%7D%5E%7C%60%22%3C%3E",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/\\\\server\\share",
+      "href": "file:///tmp/%5C%5Cserver%5Cshare",
+      "pathname": "/tmp/%5C%5Cserver%5Cshare",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/...",
+      "href": "file:///tmp/...",
+      "pathname": "/tmp/...",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/.hidden",
+      "href": "file:///tmp/.hidden",
+      "pathname": "/tmp/.hidden",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/a/../b/",
+      "href": "file:///tmp/b/",
+      "pathname": "/tmp/b/",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/a/./",
+      "href": "file:///tmp/a/",
+      "pathname": "/tmp/a/",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/%",
+      "href": "file:///tmp/%25",
+      "pathname": "/tmp/%25",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/é",
+      "href": "file:///tmp/%C3%A9",
+      "pathname": "/tmp/%C3%A9",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/😀",
+      "href": "file:///tmp/%F0%9F%98%80",
+      "pathname": "/tmp/%F0%9F%98%80",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/\ud800",
+      "href": "file:///tmp/%EF%BF%BD",
+      "pathname": "/tmp/%EF%BF%BD",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/\udc00",
+      "href": "file:///tmp/%EF%BF%BD",
+      "pathname": "/tmp/%EF%BF%BD",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/\ud800x\udfff",
+      "href": "file:///tmp/%EF%BF%BDx%EF%BF%BD",
+      "pathname": "/tmp/%EF%BF%BDx%EF%BF%BD",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    },
+    {
+      "path": "/tmp/😀",
+      "href": "file:///tmp/%F0%9F%98%80",
+      "pathname": "/tmp/%F0%9F%98%80",
+      "protocol": "file:",
+      "host": "",
+      "search": "",
+      "hash": "",
+      "origin": "null"
+    }
+  ],
+  "errors": [
+    {
+      "path": null,
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "path": 42,
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "path": true,
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "path": {},
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "path": [],
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "path": {
+        "href": "file:///tmp"
+      },
+      "error": {
+        "name": "TypeError",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    }
+  ]
+}

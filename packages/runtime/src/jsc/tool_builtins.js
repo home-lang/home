@@ -632,7 +632,33 @@
     },
   };
   posixPath.posix = posixPath;
+  const ProviderURL = globalThis.URL;
   const urlApi = {
+    pathToFileURL: function(path, options = undefined) {
+      pathString(path);
+      if (process.platform === 'win32' || options !== undefined) unsupported('Home pathToFileURL currently supports native POSIX conversion without options');
+      if (typeof ProviderURL !== 'function') unsupported('Home pathToFileURL requires the linked provider URL constructor');
+      let resolved = posixPath.resolve(path);
+      if (path.endsWith('/') && !resolved.endsWith('/')) resolved += '/';
+      let encoded = '';
+      // Preserve filename bytes as URL path data, including NUL, percent,
+      // backslashes and delimiters. Never let them become URL syntax.
+      // https://nodejs.org/api/url.html#urlpathtofileurlpath-options
+      for (const original of resolved) {
+        let point = original.codePointAt(0);
+        const character = point >= 0xd800 && point <= 0xdfff ? '\ufffd' : original;
+        point = character.codePointAt(0);
+        if (point > 0x7e) encoded += encodeURIComponent(character);
+        else if (point <= 0x20 || '"#%<>?[\\]^`{|}~'.includes(character))
+          encoded += '%' + point.toString(16).toUpperCase().padStart(2, '0');
+        else encoded += character;
+      }
+      const result = new ProviderURL('file://' + encoded);
+      // Retain the provider's real URL data and prototype when user code
+      // replaces the global constructor after this module initializes.
+      if (Object.getPrototypeOf(result) !== ProviderURL.prototype) Object.setPrototypeOf(result, ProviderURL.prototype);
+      return result;
+    },
     fileURLToPath: function(url, options) {
       if (process.platform === 'win32' || options !== undefined) unsupported('Home fileURLToPath currently supports native POSIX conversion without options');
       if (typeof url !== 'string') unsupported('Home fileURLToPath currently supports URL strings only');
