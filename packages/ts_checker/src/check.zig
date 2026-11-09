@@ -89925,6 +89925,10 @@ pub const Checker = struct {
                 if (spread_t == types.Primitive.none) spread_t = try self.checkExpression(spread.expression);
                 if (self.actualTupleLength(spread_t)) |spread_len_raw| {
                     const spread_len: usize = @intCast(spread_len_raw);
+                    // Assignability stays positional, so a spread whose
+                    // positions line up with the target is still accepted.
+                    const spread_start = target_index;
+                    var spread_mismatch = false;
                     for (0..spread_len) |spread_index| {
                         const source_t = self.tupleElementType(spread_t, spread_index);
                         const target_t = self.tupleElementType(target, target_index);
@@ -89934,10 +89938,22 @@ pub const Checker = struct {
                             continue;
                         }
                         if (try self.checkerAssignableTo(source_t, target_t)) continue;
-                        if (emit_element_diagnostic) {
-                            try self.reportTypeNotAssignable(el, source_t, target_t, "Type is not assignable to tuple element type.");
-                        }
+                        spread_mismatch = true;
+                    }
+                    if (spread_mismatch) {
                         any_mismatch = true;
+                        // TypeScript elaborates a failed spread with the
+                        // spread's own element type — the union over its
+                        // positions — against the target element where the
+                        // spread begins, once, rather than one diagnostic per
+                        // position.
+                        if (emit_element_diagnostic) {
+                            const source_union = try self.spreadSourceElementType(spread_t);
+                            const target_t = self.tupleElementType(target, spread_start);
+                            if (source_union != types.Primitive.none and target_t != types.Primitive.none) {
+                                try self.reportTypeNotAssignable(el, source_union, target_t, "Type is not assignable to tuple element type.");
+                            }
+                        }
                     }
                     continue;
                 }
@@ -90002,6 +90018,15 @@ pub const Checker = struct {
             }
         }
         return !any_mismatch;
+    }
+
+    /// The element type a spread contributes: a tuple's own element union,
+    /// which it carries as its numeric index, falling back to the iteration
+    /// protocol for anything else.
+    fn spreadSourceElementType(self: *Checker, spread_t: TypeId) CheckError!TypeId {
+        const number_index = self.interner.objectNumberIndex(spread_t);
+        if (number_index != types.Primitive.none) return number_index;
+        return try self.iterableElementType(spread_t);
     }
 
     fn tupleAnnotationSourceNode(self: *Checker, type_node: NodeId) ?NodeId {
@@ -301422,4 +301447,27 @@ test "checker: an argument's inner mismatch owns the diagnostic" {
         saw_arity_chain = true;
     }
     try T.expect(saw_arity_chain);
+}
+
+test "checker: a failed tuple spread is explained by its element union once" {
+    const s = try newSetup(
+        \\declare const pair: [number, string];
+        \\declare const same: [number, number];
+        \\const wrong: [string, number] = [...pair];
+        \\const afterFixed: [boolean, string, number] = [true, ...pair];
+        \\const singleType: [string, string] = [...same];
+        \\const aligned: [number, string] = [...pair];
+        \\const alignedTail: [number, string, boolean] = [...pair, true];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // One diagnostic per failed spread, carrying the union over the spread's
+    // positions rather than one comparison per position.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string | number' is not assignable to type 'string'."));
+    try T.expect(!checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
+    // A single-type tuple has no union to print.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
+    // Assignability stays positional, so the two aligned spreads are silent.
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
 }
