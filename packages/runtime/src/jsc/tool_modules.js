@@ -174,7 +174,14 @@
       }
       // The import accessor is separate from explicit source require(): only
       // linked static edges may read an already evaluated async dependency.
-      const factorySource = `(function(${payload.metaBinding}, module, ${payload.importBinding || '__home_unused_import'}, ${payload.dynamicImportBinding || '__home_unused_dynamic_import'}) { return ${record.asynchronous ? 'async ' : ''}function(exports, require, ${payload.moduleBinding || 'module'}, __filename, __dirname) {\n${payload.source}\n}; })`;
+      // ESM declarations own their scope: a local require/exports must shadow
+      // host conveniences, including var's undefined value before assignment.
+      // The arrow retains the wrapper's receiver/arguments and returns an async
+      // module's promise directly, without an extra async adoption boundary.
+      const source = payload.esModule
+        ? `return (${record.asynchronous ? 'async ' : ''}() => {\n${payload.source}\n})();`
+        : payload.source;
+      const factorySource = `(function(${payload.metaBinding}, module, ${payload.importBinding || '__home_unused_import'}, ${payload.dynamicImportBinding || '__home_unused_dynamic_import'}) { return ${!payload.esModule && record.asynchronous ? 'async ' : ''}function(exports, require, ${payload.moduleBinding || 'module'}, __filename, __dirname) {\n${source}\n}; })`;
       const wrapper = (0, eval)(factorySource)(metadata, module, staticImport, dynamicImport);
       return wrapper(module.exports, localRequire, module, payload.path, directory);
     };

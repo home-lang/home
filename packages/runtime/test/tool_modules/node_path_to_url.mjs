@@ -1,9 +1,9 @@
 import url, { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
-const moduleRequire = createRequire(import.meta.url);
-const vectors = moduleRequire('./node_path_to_url.expected.json');
+const require = createRequire(import.meta.url);
+const vectors = require('./node_path_to_url.expected.json');
 const URLClass = globalThis.URL;
-if (url !== moduleRequire('url') || url !== moduleRequire('node:url') || pathToFileURL !== url.pathToFileURL)
+if (url !== require('url') || url !== require('node:url') || pathToFileURL !== url.pathToFileURL)
   throw new Error('URL module identity differs');
 for (const item of vectors.cases) {
   const result = pathToFileURL(item.path);

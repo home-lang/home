@@ -1206,6 +1206,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_extname.addArgs(&.{ "run", "path_extname.mjs" });
         run_home_tool_extname.expectStdOutEqual("OK actual POSIX extname lexical boundaries, aliases and validation\n");
         home_tool_smoke_step.dependOn(&run_home_tool_extname.step);
+        const run_home_tool_module_scope = b.addRunArtifact(home_tool_exe);
+        run_home_tool_module_scope.setCwd(b.path("packages/runtime/test/tool_modules/module_scope"));
+        run_home_tool_module_scope.addArgs(&.{ "run", "entry.mjs" });
+        run_home_tool_module_scope.expectStdOutEqual("OK actual ESM binding scopes and preserved CommonJS parameters: 9 modules\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_module_scope.step);
         const run_home_tool_syntax_smoke = b.addRunArtifact(home_tool_exe);
         run_home_tool_syntax_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_syntax_smoke.addArgs(&.{ "run", "runtime_invalid_syntax.js" });
