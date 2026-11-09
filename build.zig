@@ -1425,6 +1425,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_fs_promises.addArgs(&.{ "run", "packages/runtime/test/tool_modules/node_fs_promises_entry.mjs" });
         run_home_tool_fs_promises.expectStdOutEqual("OK home-tool native filesystem promises\n");
         home_tool_smoke_step.dependOn(&run_home_tool_fs_promises.step);
+        const run_home_tool_rename = b.addRunArtifact(home_tool_exe);
+        run_home_tool_rename.addArgs(&.{ "run", "packages/runtime/test/tool_modules/node_fs_rename.mjs" });
+        run_home_tool_rename.expectStdOutEqual("OK native promised file and directory renames\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_rename.step);
+        b.step("home-tool-rename-smoke", "Verify actual file and directory moves and failures").dependOn(&run_home_tool_rename.step);
         const run_fs_write_file = b.addRunArtifact(home_tool_exe);
         run_fs_write_file.addArgs(&.{ "run", "packages/runtime/test/tool_modules/fs_write_file.mjs" });
         run_fs_write_file.expectStdOutEqual("OK actual file writes, UTF-8, 11 typed ranges, DataView, truncation and rejections\n");

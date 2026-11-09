@@ -390,6 +390,12 @@
       const hex = fsOperation('readFile', path, false, false).hex;
       return utf8 ? decodeUtf8(hex) : bufferApi.Buffer.from(hex, 'hex');
     },
+    rename: async function(source, destination) {
+      source = stringPath(source);
+      destination = stringPath(destination);
+      try { fsOperation('rename', source, destination, false); }
+      catch (error) { error.dest = destination; throw error; }
+    },
     mkdir: async function(path, options) {
       options = fsOptions(options, ['recursive', 'mode']);
       const result = fsOperation('mkdir', path, booleanFsOption(options, 'recursive'), false, creationMode(options.mode, 0o777));

@@ -420,6 +420,19 @@ fn operation(
             if (close_error) |err| return nativeFailure(c, object, err, "close");
             set(c, object, "bytesWritten", api.JSValueMakeNumber(c, @floatFromInt(contents.?.len)));
         }
+    } else if (std.mem.eql(u8, op, "rename")) {
+        if (count < 3 or args[2] == null) return failure(c, object, error.Unsupported);
+        const destination = string(c, args[2], allocator) orelse return failure(c, object, error.OutOfMemory);
+        defer allocator.free(destination);
+        if (std.mem.indexOfScalar(u8, destination, 0) != null) return failure(c, object, error.Unsupported);
+        const source_z = bun.dupeZ(allocator, u8, path) catch return failure(c, object, error.OutOfMemory);
+        defer allocator.free(source_z);
+        const destination_z = bun.dupeZ(allocator, u8, destination) catch return failure(c, object, error.OutOfMemory);
+        defer allocator.free(destination_z);
+        // Move the filesystem entry itself: copying would lose atomicity,
+        // inode identity and directory/symlink rename semantics.
+        const result = std.c.rename(source_z.ptr, destination_z.ptr);
+        if (result != 0) return nativeFailure(c, object, std.posix.errno(result), "rename");
     } else if (std.mem.eql(u8, op, "readFile") or std.mem.eql(u8, op, "readToolFile") or std.mem.eql(u8, op, "readToolTextFile")) {
         const bounded = !std.mem.eql(u8, op, "readFile");
         const contents = (if (bounded) readToolFile(.cwd(), path, allocator) else std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited)) catch |err| return failure(c, object, err);
