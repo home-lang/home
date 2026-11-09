@@ -1508,7 +1508,7 @@ pub const Printer = struct {
                 if (pp.flags.is_computed_binding_key) {
                     // `[expr]: name`
                     try self.write("[");
-                    try self.printExpression(pp.default_value);
+                    try self.printExpr(pp.default_value, .comma);
                     try self.write("]: ");
                 } else {
                     // Renamed binding `key: name`.
@@ -2415,6 +2415,9 @@ pub const Printer = struct {
             if (f.flags.is_generator and !downlevel_generator and !downlevel_async_gen) try self.write("*");
             if (native_async) try self.write(" ");
             if (f.name != hir_mod.none_node_id) {
+                if (f.flags.is_computed_name) {
+                    try self.printComputedPropertyName(f.name);
+                } else
                 // ECMAScript private names are declarations, not string
                 // property keys. At native-private targets preserve the `#`
                 // token verbatim; quoting it creates a public `"#name"`
@@ -6590,9 +6593,7 @@ pub const Printer = struct {
                         if (op.is_static) try self.write("static ");
                         try self.writeMethodPrefix(op.value);
                         if (op.is_computed) {
-                            try self.write("[");
-                            try self.printExpression(op.key);
-                            try self.write("]");
+                            try self.printComputedPropertyName(op.key);
                         } else {
                             try self.printExpression(op.key);
                         }
@@ -6600,9 +6601,7 @@ pub const Printer = struct {
                     } else {
                         if (op.is_static) try self.write("static ");
                         if (op.is_computed) {
-                            try self.write("[");
-                            try self.printExpression(op.key);
-                            try self.write("]");
+                            try self.printComputedPropertyName(op.key);
                         } else {
                             try self.printExpression(op.key);
                         }
@@ -10289,6 +10288,14 @@ pub const Printer = struct {
         return false;
     }
 
+    fn printComputedPropertyName(self: *Printer, key: NodeId) !void {
+        // ECMA-262 ComputedPropertyName takes AssignmentExpression. A sequence
+        // needs parentheses here even though bracket member access accepts it.
+        try self.write("[");
+        try self.printExpr(key, .comma);
+        try self.write("]");
+    }
+
     /// Emit a single non-spread object-literal property: shorthand `{ foo }`
     /// (expanded to `foo: foo` at ES5), method shorthand `{ foo() {} }`,
     /// computed `{ [k]: v }`, or regular `key: value`.
@@ -10337,9 +10344,7 @@ pub const Printer = struct {
             // emit native shorthand; at ES5 lower to `key: function (…) {…}`.
             if (self.options.es_target == .es5) {
                 if (op.is_computed) {
-                    try self.write("[");
-                    try self.printExpression(op.key);
-                    try self.write("]");
+                    try self.printComputedPropertyName(op.key);
                 } else {
                     try self.printObjectKey(op.key);
                 }
@@ -10348,9 +10353,7 @@ pub const Printer = struct {
                 // Accessor / async / generator keywords precede the key.
                 try self.writeMethodPrefix(op.value);
                 if (op.is_computed) {
-                    try self.write("[");
-                    try self.printExpression(op.key);
-                    try self.write("]");
+                    try self.printComputedPropertyName(op.key);
                 } else {
                     try self.printObjectKey(op.key);
                 }
@@ -10358,9 +10361,7 @@ pub const Printer = struct {
             try self.printObjectMethodBody(op.value);
         } else {
             if (op.is_computed) {
-                try self.write("[");
-                try self.printExpression(op.key);
-                try self.write("]");
+                try self.printComputedPropertyName(op.key);
             } else {
                 try self.printObjectKey(op.key);
             }
@@ -10858,6 +10859,24 @@ test "emit: property names never become template literals" {
         const out = try emit(c.src);
         defer T.allocator.free(out);
         try T.expectEqualStrings(c.want, out);
+    }
+}
+
+test "emit: computed property names preserve sequence grouping" {
+    const cases = [_][]const u8{
+        "class C { [(a, b)]() {} }",
+        "class C { [(a, b)] = 1; }",
+        "class C { get [(a, b)]() { return 1; } set [(a, b)](v) {} }",
+        "const o = { [(a, b)]: 1 };",
+        "const o = { [(a, b)]() {} };",
+        "const o = { get [(a, b)]() { return 1; }, set [(a, b)](v) {} };",
+        "const { [(a, b)]: value } = source;",
+    };
+    for (cases) |source| {
+        const out = try emit(source);
+        defer T.allocator.free(out);
+        try T.expect(std.mem.indexOf(u8, out, "[(a, b)]") != null);
+        try T.expect(std.mem.indexOf(u8, out, "[a, b]") == null);
     }
 }
 

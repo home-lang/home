@@ -569,7 +569,8 @@ pub const FnFlags = packed struct(u16) {
     /// ("Function implementation is missing ...") on these declarations,
     /// since tsc treats the parser diagnostic as covering the broken shape.
     has_errant_arrow: bool = false,
-    _pad: u1 = 0,
+    /// Class accessors keep their key expression in `name`; retain its brackets.
+    is_computed_name: bool = false,
 };
 
 pub const ParameterPayload = struct {

@@ -6789,7 +6789,8 @@ pub const Parser = struct {
                 try self.reportAccessorModifierOnlyOnProperty(mods);
                 try self.reportInvalidClassElementModifier(mods);
                 _ = self.advance(); // consume `get` / `set`
-                const name_node = if (self.peek().kind == .open_bracket) blk: {
+                const is_computed_name = self.peek().kind == .open_bracket;
+                const name_node = if (is_computed_name) blk: {
                     const ob = self.advance();
                     const key = try self.parseExpression();
                     _ = try self.expectClosingMatch(.close_bracket, "']' to close computed accessor name", ob.span.start, "[", "]");
@@ -6860,6 +6861,7 @@ pub const Parser = struct {
                         .is_method = true,
                         .is_getter = accessor_kw == .kw_get,
                         .is_setter = accessor_kw == .kw_set,
+                        .is_computed_name = is_computed_name,
                         .is_private = mods.visibility == .private,
                         .is_protected = mods.visibility == .protected,
                         .is_static = mods.is_static,
