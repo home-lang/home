@@ -1038,6 +1038,12 @@ pub fn build(b: *std.Build) void {
         run_home_tool_write_unsupported.expectStdOutEqual("OK unsupported Bun writes remain explicit failures\n");
         home_tool_smoke_step.dependOn(&run_home_tool_write_unsupported.step);
         b.step("home-tool-bun-write-profile-smoke", "Verify unsupported write forms remain failures").dependOn(&run_home_tool_write_unsupported.step);
+        const run_home_tool_write_modes = b.addSystemCommand(&.{ "/bin/sh", "-c", "umask 0\nexec \"$@\"", "home-write-modes" });
+        run_home_tool_write_modes.addArtifactArg(home_tool_exe);
+        run_home_tool_write_modes.addArgs(&.{ "run", "packages/runtime/test/tool_modules/bun_write_creation_mode.mjs" });
+        run_home_tool_write_modes.expectStdOutEqual("OK Bun pathname creation modes before umask\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_write_modes.step);
+        b.step("home-tool-bun-write-mode-smoke", "Verify real creation modes in an isolated umask-zero process").dependOn(&run_home_tool_write_modes.step);
         const run_home_tool_file_buffer = b.addRunArtifact(home_tool_exe);
         run_home_tool_file_buffer.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_file_buffer.addArgs(&.{ "run", "bun_file_buffer_independent.mjs" });

@@ -987,12 +987,20 @@
     path = stringPath(path);
     if (typeof data !== 'string' && !fsIsView(data)) unsupported('Home Bun.write supports pathname destinations and string or ArrayBuffer view data only');
     options = fsOptions(options, ['createPath']);
-    if (options.createPath !== undefined && typeof options.createPath !== 'boolean') throw new TypeError('Expected boolean createPath');
+    const createPath = options.createPath;
+    if (createPath !== undefined && typeof createPath !== 'boolean') throw new TypeError('Expected boolean createPath');
     if (data instanceof fsDataView) data = new fsBytes(fsViewBuffer.call(data), fsViewOffset.call(data), fsViewLength.call(data));
-    if (options.createPath !== false) fsOperation('mkdir', writeParent(path), true, false, 0o777);
     // Acknowledgement follows actual POSIX write-all and close. The byte count
     // comes from that native operation, independent of public Buffer methods.
-    const result = fsOperation('writeFile', path, data, 'w', 0o664);
+    let result;
+    try { result = fsOperation('writeFile', path, data, 'w', 0o664); }
+    catch (error) {
+      if (error.code !== 'ENOENT' || createPath === false) throw error;
+      fsOperation('mkdir', writeParent(path), true, false, 0o777);
+      // Bun 1.4.4's missing-parent recovery creates with 0666 before umask,
+      // while its direct path uses 0664. Preserve both observed paths.
+      result = fsOperation('writeFile', path, data, 'w', 0o666);
+    }
     if (!Number.isSafeInteger(result.bytesWritten) || result.bytesWritten < 0) throw new Error('Native write returned no byte count');
     return result.bytesWritten;
   }
