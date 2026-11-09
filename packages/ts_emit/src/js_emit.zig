@@ -1749,7 +1749,13 @@ pub const Printer = struct {
             .enum_decl => try self.printEnum(node),
             .namespace_decl => try self.printNamespace(node),
             else => {
+                // The ExpressionStatement lookahead restriction also applies
+                // to single-statement clauses and labeled bodies (ECMA-262
+                // 14.5); `{ ... } = value` would otherwise become a block.
+                const needs_parens = self.exprStmtNeedsParens(node);
+                if (needs_parens) try self.write("(");
                 try self.printExpression(node);
+                if (needs_parens) try self.write(")");
                 try self.writeSemi();
             },
         }
@@ -15095,6 +15101,21 @@ test "emit: es5 array destructuring assignment lowers via temp" {
     const out3 = try emitWithOpts("[, b] = x;", .{ .es_target = .es5 });
     defer T.allocator.free(out3);
     try T.expect(std.mem.indexOf(u8, out3, "(_a = x, b = _a[1], _a)") != null);
+}
+
+test "emit: inline expression statements preserve required parentheses" {
+    const sources = [_][]const u8{
+        "if (ok) ({ a } = x);",
+        "while (ok) ({ a } = x);",
+        "for (; ok;) ({ a } = x);",
+        "do ({ a } = x); while (ok);",
+        "label: ({ a } = x);",
+    };
+    for (sources) |source| {
+        const out = try emit(source);
+        defer T.allocator.free(out);
+        try T.expect(std.mem.indexOf(u8, out, "({ a } = x);") != null);
+    }
 }
 
 test "emit: destructuring assignment stays native at es2015+" {

@@ -904,6 +904,11 @@ pub fn build(b: *std.Build) void {
         run_quoted_property_names.addFileArg(b.path("packages/runtime/test/tool_modules/quoted_property_names.mjs"));
         run_quoted_property_names.expectStdOutEqual("OK exact quoted property names and TypeScript character map\n");
         home_tool_smoke_step.dependOn(&run_quoted_property_names.step);
+        const run_inline_expressions = b.addRunArtifact(home_tool_exe);
+        run_inline_expressions.addArg("run");
+        run_inline_expressions.addFileArg(b.path("packages/runtime/test/tool_modules/inline_expression_statements.mjs"));
+        run_inline_expressions.expectStdOutEqual("OK inline expression statement grouping and actual destructuring effects\n");
+        home_tool_smoke_step.dependOn(&run_inline_expressions.step);
         inline for (.{
             .{ "contextual_type_assignment.mjs", "OK actual contextual type assignments across blocks and exported function bodies\n" },
             .{ "contextual_type_alias.ts", "OK actual type aliases erase without consuming contextual assignments\n" },

@@ -17,6 +17,11 @@ template would need fewer escapes. Newlines, CRLF, mixed quotes and lone
 surrogates retain their exact property keys. Ordinary string expressions can
 still use template-literal quoting.
 
+Single-statement clauses and labeled bodies preserve the same expression
+grouping as top-level statements. Object destructuring assignments retain the
+parentheses that distinguish them from blocks, including if/else, while,
+for and do/while bodies.
+
 Object-literal async methods accept keyword, string, numeric, BigInt and
 computed property names while enforcing the no-line-terminator restriction
 after async. BigInt names preserve their exact decimal property key; emitted
