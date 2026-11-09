@@ -976,7 +976,21 @@
   const nativeChild = globalThis.__home_tool_child;
   delete globalThis.__home_tool_spawn_factory;
   delete globalThis.__home_tool_child;
-  const bunApi = { spawn: spawnFactory(nativeChild, timers), markdown: markdownApi, Glob: globFactory(nativeGlob), YAML: { parse: Home.parseYAML }, file: fileFactory(fsOperation, bufferApi.Buffer) };
+  const writeParent = posixPath.dirname;
+  async function write(path, data, options) {
+    path = stringPath(path);
+    if (typeof data !== 'string' && !fsIsView(data)) unsupported('Home Bun.write supports pathname destinations and string or ArrayBuffer view data only');
+    options = fsOptions(options, ['createPath']);
+    if (options.createPath !== undefined && typeof options.createPath !== 'boolean') throw new TypeError('Expected boolean createPath');
+    if (data instanceof fsDataView) data = new fsBytes(fsViewBuffer.call(data), fsViewOffset.call(data), fsViewLength.call(data));
+    if (options.createPath !== false) fsOperation('mkdir', writeParent(path), true, false, 0o777);
+    // Acknowledgement follows actual POSIX write-all and close. The byte count
+    // comes from that native operation, independent of public Buffer methods.
+    const result = fsOperation('writeFile', path, data, 'w', 0o664);
+    if (!Number.isSafeInteger(result.bytesWritten) || result.bytesWritten < 0) throw new Error('Native write returned no byte count');
+    return result.bytesWritten;
+  }
+  const bunApi = { write, spawn: spawnFactory(nativeChild, timers), markdown: markdownApi, Glob: globFactory(nativeGlob), YAML: { parse: Home.parseYAML }, file: fileFactory(fsOperation, bufferApi.Buffer) };
   Object.defineProperty(bunApi, 'env', { value: process.env, enumerable: true });
   Object.defineProperty(bunApi, 'argv', { value: process.argv, writable: true, enumerable: true, configurable: false });
   globalThis.Bun = bunApi;

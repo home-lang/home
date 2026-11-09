@@ -1026,6 +1026,18 @@ pub fn build(b: *std.Build) void {
         run_home_tool_file.addArgs(&.{ "run", "bun_file_contract.mjs" });
         run_home_tool_file.expectStdOutEqual("OK real Bun file reads, bytes, metadata and failures\n");
         home_tool_smoke_step.dependOn(&run_home_tool_file.step);
+        const run_home_tool_write = b.addRunArtifact(home_tool_exe);
+        run_home_tool_write.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_write.addArgs(&.{ "run", "bun_write_contract.mjs" });
+        run_home_tool_write.expectStdOutEqual("OK real Bun pathname writes, byte counts, truncation and failures\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_write.step);
+        b.step("home-tool-bun-write-smoke", "Verify actual pathname writes and byte acknowledgements").dependOn(&run_home_tool_write.step);
+        const run_home_tool_write_unsupported = b.addRunArtifact(home_tool_exe);
+        run_home_tool_write_unsupported.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_write_unsupported.addArgs(&.{ "run", "bun_write_unsupported.mjs" });
+        run_home_tool_write_unsupported.expectStdOutEqual("OK unsupported Bun writes remain explicit failures\n");
+        home_tool_smoke_step.dependOn(&run_home_tool_write_unsupported.step);
+        b.step("home-tool-bun-write-profile-smoke", "Verify unsupported write forms remain failures").dependOn(&run_home_tool_write_unsupported.step);
         const run_home_tool_file_buffer = b.addRunArtifact(home_tool_exe);
         run_home_tool_file_buffer.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_file_buffer.addArgs(&.{ "run", "bun_file_buffer_independent.mjs" });

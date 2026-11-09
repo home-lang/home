@@ -418,6 +418,7 @@ fn operation(
             const close_error = if (close_result == 0) null else std.posix.errno(close_result);
             if (write_error) |err| return nativeFailure(c, object, err, "write");
             if (close_error) |err| return nativeFailure(c, object, err, "close");
+            set(c, object, "bytesWritten", api.JSValueMakeNumber(c, @floatFromInt(contents.?.len)));
         }
     } else if (std.mem.eql(u8, op, "readFile") or std.mem.eql(u8, op, "readToolFile") or std.mem.eql(u8, op, "readToolTextFile")) {
         const bounded = !std.mem.eql(u8, op, "readFile");
