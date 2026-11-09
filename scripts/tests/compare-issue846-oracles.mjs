@@ -102,6 +102,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-guards.json',
   'packages/ts_cli/testdata/issue987-array-statics/tsconfig-statics.json',
   'packages/ts_cli/testdata/issue987-array-statics/tsconfig-targets.json',
+  'packages/ts_cli/testdata/issue987-array-statics/tsconfig-explicit.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)

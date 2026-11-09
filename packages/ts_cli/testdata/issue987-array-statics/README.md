@@ -28,8 +28,12 @@ argument's literal type, a widened one is left alone, and a
 fallback for a source whose element type is not statically known. Both
 engines report only that one TS2345 and exit 2.
 
-[Issue #987](https://github.com/home-lang/home/issues/987) tracks the
-remaining work: explicit type arguments (`Array.of<number>(1, 2)`,
-`Array.from<string, number>(iterable, (v) => v.length)`) are still rejected
-with a false TS2558, because the synthetic signatures carry no type
-parameters.
+`tsconfig-explicit.json` (`explicit.ts`) covers the binders themselves:
+`of<T>`, `from<T>` and `from<T, U>` instantiated from an explicit type
+argument list, where `U` defaults to `T` so one signature serves both `from`
+overloads. Two TS2322 pin the instantiated result and one TS2339 pins the
+element type reaching a mapped callback; the clean rows pin that the trailing
+`mapfn` and `thisArg` stay optional through instantiation, which arity
+metadata stored beside the signature would otherwise lose.
+
+[Issue #987](https://github.com/home-lang/home/issues/987) tracks this work.
