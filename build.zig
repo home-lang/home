@@ -847,6 +847,12 @@ pub fn build(b: *std.Build) void {
         run_stat_sync.addFileArg(b.path("packages/runtime/test/tool_modules/fs_stat_sync.mjs"));
         run_stat_sync.expectStdOutEqual("OK native sync stat and lstat, seven predicates, metadata, symlinks, mutations and actual errno\n");
         home_tool_smoke_step.dependOn(&run_stat_sync.step);
+        const run_read_buffer = b.addSystemCommand(&.{"python3"});
+        run_read_buffer.addFileArg(b.path("packages/runtime/test/tool_read_buffer_fixture.py"));
+        run_read_buffer.addArtifactArg(home_tool_exe);
+        run_read_buffer.addFileArg(b.path("packages/runtime/test/tool_modules/fs_read_buffer.mjs"));
+        run_read_buffer.expectStdOutEqual("OK native sync and promised Buffer reads, exact bytes, UTF8 and OS errors\n");
+        home_tool_smoke_step.dependOn(&run_read_buffer.step);
         const run_access = b.addSystemCommand(&.{"python3"});
         run_access.addFileArg(b.path("packages/runtime/test/tool_access_fixture.py"));
         run_access.addArtifactArg(home_tool_exe);

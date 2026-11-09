@@ -369,12 +369,14 @@ failure throws. Other os APIs remain absent. Node is the oracle for mutable HOME
 behavior; Bun 1.4.4 caches its home directory and differs on these witnesses.
 
 The tool module loader exposes the same real filesystem adapter as `fs` and
-`node:fs`: `existsSync` and `readFileSync` with explicit `utf8`/`utf-8` encoding
-and string paths. Reads use native file bytes, preserve embedded NULs and BOMs,
+`node:fs`: `existsSync` and string-path `readFileSync`. Reads without encoding
+(or with null encoding) return independent managed Buffers containing native
+bytes. Explicit `utf8`/`utf-8` encoding returns a string. Promised `readFile`
+shares this read profile. Reads preserve embedded NULs and BOMs,
 and replace malformed UTF-8 sequences. The checked-in byte fixture and its
 Node-produced expected JSON cover Unicode boundaries and malformed input.
-Buffer-returning reads, other encodings/flags and URL/Buffer paths still require
-implementations and remain errors. Native read errors
+Other encodings/flags and URL/Buffer paths remain explicitly unsupported;
+the native file-read limit is 8 MiB. Native read errors
 propagate; complete Node filesystem error metadata is not provided yet.
 
 `fs.accessSync` and `fs.promises.access` check actual native access permissions

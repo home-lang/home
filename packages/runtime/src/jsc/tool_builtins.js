@@ -63,10 +63,12 @@
     return output.join('');
   }
 
-  function utf8ReadOptions(options) {
+  function readFileOptions(options) {
+    if (options !== undefined && options !== null && typeof options !== 'string' && (typeof options !== 'object' || Array.isArray(options))) throw new TypeError('Expected filesystem read options object or encoding');
     const encoding = typeof options === 'string' ? options : options && options.encoding;
-    if (typeof encoding !== 'string' || !['utf8', 'utf-8'].includes(encoding.toLowerCase())) {
-      unsupported('Home node:fs readFileSync currently requires utf8 encoding; Buffer and other encodings are unsupported');
+    const utf8 = encoding !== undefined && encoding !== null;
+    if (utf8 && (typeof encoding !== 'string' || !['utf8', 'utf-8'].includes(encoding.toLowerCase()))) {
+      unsupported('Home node:fs string reads currently support utf8/utf-8 encoding only');
     }
     if (options && typeof options === 'object') {
       if (options.flag !== undefined && options.flag !== 'r') unsupported('Home node:fs currently supports the r flag only');
@@ -75,6 +77,7 @@
       });
       if (unknown.length) unsupported(`Unsupported Home node:fs read options: ${unknown.join(', ')}`);
     }
+    return utf8;
   }
 
   const bufferFactory = globalThis.__home_tool_buffer_factory;
@@ -106,10 +109,11 @@
   const fs = {
     readFileSync: function(path, options) {
       path = stringPath(path);
-      utf8ReadOptions(options);
+      const utf8 = readFileOptions(options);
       // Hex transport preserves NULs and malformed UTF-8 that a sentinel-based
       // text callback cannot carry faithfully. File errors propagate as errors.
-      return decodeUtf8(Home.readFileHex(path));
+      const hex = fsOperation('readFile', path, false, false).hex;
+      return utf8 ? decodeUtf8(hex) : bufferApi.Buffer.from(hex, 'hex');
     },
     existsSync: function(path) {
       if (typeof path === 'string' && path.indexOf('\0') !== -1) return false;
@@ -337,8 +341,9 @@
       writeFile(stringPath(path), data, options);
     },
     readFile: async function(path, options) {
-      utf8ReadOptions(options);
-      return decodeUtf8(fsOperation('readFile', path, false, false).hex);
+      const utf8 = readFileOptions(options);
+      const hex = fsOperation('readFile', path, false, false).hex;
+      return utf8 ? decodeUtf8(hex) : bufferApi.Buffer.from(hex, 'hex');
     },
     mkdir: async function(path, options) {
       options = fsOptions(options, ['recursive', 'mode']);
