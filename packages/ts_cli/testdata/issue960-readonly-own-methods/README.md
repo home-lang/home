@@ -19,3 +19,12 @@ operator that belongs to a nested type (`{ run: () => number; }[]`,
 `{ a: ... }[]` and `Map<...>[]` that need no parentheses. All twelve rows now
 match TypeScript 5.7.3 exactly, including the nested
 `(readonly (readonly number[])[])[]` form.
+
+`tsconfig-arguments.json` covers the argument position. A `readonly number[]`
+or `readonly [number, string]` argument cannot satisfy a mutable array or
+tuple parameter, including a generic `T[]` parameter, and TypeScript puts its
+`readonly` explanation underneath TS2345. Home previously accepted all three
+calls silently while already rejecting the equivalent assignment with TS4104.
+A spread copy, a mutable source, and a `readonly` parameter in either
+direction stay legal, as do the copying methods. All three diagnostics and
+both engines' exit status now match exactly.

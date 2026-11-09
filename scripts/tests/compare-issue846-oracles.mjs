@@ -88,6 +88,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue960-readonly-own-methods/tsconfig.json',
   'packages/ts_cli/testdata/issue960-readonly-own-methods/tsconfig-structural.json',
   'packages/ts_cli/testdata/issue960-readonly-own-methods/tsconfig-display.json',
+  'packages/ts_cli/testdata/issue960-readonly-own-methods/tsconfig-arguments.json',
   'packages/ts_cli/testdata/issue972-generic-array-union-map/tsconfig.json',
   'packages/ts_cli/testdata/issue970-unique-symbol-keyof/tsconfig-arrays.json',
   'packages/ts_cli/testdata/issue970-unique-symbol-keyof/tsconfig-computed.json',
