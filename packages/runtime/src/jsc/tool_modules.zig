@@ -257,7 +257,11 @@ fn resolveModule(allocator: std.mem.Allocator, specifier: []const u8, parent_pat
     else
         std.fs.path.dirname(parent_path) orelse ".";
     if (specifier[0] == '#') return resolvePackageImport(allocator, specifier, parent_dir);
-    const path_like = std.fs.path.isAbsolute(specifier) or
+    // CommonJS LOAD_AS_DIRECTORY accepts the exact current/parent names too.
+    // Keep this require-only; ESM directory imports are a separate contract.
+    const dot_directory = mode == .require and
+        (std.mem.eql(u8, specifier, ".") or std.mem.eql(u8, specifier, ".."));
+    const path_like = dot_directory or std.fs.path.isAbsolute(specifier) or
         std.mem.startsWith(u8, specifier, "./") or
         std.mem.startsWith(u8, specifier, "../");
     if (path_like) {
