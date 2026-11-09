@@ -69376,6 +69376,18 @@ pub const Checker = struct {
                 self.interner.pool.flagsOf(parent_t).is_object_type)
             {
                 try self.decl_single_base.put(self.gpa, iface_t, parent_t);
+                // The same collapse makes a non-augmenting interface over an
+                // array an array itself, so relation elaborations compare
+                // element types directly instead of reaching for the
+                // `'number' index signatures are incompatible.` wrapper that
+                // a merely indexed object gets. An interface that declares
+                // its own members is not collapsed and keeps that wrapper.
+                if (own_member_count == 0 and
+                    (self.array_origin_types.contains(parent_t) or
+                        self.heritageNodeNamesArray(extends_node)))
+                {
+                    try self.array_origin_types.put(self.gpa, iface_t, {});
+                }
             }
         }
         {
@@ -80564,6 +80576,19 @@ pub const Checker = struct {
             self.diagnosticExists(type_node, TsCodes.cannot_find_namespace) or
             self.diagnosticExists(type_node, TsCodes.cannot_find_namespace_did_you_mean) or
             self.diagnosticExists(type_node, TsCodes.namespace_used_as_type);
+    }
+
+    /// Whether a heritage node names the global `Array` or `ReadonlyArray`,
+    /// with or without type arguments. `typeNodeHasArraySyntax` cannot answer
+    /// this: it reads the name through `bareTypeNodeName`, which declines a
+    /// type reference that carries arguments, so `extends Array<number>` has
+    /// no bare name to match.
+    fn heritageNodeNamesArray(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .type_ref) return false;
+        const r = hir_mod.typeRefOf(self.hir, node);
+        if (r.qualifier_len != 0) return false;
+        const text = self.string_interner.get(r.name);
+        return std.mem.eql(u8, text, "Array") or std.mem.eql(u8, text, "ReadonlyArray");
     }
 
     fn typeNodeHasArraySyntax(self: *Checker, type_node: NodeId) bool {
@@ -192153,6 +192178,13 @@ pub const Checker = struct {
         const raw_element = self.interner.objectNumberIndex(array);
         const element = self.resolveGenericType(raw_element) catch raw_element;
         if (element == types.Primitive.none) return false;
+        // An array element type is not the object-shaped case this gate was
+        // built for: a nested array literal owns the diagnostic at its own
+        // offending element, which
+        // `tryReportArrayLiteralArrayElementMismatch` descends to. Keyed to
+        // array provenance so a merely indexed object still elaborates the
+        // enclosing assignment.
+        if (self.array_origin_types.contains(element) and !self.isTupleShapedTarget(element)) return false;
         if (!self.isConcreteObjectForArrayRelation(element)) return false;
         for (hir_mod.arrayLiteralElements(self.hir, node)) |item| {
             if (item == hir_mod.none_node_id or self.hir.kindOf(item) == .spread) continue;
@@ -193226,21 +193258,26 @@ pub const Checker = struct {
         if (self.arrayLiteralHasObjectElementMismatch(init_node, target_t)) return false;
         const resolved_target = self.arrayTypeFromMaybeOptional(target_t) orelse return false;
         if (self.isTupleShapedTarget(resolved_target)) return false;
-        // Named array interfaces retain their declaration identity in tsc's
-        // assignment diagnostic. Let the whole-value relation report the
-        // widened source array against that named target instead of reducing
-        // the error to the first incompatible spread element.
-        if (self.namedTypeForId(resolved_target) != null) return false;
-        // Same consideration, different condition: an array literal made only
-        // of spreads of non-tuple arrays has the spread's own array type
-        // rather than a fresh element-wise literal, so the whole value is
-        // reported against the target.
+        // An array literal made only of spreads of non-tuple arrays has the
+        // spread's own array type rather than a fresh element-wise literal,
+        // so the whole value is reported against the target. This replaced a
+        // broader test on the target having a name, which was introduced for
+        // exactly that spread case and also suppressed the element diagnostic
+        // TypeScript reports for an ordinary element against a named array
+        // alias or interface.
         if (try self.arrayLiteralIsOnlyNonTupleSpreads(init_node)) return false;
         const elem_target_t = self.interner.objectNumberIndex(resolved_target);
         if (elem_target_t == types.Primitive.none or
             elem_target_t == types.Primitive.any or
             elem_target_t == types.Primitive.unknown) return false;
-        if (!self.typeIsNullishOnly(elem_target_t) and
+        // An array-shaped element target (`AliasArray[]`, `number[][]`) keeps
+        // per-element reporting even though its element type has no simple
+        // display name: TypeScript descends through a nested array literal to
+        // the innermost offending element, and reports any other failing
+        // element against the element type at the element itself.
+        const elem_target_is_array = self.array_origin_types.contains(elem_target_t) and
+            !self.isTupleShapedTarget(elem_target_t);
+        if (!self.typeIsNullishOnly(elem_target_t) and !elem_target_is_array and
             (try self.simpleDiagnosticTypeName(elem_target_t)) == null) return false;
 
         var emitted = false;
@@ -193284,6 +193321,20 @@ pub const Checker = struct {
                 continue;
             }
             if (try self.checkerAssignableExpressionTo(elem_node, report_elem_t, elem_target_t)) continue;
+            // A nested array literal owns the element diagnostic one level
+            // down; when it declines — an all-spread literal reports as a
+            // whole value — the element itself is reported here instead.
+            if (elem_target_is_array) {
+                if (try self.tryReportArrayLiteralArrayElementMismatch(elem_node, elem_target_t)) {
+                    emitted = true;
+                    continue;
+                }
+                // Unless something inside the element already reported: a
+                // tuple element target runs its own positional pass first,
+                // and TypeScript keeps only that innermost diagnostic.
+                if (self.hir.kindOf(elem_node) == .array_literal and
+                    self.argumentHasInnerTypeMismatchDiagnostic(elem_node)) continue;
+            }
             try self.reportTypeNotAssignable(
                 elem_node,
                 report_elem_t,
@@ -301470,4 +301521,95 @@ test "checker: a failed tuple spread is explained by its element union once" {
     // Assignability stays positional, so the two aligned spreads are silent.
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
+}
+
+test "checker: a named array target reports its offending element" {
+    const s = try newSetup(
+        \\declare const strings: string[];
+        \\type AliasArray = number[];
+        \\interface InterfaceArray extends Array<number> {}
+        \\type SpreadTarget = boolean[];
+        \\const alias: AliasArray = ["x"];
+        \\const iface: InterfaceArray = ["x"];
+        \\const bare: number[] = ["x"];
+        \\const spread: SpreadTarget = [...strings];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // Each ordinary element reports itself, and nothing reports the whole
+    // value against the target's name.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
+    try T.expect(!checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string[]' is not assignable to type 'AliasArray'."));
+    try T.expect(!checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string[]' is not assignable to type 'InterfaceArray'."));
+    // An all-spread literal is still the whole value, named: that is what the
+    // removed guard was introduced for, and #989's rule is what keeps it.
+    // The target is `boolean[]` so this message cannot come from the rows
+    // above, whose `number[]` aliases share one interned type.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string[]' is not assignable to type 'SpreadTarget'."));
+}
+
+test "checker: an array-shaped element target reports the innermost element" {
+    const s = try newSetup(
+        \\declare const strings: string[];
+        \\type AliasArray = number[];
+        \\const nested: AliasArray[] = [[1], ["x"]];
+        \\const plain: number[][] = [[1], ["x"]];
+        \\const value: AliasArray[] = [strings];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The innermost element owns the diagnostic, not the enclosing literal.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
+    try T.expect(!checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '(number[] | string[])[]' is not assignable to type 'AliasArray[]'.",
+    ));
+    try T.expect(!checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '(number[] | string[])[]' is not assignable to type 'number[][]'.",
+    ));
+    // An element that is not an array literal has nothing deeper to descend
+    // into, so it is reported against the element type where it stands.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string[]' is not assignable to type 'AliasArray'."));
+}
+
+test "checker: a non-augmenting interface over an array compares element types" {
+    const s = try newSetup(
+        \\declare const strings: string[];
+        \\interface InterfaceArray extends Array<number> {}
+        \\interface DeepArray extends InterfaceArray {}
+        \\const iface: InterfaceArray = strings;
+        \\const deep: DeepArray = strings;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string[]' is not assignable to type 'InterfaceArray'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string[]' is not assignable to type 'DeepArray'."));
+    // Such an interface IS an array, so the element types are compared
+    // directly: no `'number' index signatures are incompatible.` wrapper.
+    try T.expectEqual(@as(usize, 0), checkerCountChainCode(s, TsCodes.index_signatures_incompatible));
+}
+
+test "checker: an interface that only indexes keeps the index signature wrapper" {
+    const s = try newSetup(
+        \\declare const strings: string[];
+        \\interface Indexed {
+        \\  length: number;
+        \\  [index: number]: number;
+        \\}
+        \\interface ArrayPlus extends Array<number> {
+        \\  tag: string;
+        \\}
+        \\const indexed: Indexed = strings;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string[]' is not assignable to type 'Indexed'."));
+    try T.expect(checkerCountChainCode(s, TsCodes.index_signatures_incompatible) > 0);
+    // An interface that declares its own members is not collapsed to its
+    // base, so it does not become an array either.
+    const array_plus = s.checker.type_names.get(try s.sint.intern("ArrayPlus")) orelse return error.TestUnexpectedResult;
+    try T.expect(!s.checker.array_origin_types.contains(array_plus));
 }
