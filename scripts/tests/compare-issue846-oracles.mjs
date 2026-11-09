@@ -62,6 +62,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue970-unique-symbol-keyof/') ||
   path.includes('/issue971-object-display/') ||
   path.includes('/issue969-iterator-helpers/') ||
+  path.includes('/issue987-array-statics/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
@@ -99,6 +100,8 @@ for (const config of [
   'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-wrong.json',
   'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-errors.json',
   'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-guards.json',
+  'packages/ts_cli/testdata/issue987-array-statics/tsconfig-statics.json',
+  'packages/ts_cli/testdata/issue987-array-statics/tsconfig-targets.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)

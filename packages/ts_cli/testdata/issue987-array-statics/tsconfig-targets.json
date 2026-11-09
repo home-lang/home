@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "strict": true,
+    "noEmit": true
+  },
+  "files": ["targets.ts"]
+}
