@@ -3349,6 +3349,10 @@ const PatternIndexSignature = struct {
     key_type: TypeId,
     value_type: TypeId,
     decl_node: NodeId,
+    /// A template-key signature is readonly for exactly the keys its pattern
+    /// matches, so the readonly bit belongs here rather than in the
+    /// string/number/symbol domains, which cannot express a key subset.
+    is_readonly: bool = false,
 };
 
 const IndexSignatureDuplicateState = struct {
@@ -3390,8 +3394,16 @@ const ReadonlyIndexDomains = struct {
     string: bool = true,
     number: bool = true,
     symbol: bool = true,
+    /// At least one pattern index signature is readonly. Which keys that
+    /// covers is decided per key from `pattern_index_signatures`; this only
+    /// records that the type has such a signature at all.
+    pattern: bool = false,
 
     fn any(self: @This()) bool {
+        return self.string or self.number or self.symbol or self.pattern;
+    }
+
+    fn anyWholeDomain(self: @This()) bool {
         return self.string or self.number or self.symbol;
     }
 };
@@ -51918,7 +51930,12 @@ pub const Checker = struct {
     /// index" query used by type relations and inheritance.
     fn typeHasReadonlyIndexSignatureForTarget(self: *Checker, t: TypeId, target: NodeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
-        if (self.readonly_index_types.get(t)) |domains| {
+        // A readonly template-key signature covers only the keys its pattern
+        // matches, so it is decided per key before the domain bits, which
+        // describe whole key domains.
+        if (self.patternIndexReadonlyForTarget(t, target) catch false) return true;
+        if (self.readonly_index_types.getPtr(t)) |entry| if (entry.anyWholeDomain()) {
+            const domains = entry.*;
             if (self.hir.kindOf(target) == .member_access) {
                 return self.indexReadonlyForName(t, hir_mod.memberOf(self.hir, target).name);
             }
@@ -51941,7 +51958,7 @@ pub const Checker = struct {
                 return domains.string;
             }
             return false;
-        }
+        };
         if (self.tupleTypeLooksReadonly(t) and self.interner.objectNumberIndex(t) != types.Primitive.none) return true;
         const flags = self.interner.pool.flagsOf(t);
         if (self.typeIsMappedPayloadType(t) and self.interner.mappedPayload(t).readonly == .add) return true;
@@ -69089,7 +69106,9 @@ pub const Checker = struct {
                         .key_type = key_t,
                         .value_type = value_t,
                         .decl_node = m,
+                        .is_readonly = ix.is_readonly,
                     });
+                    if (ix.is_readonly) readonly_domains.pattern = true;
                 }
                 continue;
             }
@@ -69283,6 +69302,23 @@ pub const Checker = struct {
             try self.mergeInterfaceExtends(extends, iface_name_for_extends, &iface_members, &string_idx, &number_idx, &symbol_idx);
             for (extends) |extends_node| {
                 const parent_t = self.lowererLowerWithTypeParams(extends_node) catch continue;
+                // Pattern index signatures are inherited like the other
+                // index signatures. A base whose patterns are all mutable has
+                // no readonly-domain entry, so this precedes that lookup.
+                if (self.pattern_index_signatures.get(parent_t)) |parent_patterns| {
+                    for (parent_patterns) |parent_pattern| {
+                        var declared = false;
+                        for (pattern_indexes.items) |own_pattern| {
+                            if (own_pattern.key_type == parent_pattern.key_type) {
+                                declared = true;
+                                break;
+                            }
+                        }
+                        if (declared) continue;
+                        try pattern_indexes.append(self.gpa, parent_pattern);
+                        if (parent_pattern.is_readonly) readonly_domains.pattern = true;
+                    }
+                }
                 const parent_domains = self.readonly_index_types.get(parent_t) orelse
                     if (self.typeHasReadonlyIndexSignature(parent_t)) ReadonlyIndexDomains{} else continue;
                 if (own_string_idx == types.Primitive.none and self.interner.objectStringIndex(parent_t) != types.Primitive.none)
@@ -80921,7 +80957,9 @@ pub const Checker = struct {
                                 .key_type = key_t,
                                 .value_type = value_t,
                                 .decl_node = m,
+                                .is_readonly = ix.is_readonly,
                             });
+                            if (ix.is_readonly) readonly_domains.pattern = true;
                         }
                         continue;
                     }
@@ -202285,6 +202323,74 @@ pub const Checker = struct {
         return self.interner.internIntersection(values.items) catch return error.OutOfMemory;
     }
 
+    /// Whether a readonly pattern index signature covers the key this
+    /// assignment target names. `readonly [key: `data-${string}`]: string`
+    /// forbids writing `data-…` keys while leaving every other key of the
+    /// same string domain writable, so the answer depends on the key.
+    fn patternIndexReadonlyForTarget(self: *Checker, t: TypeId, target: NodeId) CheckError!bool {
+        switch (self.hir.kindOf(target)) {
+            .member_access => return try self.patternIndexReadonlyForStringKey(
+                t,
+                hir_mod.memberOf(self.hir, target).name,
+            ),
+            .element_access => {
+                const index_node = hir_mod.elementOf(self.hir, target).index;
+                if (self.hir.kindOf(index_node) == .literal_string) {
+                    return try self.patternIndexReadonlyForStringKey(
+                        t,
+                        hir_mod.literalStringOf(self.hir, index_node).value,
+                    );
+                }
+                const index_t = self.hir.typeOf(index_node);
+                if (index_t == types.Primitive.none) return false;
+                return try self.patternIndexReadonlyForIndexType(t, index_t);
+            },
+            else => return false,
+        }
+    }
+
+    fn patternIndexReadonlyForStringKey(self: *Checker, object_t: TypeId, key: hir_mod.StringId) CheckError!bool {
+        if (object_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(object_t);
+        if (flags.is_intersection) {
+            // Matching a key can intern, which moves the member pool, so do
+            // not hold a live slice into it across the recursion.
+            const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(object_t));
+            defer self.gpa.free(members);
+            for (members) |member_t| {
+                if (try self.patternIndexReadonlyForStringKey(member_t, key)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        const patterns = self.pattern_index_signatures.get(object_t) orelse return false;
+        for (patterns) |pattern| {
+            if (!pattern.is_readonly) continue;
+            if (try self.stringLiteralAssignableToType(key, pattern.key_type)) return true;
+        }
+        return false;
+    }
+
+    fn patternIndexReadonlyForIndexType(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!bool {
+        if (object_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(object_t);
+        if (flags.is_intersection) {
+            const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(object_t));
+            defer self.gpa.free(members);
+            for (members) |member_t| {
+                if (try self.patternIndexReadonlyForIndexType(member_t, index_t)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        const patterns = self.pattern_index_signatures.get(object_t) orelse return false;
+        for (patterns) |pattern| {
+            if (!pattern.is_readonly) continue;
+            if (self.engine.isAssignableTo(index_t, pattern.key_type) catch false) return true;
+        }
+        return false;
+    }
+
     fn patternIndexValueForIndexType(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?TypeId {
         if (object_t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(object_t);
@@ -301178,4 +301284,30 @@ test "checker: an all-spread array literal is reported against the whole target"
     // A fixed element, a spread of a literal and a tuple spread each keep the
     // positional reporting: two, two and one element diagnostics.
     try T.expectEqual(@as(usize, 7), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: a readonly template index signature forbids only its own keys" {
+    const s = try newSetup(
+        \\interface Attributes {
+        \\  [key: string]: string
+        \\  readonly [key: `data-${string}`]: string
+        \\}
+        \\declare const attributes: Attributes
+        \\declare const anyKey: string
+        \\declare const dataKey: `data-${string}`
+        \\attributes.mutable = 'ok'
+        \\attributes[anyKey] = 'ok'
+        \\attributes[0] = 'ok'
+        \\attributes['data-fixed'] = 'bad'
+        \\attributes[dataKey] = 'bad'
+        \\const read: string = attributes['data-fixed']
+        \\void read
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The readonly bit lives on the pattern signature: the string domain of
+    // this type stays mutable, so only the matching keys are rejected.
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.readonly_index_signature));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.readonly_index_signature, "Index signature in type 'Attributes' only permits reading."));
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
 }

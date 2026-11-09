@@ -114,6 +114,7 @@ const readonly_index_domains: Shape = .{ .fields = &.{
     .{ .name = "string", .shape = scalar },
     .{ .name = "number", .shape = scalar },
     .{ .name = "symbol", .shape = scalar },
+    .{ .name = "pattern", .shape = scalar },
 } };
 const generator: Shape = .{ .fields = &.{
     .{ .name = "yield_type", .shape = type_id },
@@ -124,6 +125,7 @@ const pattern: Shape = .{ .fields = &.{
     .{ .name = "key_type", .shape = type_id },
     .{ .name = "value_type", .shape = type_id },
     .{ .name = "decl_node", .shape = node_id },
+    .{ .name = "is_readonly", .shape = scalar },
 } };
 const symbolic_segment: Shape = .{ .fields = &.{
     .{ .name = "type", .shape = type_id },
