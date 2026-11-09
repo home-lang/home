@@ -588,6 +588,19 @@
       }
       return component;
     },
+    extname: function(path) {
+      pathString(path);
+      // Inspect only the final POSIX component. Dotfiles and the exact parent
+      // component have no extension; trailing separators are not filename data.
+      // https://nodejs.org/api/path.html#pathextnamepath
+      let end = path.length;
+      while (end > 0 && path[end - 1] === '/') end--;
+      let start = end;
+      while (start > 0 && path[start - 1] !== '/') start--;
+      const component = path.slice(start, end);
+      const dot = component.lastIndexOf('.');
+      return dot > 0 && component !== '..' ? component.slice(dot) : '';
+    },
     dirname: function(path) {
       pathString(path);
       if (path.length === 0) return '.';
