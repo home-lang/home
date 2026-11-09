@@ -18550,6 +18550,10 @@ pub const Parser = struct {
                 .greater_than, .close_paren, .close_brace, .close_bracket => {
                     if (depth > 0) depth -= 1;
                 },
+                // The lexer packs nested generic closers into shift tokens.
+                // Count every closer here without changing expression tokens.
+                .greater_greater => depth = @max(0, depth - 2),
+                .greater_greater_greater => depth = @max(0, depth - 3),
                 else => {},
             }
         }
@@ -18576,6 +18580,8 @@ pub const Parser = struct {
                 .greater_than, .close_paren, .close_bracket => {
                     if (depth > 0) depth -= 1;
                 },
+                .greater_greater => depth = @max(0, depth - 2),
+                .greater_greater_greater => depth = @max(0, depth - 3),
                 else => {},
             }
         }
@@ -18602,6 +18608,8 @@ pub const Parser = struct {
                 .greater_than, .close_paren, .close_brace, .close_bracket => {
                     if (depth > 0) depth -= 1;
                 },
+                .greater_greater => depth = @max(0, depth - 2),
+                .greater_greater_greater => depth = @max(0, depth - 3),
                 else => {},
             }
         }
@@ -30946,6 +30954,28 @@ test "parser: ambiguous nested paren parameters do not commit to arrow" {
         try T.expect(d.code != 1003);
     }
     try T.expect(saw_semicolon);
+}
+
+test "parser: typed arrows retain compound generic return closers" {
+    const cases = [_][]const u8{
+        "const f = (): Array<Array<number>> => [[7]];",
+        "const f = (): Array<Array<Array<number>>> => { return [[[7]]]; };",
+        "const f = async (): Promise<Awaited<ReturnType<() => number>> | undefined> => 7;",
+        "const f = (): (() => Array<Array<number>>) => () => [[7]];",
+        "const f = (): { values: Array<Array<number>> } => ({ values: [[7]] });",
+        "const f = (): Array<Array<number> > => [[7]];",
+    };
+    for (cases) |source| {
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const stmts = hir_mod.blockStmts(&s.hir, root);
+        try T.expectEqual(@as(usize, 1), stmts.len);
+        const init = hir_mod.varDeclOf(&s.hir, stmts[0]).init;
+        try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(init));
+        try T.expect(hir_mod.fnDeclOf(&s.hir, init).return_type != hir_mod.none_node_id);
+    }
 }
 
 test "parser: arrow — typed params + return" {
