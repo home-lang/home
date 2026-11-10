@@ -71,7 +71,10 @@ fn resolvedFile(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
 
 fn tryWithExtensions(allocator: std.mem.Allocator, base: []const u8) ?[]u8 {
     if (resolvedFile(allocator, base)) |path| return path;
-    if (std.fs.path.extension(base).len != 0) return null;
+    // CommonJS LOAD_AS_FILE appends supported source suffixes even when the
+    // requested basename contains dots (e.g. module.compiled.js). Keep an
+    // existing exact filename first, and preserve Home's extension priority.
+    // https://nodejs.org/api/modules.html#all-together
     for (extensions) |extension| {
         const candidate = std.mem.concat(allocator, u8, &.{ base, extension }) catch return null;
         defer allocator.free(candidate);
