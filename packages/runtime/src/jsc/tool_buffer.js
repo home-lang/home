@@ -2,6 +2,13 @@
 globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
   'use strict';
   const Bytes = Uint8Array;
+  // Match the engine's existing numeric TypedArray allocation ceiling and enforce the
+  // same repository-tool Buffer profile on both providers. This is a length
+  // bound, not a promise that the host can satisfy an allocation of that size.
+  const maxLength = 1 << 30;
+  const viewLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Bytes.prototype), 'byteLength').get;
+  const constants = {};
+  Object.defineProperty(constants, 'MAX_LENGTH', { value: maxLength, enumerable: true });
   const subarray = Bytes.prototype.subarray;
   const setBytes = Bytes.prototype.set;
   const fillBytes = Bytes.prototype.fill;
@@ -23,6 +30,7 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
   Object.setPrototypeOf(Buffer.prototype, Bytes.prototype);
   Object.setPrototypeOf(Buffer, Bytes);
   function wrap(bytes) {
+    if (viewLength.call(bytes) > maxLength) fail('ERR_BUFFER_TOO_LARGE', 'Home Buffer exceeds MAX_LENGTH', RangeError);
     Object.setPrototypeOf(bytes, Buffer.prototype);
     return bytes;
   }
@@ -97,7 +105,7 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
   }
   function allocationSize(size) {
     if (typeof size !== 'number') fail('ERR_INVALID_ARG_TYPE', 'Buffer size must be a number', TypeError);
-    if (!Number.isFinite(size) || size < 0 || size > Number.MAX_SAFE_INTEGER) fail('ERR_OUT_OF_RANGE', 'Invalid Buffer size', RangeError);
+    if (!Number.isFinite(size) || size < 0 || size > maxLength) fail('ERR_OUT_OF_RANGE', 'Invalid Buffer size', RangeError);
     return Math.floor(size);
   }
   function rangeIndex(value) {
@@ -279,5 +287,7 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
     else for (let index = start; index < end; index++) this[index] = pattern[(index - start) % pattern.length];
     return this;
   };
-  return { Buffer };
+  const api = { Buffer, kMaxLength: maxLength };
+  Object.defineProperty(api, 'constants', { value: constants, enumerable: true });
+  return api;
 };
