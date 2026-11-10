@@ -1978,7 +1978,9 @@ pub const Printer = struct {
         try self.write(" ");
         try self.write(kw);
         try self.write(" ");
-        try self.printExpression(p.source);
+        // For-of (including for-await) takes AssignmentExpression, whereas
+        // for-in takes Expression. Preserve a sequence source's parentheses.
+        try self.printExpr(p.source, if (self.hir.kindOf(node) == .for_of_stmt) .assign else .lowest);
         try self.write(")");
         try self.printClauseBody(p.body);
     }
@@ -16955,4 +16957,17 @@ test "emit: native ESM ignores host dynamic import lowering" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "import(\"target\")") != null);
     try T.expect(std.mem.indexOf(u8, out, "__host_dynamic") == null);
+}
+
+test "emit: native for-of sequence sources keep assignment precedence" {
+    for ([_]ModuleKind{ .esm, .commonjs }) |kind| {
+        for ([_][]const u8{
+            "for (const x of (side(), source)) consume(x);",
+            "async function run() { for await (const x of (side(), source)) consume(x); }",
+        }) |source| {
+            const out = try emitWithOpts(source, .{ .module_kind = kind, .es_target = .esnext });
+            defer T.allocator.free(out);
+            try T.expect(std.mem.indexOf(u8, out, "of (side(), source))") != null);
+        }
+    }
 }
