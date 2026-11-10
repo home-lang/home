@@ -180834,6 +180834,10 @@ pub const Checker = struct {
         // `boolean` sorts with the boolean literals, after `symbol` and after
         // string and numeric literals: `symbol | "a" | 1 | boolean`.
         if (f.is_boolean and !f.is_literal) return 13;
+        // A `unique symbol` is `is_symbol` and `is_literal`; tsgo ranks it
+        // after every literal (`UniqueESSymbol`, bit 14), so `keyof bigint`
+        // ends in it: `"toString" | "valueOf" | unique symbol`.
+        if (f.is_unique_symbol) return 14;
         if (f.is_symbol and !f.is_literal) return 9;
         // tsgo collapses enum unit types to `TypeFlagsEnum` (bit 16),
         // just after the plain literals.
@@ -302763,4 +302767,25 @@ test "checker: a displayed type reference yields the name it sorts by" {
     try T.expect(name("typeof x") == null);
     try T.expect(name("Box<string> & Alpha") == null);
     try T.expect(name("1") == null);
+}
+
+test "checker: a unique symbol and the keys of a primitive display in native order" {
+    const s = try newSetup(
+        \\declare const unique: unique symbol;
+        \\declare const obj: { q: 1 };
+        \\const u1: typeof unique | "a" | 1 | true = obj;
+        \\const k1: keyof bigint = "bogus";
+        \\const k2: keyof number = "bogus";
+        \\function takeKey(p: keyof bigint) { void p; }
+        \\takeKey("bogus");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // A unique symbol is a literal of its own kind, after the boolean ones.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ q: 1; }' is not assignable to type '\"a\" | 1 | true | unique symbol'."));
+    // So `keyof bigint` ends in `[Symbol.toStringTag]`, at a variable and at
+    // a parameter alike (#1002).
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"bogus\"' is not assignable to type '\"toLocaleString\" | \"toString\" | \"valueOf\" | unique symbol'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.argument_type_mismatch, "Argument of type '\"bogus\"' is not assignable to parameter of type '\"toLocaleString\" | \"toString\" | \"valueOf\" | unique symbol'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"bogus\"' is not assignable to type '\"toExponential\" | \"toFixed\" | \"toLocaleString\" | \"toPrecision\" | \"toString\" | \"valueOf\"'."));
 }
