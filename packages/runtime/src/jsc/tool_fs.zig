@@ -449,6 +449,22 @@ fn operation(
             if (close_error) |err| return nativeFailure(c, object, err, "close");
             set(c, object, "bytesWritten", api.JSValueMakeNumber(c, @floatFromInt(contents.?.len)));
         }
+    } else if (std.mem.eql(u8, op, "copyFileAtomic")) {
+        if (count < 3 or args[2] == null) return failure(c, object, error.Unsupported);
+        const destination = string(c, args[2], allocator) orelse return failure(c, object, error.OutOfMemory);
+        defer allocator.free(destination);
+        if (std.mem.indexOfScalar(u8, destination, 0) != null) return failure(c, object, error.Unsupported);
+        // Stream actual bytes through the OS; do not materialize file contents
+        // as JavaScript strings or follow an existing destination symlink.
+        std.Io.Dir.copyFile(.cwd(), path, .cwd(), destination, io, .{ .replace = force }) catch |err| return failure(c, object, err);
+    } else if (std.mem.eql(u8, op, "chmod")) {
+        if (count < 3 or !api.JSValueIsNumber(c, args[2])) return failure(c, object, error.Unsupported);
+        const mode = api.JSValueToNumber(c, args[2], exception);
+        if (!std.math.isFinite(mode) or mode < 0 or mode > 0o7777 or @trunc(mode) != mode) return failure(c, object, error.Unsupported);
+        const terminated = bun.dupeZ(allocator, u8, path) catch return failure(c, object, error.OutOfMemory);
+        defer allocator.free(terminated);
+        const result = std.c.chmod(terminated.ptr, @intFromFloat(mode));
+        if (result != 0) return nativeFailure(c, object, std.posix.errno(result), "chmod");
     } else if (std.mem.eql(u8, op, "rename")) {
         if (count < 3 or args[2] == null) return failure(c, object, error.Unsupported);
         const destination = string(c, args[2], allocator) orelse return failure(c, object, error.OutOfMemory);
@@ -557,6 +573,14 @@ fn operation(
             std.c.S.IFSOCK => .unix_domain_socket,
             else => .unknown,
         };
+        // Keep the full device/inode pair for internal copy identity checks.
+        // The public Stats facade removes this private string field.
+        var identity_buffer: [96]u8 = undefined;
+        const identity = if (native_linux)
+            std.fmt.bufPrint(&identity_buffer, "{d}:{d}:{d}", .{ stat.dev_major, stat.dev_minor, stat.ino }) catch unreachable
+        else
+            std.fmt.bufPrint(&identity_buffer, "{d}:{d}", .{ stat.dev, stat.ino }) catch unreachable;
+        set(c, object, "identity", text(c, identity));
         set(c, object, "kind", text(c, @tagName(kind)));
         set(c, object, "mode", api.JSValueMakeNumber(c, @floatFromInt(stat.mode)));
         set(c, object, "size", api.JSValueMakeNumber(c, @floatFromInt(stat.size)));

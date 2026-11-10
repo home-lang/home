@@ -438,6 +438,7 @@
   function statResult(result) {
     const kind = result.kind;
     delete result.kind;
+    delete result.identity;
     result.isFile = function() { return kind === 'file'; };
     result.isDirectory = function() { return kind === 'directory'; };
     result.isSymbolicLink = function() { return kind === 'sym_link'; };
@@ -485,8 +486,156 @@
   }
   fs.stat = function(path, options, callback) { callbackStat('stat', path, options, callback); };
   fs.lstat = function(path, options, callback) { callbackStat('lstat', path, options, callback); };
+  function changeMode(path, mode) {
+    if (mode == null) nodeArgumentError('ERR_INVALID_ARG_TYPE', 'chmod mode is required');
+    fsOperation('chmod', path, creationMode(mode, 0), false);
+  }
+  fs.chmodSync = changeMode;
+  function copyError(code, source, destination, message) {
+    const error = new Error(message);
+    error.code = code;
+    error.syscall = 'cp';
+    error.path = source;
+    error.dest = destination;
+    return error;
+  }
+  function copyOptions(options) {
+    options = fsOptions(options, ['recursive', 'force', 'errorOnExist', 'filter', 'mode', 'dereference', 'preserveTimestamps', 'verbatimSymlinks']);
+    function boolean(key, fallback) {
+      const value = options[key];
+      if (value === undefined) return fallback;
+      if (typeof value !== 'boolean') nodeArgumentError('ERR_INVALID_ARG_TYPE', `cp ${key} must be a boolean`);
+      return value;
+    }
+    const recursive = boolean('recursive', false);
+    const force = boolean('force', true);
+    const errorOnExist = boolean('errorOnExist', false);
+    for (const key of ['dereference', 'preserveTimestamps', 'verbatimSymlinks']) {
+      if (boolean(key, false)) unsupported(`Home cp does not implement ${key}`);
+    }
+    const mode = options.mode;
+    if (mode !== undefined && mode !== 0) unsupported('Home cp supports the default file-copy mode only');
+    const filter = options.filter;
+    if (filter !== undefined && typeof filter !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'cp filter must be a function');
+    return { recursive, force, errorOnExist, filter };
+  }
+  function copyInfo(path, missing) {
+    try {
+      const result = fsOperation('lstat', path, false, false);
+      if (typeof result.identity !== 'string') throw new Error('Native copy identity is unavailable');
+      return result;
+    } catch (error) {
+      if (missing && error.code === 'ENOENT') return undefined;
+      throw error;
+    }
+  }
+  function physicalCopyDestination(path) {
+    let current = posixPath.resolve(path);
+    const tail = [];
+    while (true) {
+      try { return posixPath.resolve(realPath(current, undefined, false), ...tail.reverse()); }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        const parent = posixPath.dirname(current);
+        if (parent === current) throw error;
+        tail.push(posixPath.basename(current));
+        current = parent;
+      }
+    }
+  }
+  function copyPlan(source, destination, options, ancestors) {
+    const from = copyInfo(source, false);
+    const to = copyInfo(destination, true);
+    if (to && from.identity === to.identity) throw copyError('ERR_FS_CP_EINVAL', source, destination, 'Cannot copy an entry onto itself');
+    if (from.kind === 'directory') {
+      if (to && to.kind !== 'directory') throw copyError('ERR_FS_CP_DIR_TO_NON_DIR', source, destination, 'Cannot replace a non-directory with a directory');
+      if (!options.recursive) throw copyError('ERR_FS_EISDIR', source, destination, 'Directory copy requires recursive: true');
+      const canonicalSource = realPath(source, undefined, false);
+      const canonicalDestination = physicalCopyDestination(destination);
+      const prefix = canonicalSource.endsWith('/') ? canonicalSource : `${canonicalSource}/`;
+      if (canonicalSource === canonicalDestination || canonicalDestination.startsWith(prefix) || ancestors.has(from.identity)) {
+        throw copyError('ERR_FS_CP_EINVAL', source, destination, 'Cannot copy a directory into itself');
+      }
+    } else {
+      if (from.kind !== 'file') unsupported(`Home cp supports regular files and directories; source kind ${from.kind} is not implemented`);
+      if (to && to.kind === 'directory') throw copyError('ERR_FS_CP_NON_DIR_TO_DIR', source, destination, 'Cannot replace a directory with a file');
+      if (to && !['file', 'sym_link'].includes(to.kind)) unsupported(`Home cp destination kind ${to.kind} is not implemented`);
+    }
+    return { from, to };
+  }
+  function copyRegularFile(source, destination, options, plan) {
+    if (plan.to && !options.force) {
+      if (options.errorOnExist) throw copyError('ERR_FS_CP_EEXIST', source, destination, 'Copy destination exists');
+      return;
+    }
+    try { fsOperation('copyFileAtomic', source, destination, options.force); }
+    catch (error) {
+      // Exclusive creation also protects a destination which appeared after
+      // lstat. force:false must never overwrite it or change its permissions.
+      if (error.code === 'EEXIST' && !options.force) {
+        if (options.errorOnExist) throw copyError('ERR_FS_CP_EEXIST', source, destination, 'Copy destination exists');
+        return;
+      }
+      error.dest = destination;
+      throw error;
+    }
+    changeMode(destination, plan.from.mode & 0o7777);
+  }
+  function copyTreeSync(source, destination, input) {
+    source = stringPath(source);
+    destination = stringPath(destination);
+    const options = copyOptions(input);
+    const filter = options.filter;
+    const ancestors = new Set();
+    function visit(from, to) {
+      if (filter) {
+        const selected = filter(from, to);
+        if (selected && typeof selected.then === 'function') nodeArgumentError('ERR_INVALID_RETURN_VALUE', 'Synchronous cp filter cannot return a Promise');
+        if (!selected) return;
+      }
+      const plan = copyPlan(from, to, options, ancestors);
+      makeDirectory(posixPath.dirname(to), { recursive: true });
+      if (plan.from.kind !== 'directory') { copyRegularFile(from, to, options, plan); return; }
+      if (!plan.to) makeDirectory(to);
+      ancestors.add(plan.from.identity);
+      try {
+        for (const entry of readDirectory(from)) visit(posixPath.join(from, entry), posixPath.join(to, entry));
+      } finally { ancestors.delete(plan.from.identity); }
+      // Do not change an existing destination directory's mode. Newly copied
+      // read-only directories become read-only after their children exist.
+      if (!plan.to) changeMode(to, plan.from.mode & 0o7777);
+    }
+    visit(source, destination);
+  }
+  async function copyTree(source, destination, input) {
+    source = stringPath(source);
+    destination = stringPath(destination);
+    const options = copyOptions(input);
+    const filter = options.filter;
+    const ancestors = new Set();
+    async function visit(from, to) {
+      if (filter && !await filter(from, to)) return;
+      const plan = copyPlan(from, to, options, ancestors);
+      makeDirectory(posixPath.dirname(to), { recursive: true });
+      if (plan.from.kind !== 'directory') { copyRegularFile(from, to, options, plan); return; }
+      if (!plan.to) makeDirectory(to);
+      ancestors.add(plan.from.identity);
+      try {
+        for (const entry of readDirectory(from)) await visit(posixPath.join(from, entry), posixPath.join(to, entry));
+      } finally { ancestors.delete(plan.from.identity); }
+      if (!plan.to) changeMode(to, plan.from.mode & 0o7777);
+    }
+    await visit(source, destination);
+  }
+  fs.cpSync = copyTreeSync;
   const fsPromises = {
     constants: fsConstants,
+    cp: async function(source, destination, options) {
+      await copyTree(source, destination, options);
+    },
+    chmod: async function(path, mode) {
+      changeMode(path, mode);
+    },
     mkdtemp: async function(prefix, options) {
       return makeTemporaryDirectory(prefix, options);
     },

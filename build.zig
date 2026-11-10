@@ -973,6 +973,13 @@ pub fn build(b: *std.Build) void {
         const tool_file_test_bin = b.step("home-tool-file-io-test-bin", "Compile the native filesystem tests without running them");
         tool_file_test_bin.dependOn(&b.addInstallArtifact(tool_file_tests, .{}).step);
         home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_file_tests).step);
+        const run_native_copy = b.addSystemCommand(&.{"python3"});
+        run_native_copy.addFileArg(b.path("packages/runtime/test/tool_copy_fixture.py"));
+        run_native_copy.addArtifactArg(home_tool_exe);
+        run_native_copy.addFileArg(b.path("packages/runtime/test/tool_modules/node_cp.mjs"));
+        run_native_copy.addFileArg(b.path("packages/runtime/test/tool_modules/node_cp_unsupported.mjs"));
+        run_native_copy.expectStdOutEqual("NODE CP 49 CHECKS OK\nNODE CP UNSUPPORTED 12 CHECKS OK\nHOST CP INDEPENDENT 9 MiB FILE HASHES OK\n");
+        home_tool_smoke_step.dependOn(&run_native_copy.step);
         const tool_cpu_tests = b.addTest(.{
             .name = "home-tool-cpu-availability-tests",
             .root_module = b.createModule(.{
