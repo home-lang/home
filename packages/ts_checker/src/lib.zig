@@ -439,6 +439,13 @@ pub fn stringProto(
     try cache.lib_param_names.put(gpa, sig_fontsize_string, &param_names_size);
     const sig_link = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
     try cache.lib_param_names.put(gpa, sig_link, &param_names_url);
+    // `[Symbol.iterator](): StringIterator<string>` (`lib.es2015.iterable`).
+    // Keyed by its unique symbol so `keyof string` carries `unique symbol`
+    // rather than a `"Symbol.iterator"` string literal (#995). Iteration
+    // itself does not read this member: `iterableElementType` answers
+    // `string` for a string operand before any member lookup.
+    const string_iterator = try iteratorObjectType(ti, sint, string_t, false);
+    const sig_string_iterator = try ti.internSignature(&[_]TypeId{}, string_iterator, false);
 
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("length"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
@@ -507,10 +514,25 @@ pub fn stringProto(
         // `lib.es2019.string.d.ts` aliases of `trimStart` / `trimEnd`.
         .{ .name = try sint.intern("trimLeft"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("trimRight"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{
+            .name = try sint.intern("Symbol.iterator"),
+            .key_type = try ti.internUniqueSymbol(.{ .name = try sint.intern("Symbol.iterator") }),
+            .type = sig_string_iterator,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = true,
+        },
     };
     // (concat is actually `(...strs: string[]): string`; we model the
     // common single-arg form. Will be replaced once rest params land
     // in lib types.)
+    // No `readonly [index: number]: string` here, although `lib.es5.d.ts`
+    // declares one. Home models `T[]` structurally as
+    // `{ length: number; [n: number]: T }`, so an index on this shared proto
+    // makes `string` assignable to `string[]` — the relation cannot tell an
+    // array from an array-like object without array provenance it does not
+    // have. `keyof` adds the `number` key this index would contribute
+    // (`collectKeyofBroadIndexKeys`, #995).
     cache.string_proto = try ti.internObjectType(&m);
     return cache.string_proto;
 }
@@ -536,9 +558,17 @@ pub fn numberProto(
     // `(255).toString(16)` round-trip without TS2554. Upstream lib
     // declares the same shape on `Number.prototype`.
     const sig_to_string = sig_num_string;
+    // `toLocaleString(locales?: string | string[], options?: Intl.NumberFormatOptions): string`
+    // from `lib.es5.d.ts`. It was reachable only through the `Object`
+    // prototype fallback, so `keyof number` lacked it (#995).
+    const string_arr = try ti.internArrayType(sint, string_t);
+    const optional_locales = try ti.internUnion(&.{ string_t, string_arr, types.Primitive.undefined_t });
+    const optional_options = try ti.internUnion(&.{ types.Primitive.object_t, types.Primitive.undefined_t });
+    const sig_to_locale_string = try ti.internSignature(&.{ optional_locales, optional_options }, string_t, false);
 
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toLocaleString"), .type = sig_to_locale_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toFixed"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toExponential"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toPrecision"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },

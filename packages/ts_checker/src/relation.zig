@@ -1773,13 +1773,15 @@ pub const Engine = struct {
             std.mem.eql(u8, name, "sub") or
             std.mem.eql(u8, name, "sup") or
             std.mem.eql(u8, name, "trimLeft") or
-            std.mem.eql(u8, name, "trimRight")))
+            std.mem.eql(u8, name, "trimRight") or
+            std.mem.eql(u8, name, "Symbol.iterator")))
         {
             return true;
         }
         if (is_number and (std.mem.eql(u8, name, "toFixed") or
             std.mem.eql(u8, name, "toExponential") or
-            std.mem.eql(u8, name, "toPrecision")))
+            std.mem.eql(u8, name, "toPrecision") or
+            std.mem.eql(u8, name, "toLocaleString")))
         {
             return true;
         }

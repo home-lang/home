@@ -6117,6 +6117,12 @@ pub const Checker = struct {
     program_local_class_names_built: bool = false,
     generic_instances: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     generic_instance_origins: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    /// Nonzero while a mapped type's constraint is evaluated — eagerly in
+    /// `evalMappedType`, or by substitution in `substituteMappedType`. `keyof`
+    /// over a primitive then keeps its symbolic form, because a homomorphic
+    /// mapping over a primitive is the primitive and Home's mapped evaluation
+    /// relied on that form to produce it (#995).
+    keyof_apparent_suppressed: u32 = 0,
     generic_expansion_active: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     local_alias_definitions: std.AutoHashMapUnmanaged(NodeId, LocalAliasDefinition) = .empty,
     generic_container_aliases_active: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
@@ -82359,22 +82365,12 @@ pub const Checker = struct {
                 // the result is a known object type.
                 const k = hir_mod.keyofTypeOf(self.hir, type_node);
                 const operand = try self.lowererLowerWithTypeParams(k.operand);
-                if (operand == types.Primitive.any) return try self.propertyKeyUnionType();
-                if (self.containsFreeTypeParameter(operand) and
-                    operand < self.interner.pool.typeCount() and
-                    self.interner.pool.flagsOf(operand).is_intersection)
-                {
-                    return self.interner.internKeyof(operand) catch return error.OutOfMemory;
-                }
-                var key_types: std.ArrayListUnmanaged(TypeId) = .empty;
-                defer key_types.deinit(self.gpa);
-                try self.collectKeyofBroadIndexKeys(operand, &key_types);
-                if (try self.collectKeyofObjectKeyTypes(operand, &key_types)) {
-                    if (key_types.items.len == 0) return types.Primitive.never;
-                    if (key_types.items.len == 1) return key_types.items[0];
-                    return self.interner.internUnion(key_types.items) catch return error.OutOfMemory;
-                }
-                return self.interner.internKeyof(operand) catch return error.OutOfMemory;
+                // One evaluator for an annotation and for every other keyof
+                // site. This copy had drifted from `keyofTypeFromOperand`: it
+                // handled `any` but not `never`, `unknown`, `null`,
+                // `undefined` or `void`, so `keyof never` stayed symbolic and
+                // displayed as itself, and `keyof unknown` accepted any key.
+                return try self.keyofTypeFromOperand(operand);
             },
             .indexed_access_type => {
                 // `T[K]` ÃÂ¢ÃÂÃÂ resolve both sides through the narrow-aware
@@ -89036,7 +89032,16 @@ pub const Checker = struct {
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         try self.recordNarrow(tp.name, tp_id);
-        const constraint_t = try self.lowererLowerWithTypeParams(m.constraint);
+        // The eager path that `DeepReadonly<number>` actually takes: its
+        // `keyof T` constraint node is lowered with `T` bound to `number`.
+        // `keyof` keeps its pre-#995 symbolic form here, so a homomorphic
+        // mapping over a primitive still yields the primitive (see
+        // `keyof_apparent_suppressed`).
+        self.keyof_apparent_suppressed += 1;
+        const constraint_t = lowered: {
+            defer self.keyof_apparent_suppressed -= 1;
+            break :lowered try self.lowererLowerWithTypeParams(m.constraint);
+        };
         try self.reportInvalidMappedValueIndexedAccess(m);
 
         // Materialize when the constraint is a string-literal union or
@@ -89491,6 +89496,49 @@ pub const Checker = struct {
         try self.reportInOperandLeft(node, constraint_t);
     }
 
+    /// The object `keyof` reads a primitive or literal operand's keys from:
+    /// TypeScript resolves `keyof string` through `String`, `keyof 1` through
+    /// `Number`, and so on (#995). `null` for anything else, including a type
+    /// parameter, which keeps its symbolic `keyof T`.
+    ///
+    /// Not `indexValueApparentType`, which tests `flags.is_string` without a
+    /// union guard: a union header carries its members' flags, so that test
+    /// is true for `string | number` and would answer `String` for the whole
+    /// union. Here a union or intersection returns `null` and the collectors'
+    /// own union branch takes the members' common keys.
+    fn keyofApparentSurface(self: *Checker, t: TypeId) CheckError!?TypeId {
+        if (self.keyof_apparent_suppressed != 0) return null;
+        if (t == types.Primitive.none or t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union or flags.is_intersection or flags.is_type_parameter or flags.is_object_type) return null;
+        if (t == types.Primitive.string_t or flags.is_string or flags.is_template_literal or flags.is_string_mapping) {
+            return lib.stringProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, &self.rest_signatures) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return null,
+            };
+        }
+        if (t == types.Primitive.number_t or flags.is_number) {
+            return lib.numberProto(&self.lib_cache, self.interner, self.string_interner) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return null,
+            };
+        }
+        if (self.typeIsBooleanLike(t)) return self.lowerBuiltinObjectType("Boolean");
+        // `symbol` and `bigint` keep their symbolic `keyof` for now. Their
+        // surfaces lack keys TypeScript has — `Symbol`'s `[Symbol.toPrimitive]`
+        // and `[Symbol.toStringTag]`, and `BigInt` has no surface at all — so
+        // resolving through them would reject a valid key, a new false error
+        // where today's symbolic form only misses an invalid one.
+        return null;
+    }
+
+    /// The name-only collector, whose only caller is `substituteMappedType`.
+    /// It deliberately does NOT read a primitive's apparent surface, unlike
+    /// `collectKeyofObjectKeyTypes`: a homomorphic mapped type instantiated
+    /// with a primitive yields that primitive (`DeepReadonly<number>` is
+    /// `number`), so mapped materialization must keep seeing no object keys
+    /// for one. `keyof string` itself still resolves to `String`'s keys
+    /// (#995); only the mapping over it is preserved.
     fn collectKeyofObjectKeys(
         self: *Checker,
         t: TypeId,
@@ -89568,6 +89616,7 @@ pub const Checker = struct {
         t: TypeId,
         out: *std.ArrayListUnmanaged(TypeId),
     ) CheckError!bool {
+        if (try self.keyofApparentSurface(t)) |surface| return self.collectKeyofObjectKeyTypes(surface, out);
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_instantiation and !flags.is_union and !flags.is_intersection) {
@@ -89579,12 +89628,20 @@ pub const Checker = struct {
             const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(t));
             defer self.gpa.free(members);
             if (members.len == 0) return true;
+            // `keyof (A | B)` is `keyof A & keyof B`, index keys included:
+            // each member's index keys join its candidate set before the
+            // intersection. `collectKeyofBroadIndexKeys` unions them across a
+            // union, which is what its mapped-type caller wants but not what
+            // `keyof` means — `String`'s `[n: number]` must not survive
+            // `keyof (string | number)` (#995).
             var common: std.ArrayListUnmanaged(TypeId) = .empty;
             defer common.deinit(self.gpa);
+            try self.collectKeyofBroadIndexKeys(members[0], &common);
             if (!try self.collectKeyofObjectKeyTypes(members[0], &common)) return false;
             for (members[1..]) |member| {
                 var candidate: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer candidate.deinit(self.gpa);
+                try self.collectKeyofBroadIndexKeys(member, &candidate);
                 if (!try self.collectKeyofObjectKeyTypes(member, &candidate)) return false;
                 var write: usize = 0;
                 for (common.items) |key| {
@@ -89652,7 +89709,7 @@ pub const Checker = struct {
 
         var key_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer key_types.deinit(self.gpa);
-        try self.collectKeyofBroadIndexKeys(operand, &key_types);
+        if (!self.interner.pool.flagsOf(operand).is_union) try self.collectKeyofBroadIndexKeys(operand, &key_types);
         if (try self.collectKeyofObjectKeyTypes(operand, &key_types)) {
             if (key_types.items.len == 0) return types.Primitive.never;
             if (key_types.items.len == 1) return key_types.items[0];
@@ -89666,6 +89723,15 @@ pub const Checker = struct {
         t: TypeId,
         out: *std.ArrayListUnmanaged(TypeId),
     ) CheckError!void {
+        if (try self.keyofApparentSurface(t)) |surface| {
+            // `lib.es5.d.ts` declares `String`'s `readonly [index: number]:
+            // string`, so `keyof string` carries `number`. The synthesized
+            // proto leaves that index out — on the shared proto it would make
+            // `string` assignable to Home's structural `T[]` — so the key it
+            // would contribute is added here instead.
+            if (surface == self.lib_cache.string_proto) try self.appendUniqueTypeId(out, types.Primitive.number_t);
+            return try self.collectKeyofBroadIndexKeys(surface, out);
+        }
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_instantiation and !flags.is_union and !flags.is_intersection) {
@@ -173243,7 +173309,18 @@ pub const Checker = struct {
                 return try self.finishSubstitutedMappedType(mapped_t, array_t, subs);
             }
         }
-        const constraint = try self.substituteType(m.constraint, subs);
+        // TypeScript never evaluates `keyof` for a homomorphic mapped type over
+        // a primitive: `instantiateMappedType` returns the primitive first, so
+        // `DeepReadonly<number>` is `number`. Home's mapped substitution
+        // relied on `keyof number` being unresolvable to get the same result,
+        // so while the constraint is substituted, `keyof` keeps its pre-#995
+        // symbolic form for a primitive operand. Everywhere else it resolves
+        // through the apparent type.
+        self.keyof_apparent_suppressed += 1;
+        const constraint = substituted: {
+            defer self.keyof_apparent_suppressed -= 1;
+            break :substituted try self.substituteType(m.constraint, subs);
+        };
         const deferred_key_tp = if (raw_key_tp != types.Primitive.none)
             try self.substituteType(raw_key_tp, subs)
         else
@@ -174496,7 +174573,7 @@ pub const Checker = struct {
             }
             var key_types: std.ArrayListUnmanaged(TypeId) = .empty;
             defer key_types.deinit(self.gpa);
-            try self.collectKeyofBroadIndexKeys(new_operand, &key_types);
+            if (!self.interner.pool.flagsOf(new_operand).is_union) try self.collectKeyofBroadIndexKeys(new_operand, &key_types);
             if (try self.collectKeyofObjectKeyTypes(new_operand, &key_types)) {
                 if (key_types.items.len == 0) return types.Primitive.never;
                 if (key_types.items.len == 1) return key_types.items[0];
@@ -301808,4 +301885,84 @@ test "checker: a synthesized String overload names its parameters" {
         }
     }
     try T.expect(named);
+}
+
+/// Count the distinct statements a code was reported against, so a test is
+/// not fooled by the pre-dedupe list carrying one mismatch more than once.
+fn checkerCountDistinctStarts(s: *TestSetup, code: u32) usize {
+    var starts: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer starts.deinit(T.allocator);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != code) continue;
+        starts.put(T.allocator, s.checker.diagnosticStart(d), {}) catch return 0;
+    }
+    return starts.count();
+}
+
+test "checker: keyof over a primitive rejects a key its apparent type lacks" {
+    const s = try newSetup(
+        \\const a: keyof string = "bogus";
+        \\const b: keyof number = "bogus";
+        \\const c: keyof ("x" | "y") = "bogus";
+        \\const d: keyof (1 | 2) = "bogus";
+        \\const e: keyof `x${string}` = "bogus";
+        \\const f: keyof (string | number) = 0;
+        \\const g: keyof string = "sort";
+        \\const h: keyof unknown = "bogus";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // Each statement is rejected. Before #995 every one of them was accepted,
+    // because a non-object operand left an unconstrained symbolic `keyof`.
+    // `f` pins the union index-key intersection (`String`'s `number` does
+    // not survive `keyof (string | number)`); `g` pins that `String` is not
+    // treated as array-like.
+    try T.expectEqual(@as(usize, 8), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+}
+
+test "checker: keyof over a primitive accepts every key its apparent type has" {
+    const s = try newSetup(
+        \\const a: keyof string = "length";
+        \\const b: keyof string = 0;
+        \\const c: keyof string = Symbol.iterator;
+        \\const d: keyof string = "bold";
+        \\const e: keyof number = "toLocaleString";
+        \\const f: keyof (1 | 2) = "toPrecision";
+        \\const g: keyof boolean = "valueOf";
+        \\const h: keyof (string | number) = "toString";
+        \\function generic<T>() { const key: keyof T = null!; return key; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // No valid key may become an error: the surface each operand reads must
+    // carry at least TypeScript's keys.
+    try T.expectEqual(@as(usize, 0), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+}
+
+test "checker: a string is still not assignable to a string array" {
+    const s = try newSetup(
+        \\const value: string = "x";
+        \\const array: string[] = value;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // `String` must not carry its numeric index on the shared proto: Home
+    // models `T[]` as `{ length; [n: number]: T }`, so that index made
+    // `string` assignable to `string[]` (#995).
+    try T.expectEqual(@as(usize, 1), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+}
+
+test "checker: a homomorphic mapped type over a primitive is the primitive" {
+    const s = try newSetup(
+        \\type Readonlyish<T> = { readonly [K in keyof T]: T[K] };
+        \\const n: Readonlyish<number> = 1;
+        \\const s: Readonlyish<string> = "x";
+        \\const bad: Readonlyish<number> = "x";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // `keyof number` resolves to `Number`'s keys (#995), but mapping over it
+    // homomorphically yields `number` itself, as TypeScript does. Only the
+    // string-into-number row is an error.
+    try T.expectEqual(@as(usize, 1), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
 }
