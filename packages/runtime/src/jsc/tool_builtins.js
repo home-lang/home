@@ -13,6 +13,12 @@
     return path;
   }
 
+  function filePath(path) {
+    if (typeof path !== 'string') path = fileURLObjectPath(path);
+    if (path.indexOf('\0') !== -1) nodeArgumentError('ERR_INVALID_ARG_VALUE', 'File paths cannot contain NUL bytes');
+    return path;
+  }
+
   // WHATWG UTF-8 decoder: retain BOMs for Node's file-content semantics,
   // replace malformed sequences, and reprocess a rejected continuation byte.
   // https://encoding.spec.whatwg.org/#utf-8-decoder
@@ -194,7 +200,7 @@
   };
   const fs = {
     readFileSync: function(path, options) {
-      path = stringPath(path);
+      path = filePath(path);
       const utf8 = readFileOptions(options);
       // Hex transport preserves NULs and malformed UTF-8 that a sentinel-based
       // text callback cannot carry faithfully. File errors propagate as errors.
@@ -203,7 +209,11 @@
     },
     existsSync: function(path) {
       if (typeof path === 'string' && path.indexOf('\0') !== -1) return false;
-      return Home.fileExists(stringPath(path));
+      try { return Home.fileExists(filePath(path)); }
+      catch (error) {
+        if (error.code === 'ERR_HOME_UNSUPPORTED') throw error;
+        return false;
+      }
     },
   };
   const nativeFs = globalThis.__home_tool_fs_operation;
@@ -229,7 +239,7 @@
     return options[key] === true;
   }
   function fsOperation(operation, path, recursive, force, mode) {
-    path = stringPath(path);
+    path = filePath(path);
     const result = nativeFs(operation, path, recursive, force, mode);
     if (result === null) throw new Error('Native filesystem operation failed');
     if (result.error) {
@@ -265,7 +275,7 @@
   fs.rmdirSync = removeEmptyDirectory;
   function makeTemporaryDirectory(prefix, options) {
     // https://nodejs.org/api/fs.html#fspromisesmkdtempprefix-options
-    prefix = stringPath(prefix);
+    prefix = filePath(prefix);
     options = options == null ? {} : typeof options === 'string' ? { encoding: options } : fsOptions(options, ['encoding']);
     const requested = options.encoding;
     const encoding = requested == null ? 'utf8' : requested;
@@ -304,7 +314,7 @@
   }
   const directoryKinds = new WeakMap();
   function readDirectory(path, options) {
-    path = stringPath(path);
+    path = filePath(path);
     options = typeof options === 'string' ? { encoding: options } : fsOptions(options === null ? undefined : options, ['encoding', 'withFileTypes', 'recursive']);
     const encoding = options.encoding;
     const withTypes = options.withFileTypes;
@@ -347,7 +357,7 @@
     if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'access callback must be a function');
     mode = accessMode(mode);
     if (typeof path === 'string' && path.indexOf('\0') !== -1) nodeArgumentError('ERR_INVALID_ARG_VALUE', 'File paths cannot contain NUL bytes');
-    path = stringPath(path);
+    path = filePath(path);
     scheduleFilesystemTask(function() {
       let error;
       try { accessFile(path, mode); }
@@ -398,7 +408,7 @@
   };
   function writeFile(path, data, options) {
     if (typeof path === 'number') fileDescriptor(path);
-    else path = stringPath(path);
+    else path = filePath(path);
     if (typeof data !== 'string' && !fsIsView(data)) {
       if (data != null && (typeof data[Symbol.iterator] === 'function' || typeof data[Symbol.asyncIterator] === 'function')) unsupported('Home writeFile does not support iterable input');
       nodeArgumentError('ERR_INVALID_ARG_TYPE', 'writeFile data must be a string or ArrayBuffer view');
@@ -414,7 +424,7 @@
     else fsOperation('writeFile', path, data, flag, mode);
   }
   function realPath(path, options, legacy) {
-    path = stringPath(path);
+    path = filePath(path);
     options = options == null ? {} : typeof options === 'string' ? { encoding: options } : fsOptions(options, ['encoding']);
     if (options.encoding != null && (typeof options.encoding !== 'string' || !['utf8', 'utf-8'].includes(options.encoding.toLowerCase()))) unsupported('Home realpath supports UTF-8 string results only');
     // Node's legacy sync facade resolves lexical dots before physical links.
@@ -468,7 +478,7 @@
   function callbackStat(operation, path, options, callback) {
     if (typeof options === 'function') { callback = options; options = undefined; }
     if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'stat callback must be a function');
-    path = stringPath(path);
+    path = filePath(path);
     options = fsOptions(options === null ? undefined : options, ['bigint', 'throwIfNoEntry']);
     if (booleanFsOption(options, 'bigint')) unsupported('Home filesystem BigInt metadata is unsupported');
     booleanFsOption(options, 'throwIfNoEntry');
@@ -582,8 +592,8 @@
     changeMode(destination, plan.from.mode & 0o7777);
   }
   function copyTreeSync(source, destination, input) {
-    source = stringPath(source);
-    destination = stringPath(destination);
+    source = filePath(source);
+    destination = filePath(destination);
     const options = copyOptions(input);
     const filter = options.filter;
     const ancestors = new Set();
@@ -608,8 +618,8 @@
     visit(source, destination);
   }
   async function copyTree(source, destination, input) {
-    source = stringPath(source);
-    destination = stringPath(destination);
+    source = filePath(source);
+    destination = filePath(destination);
     const options = copyOptions(input);
     const filter = options.filter;
     const ancestors = new Set();
@@ -652,10 +662,10 @@
       return readDirectory(path, options);
     },
     appendFile: async function(path, data, options) {
-      appendFile(stringPath(path), data, options);
+      appendFile(filePath(path), data, options);
     },
     writeFile: async function(path, data, options) {
-      writeFile(stringPath(path), data, options);
+      writeFile(filePath(path), data, options);
     },
     readFile: async function(path, options) {
       const utf8 = readFileOptions(options);
@@ -663,8 +673,8 @@
       return utf8 ? decodeUtf8(hex) : bufferApi.Buffer.from(hex, 'hex');
     },
     rename: async function(source, destination) {
-      source = stringPath(source);
-      destination = stringPath(destination);
+      source = filePath(source);
+      destination = filePath(destination);
       try { fsOperation('rename', source, destination, false); }
       catch (error) { error.dest = destination; throw error; }
     },
@@ -915,6 +925,33 @@
   };
   posixPath.posix = posixPath;
   const ProviderURL = globalThis.URL;
+  const intrinsicApply = Reflect.apply;
+  const nativeURLHref = typeof ProviderURL === 'function' && Object.getOwnPropertyDescriptor(ProviderURL.prototype, 'href')?.get;
+  const trustedURLHref = (function() {
+    if (typeof nativeURLHref !== 'function') return false;
+    try {
+      const real = new ProviderURL('file:///home-url-capability');
+      if (intrinsicApply(nativeURLHref, real, []) !== 'file:///home-url-capability') return false;
+      const copied = Object.create(ProviderURL.prototype);
+      Object.defineProperties(copied, Object.getOwnPropertyDescriptors(real));
+      // A copied prototype or component record is not a URL. Older providers
+      // without receiver branding must refuse this profile, not accept ducks.
+      for (const invalid of [{}, Object.create(ProviderURL.prototype), copied, new Proxy(real, {})]) {
+        let rejected = false;
+        try { intrinsicApply(nativeURLHref, invalid, []); }
+        catch (error) { rejected = error instanceof TypeError; }
+        if (!rejected) return false;
+      }
+      return true;
+    } catch { return false; }
+  })();
+  function fileURLObjectPath(url) {
+    if (!trustedURLHref) unsupported('Home file URL objects require a native URL implementation with receiver branding');
+    let href;
+    try { href = intrinsicApply(nativeURLHref, url, []); }
+    catch { nodeArgumentError('ERR_INVALID_ARG_TYPE', 'Expected a native file URL object'); }
+    return fileReferrer(href);
+  }
   const urlApi = {
     pathToFileURL: function(path, options = undefined) {
       pathString(path);
@@ -943,10 +980,11 @@
     },
     fileURLToPath: function(url, options) {
       if (process.platform === 'win32' || options !== undefined) unsupported('Home fileURLToPath currently supports native POSIX conversion without options');
-      if (typeof url !== 'string') unsupported('Home fileURLToPath currently supports URL strings only');
-      return fileReferrer(url);
+      return typeof url === 'string' ? fileReferrer(url) : fileURLObjectPath(url);
     },
   };
+  if (typeof ProviderURL === 'function') urlApi.URL = ProviderURL;
+  if (typeof globalThis.URLSearchParams === 'function') urlApi.URLSearchParams = globalThis.URLSearchParams;
   const childProcess = {
     execFileSync: function(file, args, options) {
       if (!Array.isArray(args)) {
