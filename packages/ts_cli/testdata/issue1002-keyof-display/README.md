@@ -40,10 +40,10 @@ shown, on its own annotation and on an unrelated one.
 Not covered, and why:
 
 - **Member order of a longer union.** TypeScript 5.7.3 prints declaration
-  order; native 7.0.2 sorts members by value. Home's argument path follows the
-  latter and its variable path the former, so which is right is a choice of
-  reference, not a defect to fix here. Every union in this fixture has at most
-  two members whose two orders coincide.
+  order; native 7.0.2 sorts members by value. That was a choice of reference,
+  since settled: native 7 owns member order, and
+  `issue975-union-member-order` pins it. Every union in this fixture has at
+  most two members whose two orders coincide, so it stays on 5.7.3 in full.
 - **An alias for a union.** `type U = "a" | "b"` still labels an unrelated
   `"a" | "b"` as `U`. TypeScript gives an aliased union its own identity; Home
   deduplicates unions structurally, so telling the two apart needs a

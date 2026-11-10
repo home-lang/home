@@ -4,6 +4,12 @@
 // working directory, CLI flags, and exact stdout/stderr/exit status. The
 // explicit noEmit override keeps this audit read-only even when a new fixture
 // forgets to set it in tsconfig.json. Build home-tsc before invoking this.
+//
+// One thing is NOT taken from TypeScript 5.7.3: the order of a union's members.
+// 5.7.3 prints type-allocation order, which is not reproducible and changes
+// with skipLibCheck (#975). Native TypeScript 7 sorts members
+// deterministically and owns that order (decided 2026-11-11). See
+// `nativeOrderConfigs` below.
 import { spawnSync } from 'node:child_process'
 import { readdirSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -76,6 +82,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1001-string-surface/') ||
   path.includes('/issue995-keyof-apparent/') ||
   path.includes('/issue1002-keyof-display/') ||
+  path.includes('/issue975-union-member-order/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
@@ -130,6 +137,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue995-keyof-apparent/tsconfig.json',
   'packages/ts_cli/testdata/issue995-keyof-apparent/tsconfig-bigint.json',
   'packages/ts_cli/testdata/issue1002-keyof-display/tsconfig.json',
+  'packages/ts_cli/testdata/issue975-union-member-order/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
@@ -156,6 +164,49 @@ for (const config of uncheckedCommonJsConfigs) {
     process.exit(2)
   }
 }
+// Streams whose expected TEXT is native TypeScript 7.0.2's, because the only
+// way they differ from TypeScript 5.7.3 is the order of a union's members.
+// Exit status is still 5.7.3's: native 7 exits 1 where 5.7.3 and Home exit 2
+// (#982). Every other stream stays on 5.7.3 in full — the two compilers print
+// different text on 42 of these streams for reasons unrelated to order, mostly
+// in the CommonJS and JSDoc families, so this list must stay short and each
+// entry must say why it is here.
+const nativeOrderConfigs = new Map([
+  // `nested[0]` is `string[] | number[]` in native 7 under either setting;
+  // 5.7.3 prints `number[] | string[]` only once lib checking is skipped.
+  ['packages/ts_cli/testdata/issue846-readonly-array/tsconfig-flat-skip-lib-check.json', '#975'],
+  ['packages/ts_cli/testdata/issue846-readonly-array/tsconfig-flat-no-checkjs-skip-lib-check.json', '#975'],
+  // The fixture for the order itself: every row is a union whose written order
+  // differs from the sorted one, so 5.7.3 and native 7 report the same
+  // diagnostics and spell 36 of the 56 output lines differently.
+  ['packages/ts_cli/testdata/issue975-union-member-order/tsconfig.json', '#975'],
+])
+const native7 = resolve(repo, 'bench/vs_tsgo/.tools/tsgo/node_modules/.bin/tsc')
+if (nativeOrderConfigs.size > 0) {
+  const nativeVersion = spawnSync(native7, ['--version'], { encoding: 'utf8' })
+  if (nativeVersion.error || nativeVersion.status !== 0 || nativeVersion.stdout.trim() !== 'Version 7.0.2') {
+    console.error('Expected native TypeScript 7.0.2 at bench/vs_tsgo/.tools/tsgo; got:', nativeVersion.error?.message ?? nativeVersion.stdout.trim())
+    process.exit(2)
+  }
+  for (const config of nativeOrderConfigs.keys()) {
+    if (!configs.includes(config)) {
+      console.error(`Missing native-order oracle config: ${config}`)
+      process.exit(2)
+    }
+  }
+}
+
+// `file(line,col): error TSxxxx` for every diagnostic, without its message.
+// A native-order stream must report the same diagnostics in both compilers;
+// only how a message spells a union may differ. That keeps the list from
+// hiding a difference that is not about order.
+function diagnosticHeaders(text) {
+  return text.split('\n')
+    .map(line => /^(\S.*\(\d+,\d+\): error TS\d+):/.exec(line)?.[1])
+    .filter(Boolean)
+    .join('\n')
+}
+
 const checks = [
   ...configs.map(config => ({ config, flags: [] })),
   ...uncheckedCommonJsConfigs.map(config => ({ config, flags: ['--checkJs', 'false'] })),
@@ -178,12 +229,26 @@ function excerpt(value, index) {
 let mismatches = 0
 for (const { config, flags } of checks) {
   const label = `${config}${flags.length ? ` ${flags.join(' ')}` : ''}`
-  const oracle = run('tsc', config, flags)
+  let oracle = run('tsc', config, flags)
   const actual = run(home, config, flags)
   if (oracle.error || actual.error || oracle.signal || actual.signal) {
     mismatches++
     console.log(`ERROR ${label}: oracle=${oracle.error?.message ?? oracle.signal ?? 'ok'} home=${actual.error?.message ?? actual.signal ?? 'ok'}`)
     continue
+  }
+  if (nativeOrderConfigs.has(config)) {
+    const order = run(native7, config, flags)
+    if (order.error || order.signal) {
+      mismatches++
+      console.log(`ERROR ${label}: native 7=${order.error?.message ?? order.signal}`)
+      continue
+    }
+    if (diagnosticHeaders(order.stdout) !== diagnosticHeaders(oracle.stdout)) {
+      mismatches++
+      console.log(`ERROR ${label}: listed as native-order, but TypeScript 5.7.3 and native 7.0.2 do not report the same diagnostics`)
+      continue
+    }
+    oracle = { status: oracle.status, stdout: order.stdout, stderr: order.stderr }
   }
   const streams = ['stdout', 'stderr']
   const different = streams.filter(stream => oracle[stream] !== actual[stream])
