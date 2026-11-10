@@ -3,6 +3,7 @@ interface Alpha { a: 1 }
 declare const obj: { q: 1 };
 declare const nullable: null | Alpha | undefined | 1;
 declare const shapes: [string] | { a: 1 } | Alpha;
+declare const unique: unique symbol;
 declare const tup: [string, number] | [string];
 declare const tup2: [number] | [string];
 declare const boxes: Box<number> | Box<string>;
@@ -38,5 +39,14 @@ const l3: 1 = upper;
 const n1: Map<string, number> | Set<string> | Promise<number> | Date | RegExp = 1;
 const n2: symbol = shapes;
 const n3: symbol = nullable;
-void [t1, t2, t3, t4, g1, g2, b1, b2, b3, l1, l2, l3, n1, n2, n3];
+
+// A `unique symbol` sorts after every literal, and the keys of a primitive
+// sort like any other string literals (#1002).
+const u1: typeof unique | "a" | 1 | true = obj;
+const k1: keyof bigint = "bogus";
+const k2: keyof number = "bogus";
+const k3: (keyof number)[] = ["bogus"];
+function takeKey(p: keyof bigint) { void p; }
+takeKey("bogus");
+void [t1, t2, t3, t4, g1, g2, b1, b2, b3, l1, l2, l3, n1, n2, n3, u1, k1, k2, k3];
 export {};

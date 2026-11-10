@@ -14,9 +14,10 @@ in `_submodules/typescript-go/internal/checker/utilities.go`), and Home applies
 the same comparison wherever a union is displayed:
 
 1. **By kind**, in this order: `string`, `number`, `bigint`, `symbol`; string
-   literals; numeric literals; `boolean` and the boolean literals; enum
-   members; object types; template literal types; string mapping types such as
-   `Uppercase<string>`. `null` and `undefined` are printed last.
+   literals; numeric literals; `boolean` and the boolean literals;
+   `unique symbol`; enum members; object types; template literal types; string
+   mapping types such as `Uppercase<string>`. `null` and `undefined` are
+   printed last.
 2. **A named type by its name**, so `Alpha | Zed` and
    `Date | Map<string, number> | Set<string>`, and a named type before an
    unnamed one. An array counts as `Array` and a readonly array as
@@ -40,7 +41,7 @@ stderr are compared exactly against native 7, the exit status against
 TypeScript 5.7.3 (native 7 exits 1 where 5.7.3 and Home exit 2, #982), and the
 step fails unless both TypeScript versions report the same diagnostics at the
 same positions — so only the spelling of a union can differ, and here it does
-on 36 of the 56 output lines.
+on 41 of the 61 output lines.
 
 - `order.ts` pins literal, primitive, array and named-type order at a
   variable, a parameter, a reassignment, an array element and an object
@@ -51,8 +52,9 @@ on 36 of the 56 output lines.
   top level, in a namespace and in a function.
 - `kinds.ts` pins tuples, instances of one generic, `boolean` beside literals
   and `symbol`, template literal types, a string mapping type, built-in
-  generics by name, a tuple beside named and unnamed object types, and a
-  nullable annotation on the source side.
+  generics by name, a tuple beside named and unnamed object types, a nullable
+  annotation on the source side, a `unique symbol`, and the keys of `number`
+  and `bigint` at a variable, an array element and a parameter (#1002).
 
 Not covered, and why — none of these is an order, and on each one TypeScript
 5.7.3 and native 7 agree with each other against Home:
@@ -70,6 +72,9 @@ Not covered, and why — none of these is an order, and on each one TypeScript
   (`"a" | boolean` is reported as `string | boolean`).
 - **A `bigint` literal, or an enum member reached through a namespace
   (`NS.Color.Blue`), as an annotation**, where Home reports nothing.
+- **`keyof string` and `keyof symbol`.** Home prints all of `keyof string`'s
+  keys where TypeScript elides the middle (`... 34 more ...`), and one
+  `unique symbol` for `keyof symbol` where TypeScript prints two (#1002).
 - **A JavaScript constructor function used as a base class.** Native 7 no
   longer accepts one, so there is no native output to compare.
 

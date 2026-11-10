@@ -178,7 +178,7 @@ const nativeOrderConfigs = new Map([
   ['packages/ts_cli/testdata/issue846-readonly-array/tsconfig-flat-no-checkjs-skip-lib-check.json', '#975'],
   // The fixture for the order itself: every row is a union whose written order
   // differs from the sorted one, so 5.7.3 and native 7 report the same
-  // diagnostics and spell 36 of the 56 output lines differently.
+  // diagnostics and spell 41 of the 61 output lines differently.
   ['packages/ts_cli/testdata/issue975-union-member-order/tsconfig.json', '#975'],
 ])
 const native7 = resolve(repo, 'bench/vs_tsgo/.tools/tsgo/node_modules/.bin/tsc')
