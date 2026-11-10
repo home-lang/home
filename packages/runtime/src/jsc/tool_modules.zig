@@ -493,6 +493,25 @@ fn resolveModuleNative(
     return @ptrCast(object);
 }
 
+// System JSC does not retain eval sourceURL directives in Error.stack.
+// Its public evaluator supplies the same generated-source URL explicitly.
+fn evaluateModuleNative(
+    ctx: ?*JSContextRef,
+    _: ?*JSObject,
+    _: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    const c = ctx orelse return null;
+    if (argument_count != 2 or arguments[0] == null or arguments[1] == null) return null;
+    const source = extern_fns.JSValueToStringCopy(c, arguments[0].?, exception) orelse return null;
+    defer extern_fns.JSStringRelease(source);
+    const url = extern_fns.JSValueToStringCopy(c, arguments[1].?, exception) orelse return null;
+    defer extern_fns.JSStringRelease(url);
+    return extern_fns.JSEvaluateScript(c, source, null, url, 1, exception);
+}
+
 const install_glue = @embedFile("tool_modules.js");
 
 pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
@@ -504,6 +523,8 @@ pub fn installWithConditions(allocator: std.mem.Allocator, ctx: *JSContextRef, g
     defer allocator.free(json);
     setProperty(ctx, @ptrCast(global), "__home_tool_conditions", stringValue(ctx, json));
     callback.registerCallback(ctx, global, "__home_tool_resolve_module", resolveModuleNative);
+    if (comptime !@import("build_options").use_zig_js)
+        callback.registerCallback(ctx, global, "__home_tool_evaluate_module", evaluateModuleNative);
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:tool-module-install", 1) catch return;
     result.deinit(allocator);
 }

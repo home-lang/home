@@ -1,6 +1,8 @@
 // Home-owned module linkage and evaluation for either public-C engine backend.
 (function() {
   const rawResolve = globalThis.__home_tool_resolve_module;
+  const rawEvaluate = globalThis.__home_tool_evaluate_module;
+  delete globalThis.__home_tool_evaluate_module;
   const conditions = globalThis.__home_tool_conditions;
   delete globalThis.__home_tool_conditions;
   function resolveNative(specifier, parent, lookupOnly, importMode) {
@@ -184,8 +186,14 @@
       // ECMA-262 Strict Mode Code: modules and their enclosed functions are
       // strict. Apply this to the receiver-owning wrapper as well as the arrow.
       const strict = payload.esModule ? '"use strict";\n' : '';
-      const factorySource = `(function(${payload.metaBinding}, module, ${payload.importBinding || '__home_unused_import'}, ${payload.dynamicImportBinding || '__home_unused_dynamic_import'}) { return ${!payload.esModule && record.asynchronous ? 'async ' : ''}function(exports, require, ${payload.moduleBinding || 'module'}, __filename, __dirname) {\n${strict}${source}\n}; })`;
-      const wrapper = (0, eval)(factorySource)(metadata, module, staticImport, dynamicImport);
+      // Attribute retained function/async frames to this emitted module. The
+      // encoded file URL keeps path line breaks out of the directive; the
+      // suffix distinguishes generated positions from original TS locations.
+      const factorySource = `(function(${payload.metaBinding}, module, ${payload.importBinding || '__home_unused_import'}, ${payload.dynamicImportBinding || '__home_unused_dynamic_import'}) { return ${!payload.esModule && record.asynchronous ? 'async ' : ''}function(exports, require, ${payload.moduleBinding || 'module'}, __filename, __dirname) {\n${strict}${source}\n}; })\n//# sourceURL=${metadata.url}?home-emitted`;
+      // Zig-js retains the directive without a new evaluation boundary, so
+      // its enclosing evaluation budget remains shared across module loads.
+      const factory = rawEvaluate ? rawEvaluate(factorySource, `${metadata.url}?home-emitted`) : (0, eval)(factorySource);
+      const wrapper = factory(metadata, module, staticImport, dynamicImport);
       return wrapper(module.exports, localRequire, module, payload.path, directory);
     };
   }
