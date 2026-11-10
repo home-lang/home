@@ -468,6 +468,9 @@ fn operation(
     } else if (std.mem.eql(u8, op, "mkdir")) {
         const first = mkdir(path, recursive, 0, permissions) catch |err| return failure(c, object, err);
         if (recursive) if (first) |created| set(c, object, "created", text(c, created));
+    } else if (std.mem.eql(u8, op, "rmdir")) {
+        // Unlike rm, this must never unlink a file or delete a directory tree.
+        std.Io.Dir.cwd().deleteDir(io, path) catch |err| return failure(c, object, err);
     } else if (std.mem.eql(u8, op, "rm")) {
         const stat = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |err| {
             if (force and err == error.FileNotFound) return @ptrCast(object);

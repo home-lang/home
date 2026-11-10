@@ -241,6 +241,13 @@
     }
     return result;
   }
+  function removeEmptyDirectory(path, options) {
+    // https://nodejs.org/api/fs.html#fspromisesrmdirpath-options
+    // This profile exposes empty-directory removal, not legacy recursion.
+    fsOptions(options, []);
+    fsOperation('rmdir', path, false, false);
+  }
+  fs.rmdirSync = removeEmptyDirectory;
   class DirectoryEntry {
     constructor(name, kind, parentPath) {
       this.name = name;
@@ -454,6 +461,9 @@
   fs.lstat = function(path, options, callback) { callbackStat('lstat', path, options, callback); };
   const fsPromises = {
     constants: fsConstants,
+    rmdir: async function(path, options) {
+      removeEmptyDirectory(path, options);
+    },
     realpath: async function(path, options) {
       return realPath(path, options, false);
     },

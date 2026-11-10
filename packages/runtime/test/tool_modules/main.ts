@@ -19,3 +19,4 @@ import "./ternary_compound_heads.mjs";
 import "./forof_sequence.mjs";
 import "./stack_origins/entry.mjs";
 import "./node_random_uuid.mjs";
+import "./node_rmdir.mjs";
