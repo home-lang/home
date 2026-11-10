@@ -1481,6 +1481,11 @@ pub fn build(b: *std.Build) void {
         run_home_tool_create_require.addArgs(&.{ "run", "node_module_entry.cjs" });
         run_home_tool_create_require.expectStdOutEqual("OK home-tool anchored createRequire\n");
         home_tool_smoke_step.dependOn(&run_home_tool_create_require.step);
+        const run_home_tool_module_constructor = b.addRunArtifact(home_tool_exe);
+        run_home_tool_module_constructor.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_module_constructor.addArgs(&.{ "run", "node_module_constructor.mjs" });
+        // Print the actual inventory instead of capturing a synthetic result.
+        home_tool_smoke_step.dependOn(&run_home_tool_module_constructor.step);
         const run_home_tool_dot_directories = b.addRunArtifact(home_tool_exe);
         run_home_tool_dot_directories.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_dot_directories.addArgs(&.{ "run", "cjs_dot_directories/bin/check.cjs" });

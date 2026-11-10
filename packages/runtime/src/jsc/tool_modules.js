@@ -1,5 +1,6 @@
 // Home-owned module linkage and evaluation for either public-C engine backend.
 (function() {
+  'use strict';
   const rawResolve = globalThis.__home_tool_resolve_module;
   const rawEvaluate = globalThis.__home_tool_evaluate_module;
   delete globalThis.__home_tool_evaluate_module;
@@ -15,7 +16,68 @@
   function isBuiltin(request) {
     return Object.prototype.hasOwnProperty.call(builtins, request);
   }
-  const cache = Object.create(null);
+  const moduleParents = new WeakMap();
+  const moduleApi = builtins['node:module'];
+  const pathApi = builtins['path/posix'];
+  // Node's Module instances and prototype hook own the same real loader and
+  // cache used by module-scope require() and createRequire(), not a facade.
+  // https://nodejs.org/api/module.html#class-module
+  function Module(id = '', parent) {
+    this.id = id;
+    this.path = pathApi.dirname(id);
+    Object.defineProperty(this, 'exports', { value: {}, writable: true, enumerable: true, configurable: true });
+    moduleParents.set(this, parent);
+    attachChild(parent, this);
+    this.filename = null;
+    this.loaded = false;
+    this.children = [];
+  }
+  function attachChild(parent, child) {
+    if (parent && parent.children && parent.children.indexOf(child) === -1) parent.children.push(child);
+  }
+  function parentPath(parent) {
+    if (!parent) return '';
+    if (typeof parent.filename === 'string') return parent.filename;
+    if (typeof parent.path === 'string') return pathApi.join(pathApi.resolve(parent.path), '__home_require__.js');
+    return '';
+  }
+  function moduleId(request) {
+    if (typeof request !== 'string') {
+      const error = new TypeError('Module id must be a string');
+      error.code = 'ERR_INVALID_ARG_TYPE';
+      throw error;
+    }
+    if (request === '') {
+      const error = new TypeError('Module id must be a non-empty string');
+      error.code = 'ERR_INVALID_ARG_VALUE';
+      throw error;
+    }
+    return request;
+  }
+  Object.defineProperty(Module.prototype, 'parent', {
+    get: function() { return moduleParents.get(this); },
+    set: function(parent) { moduleParents.set(this, parent); },
+  });
+  Module.prototype.require = function(request) {
+    'use strict';
+    return load(moduleId(request), this, false);
+  };
+  Object.assign(Module, moduleApi);
+  Module.Module = Module;
+  Module._cache = Object.create(null);
+  // Keep Node's hook signature; this host has no main-only symlink policy.
+  // eslint-disable-next-line pickier/no-unused-vars
+  Module._resolveFilename = function(request, parent, isMain, options) {
+    moduleId(request);
+    if (options !== undefined && options !== null && (typeof options !== 'object' || options.paths !== undefined || Object.keys(options).length)) {
+      throw moduleError('ERR_HOME_UNSUPPORTED', 'Custom CommonJS resolution options are not implemented');
+    }
+    if (isBuiltin(request)) return request;
+    const resolved = resolveNative(request, parentPath(parent), true);
+    if (resolved === null) throw moduleError('MODULE_NOT_FOUND', `cannot resolve module ${request} from ${parentPath(parent)}`);
+    return resolved.path;
+  };
+  builtins.module = builtins['node:module'] = Module;
   let mainModule = null;
   const records = Object.create(null);
   const builtinRecords = Object.create(null);
@@ -42,19 +104,14 @@
   function fileURL(path) {
     return `file://${path.split('/').map(encodeURIComponent).join('/')}`;
   }
-  function makeRequire(parentPath) {
+  function makeRequire(module) {
     function localRequire(request) {
-      if (typeof request !== 'string') throw new TypeError('Module id must be a string');
-      return load(request, parentPath, false);
+      return module.require(request);
     }
-    localRequire.resolve = function(request) {
-      if (typeof request !== 'string') throw new TypeError('Module id must be a string');
-      if (isBuiltin(request)) return request;
-      const resolved = resolveNative(request, parentPath, true);
-      if (resolved === null) throw new Error(`cannot resolve module ${request} from ${parentPath}`);
-      return resolved.path;
+    localRequire.resolve = function(request, options) {
+      return Module._resolveFilename(moduleId(request), module, false, options);
     };
-    localRequire.cache = cache;
+    localRequire.cache = Module._cache;
     Object.defineProperty(localRequire, 'main', { get: function() {
       return mainModule;
     } });
@@ -111,17 +168,18 @@
     }
     return root;
   }
-  function prepare(record, asMain) {
+  function prepare(record, asMain, parent) {
     const payload = record.payload;
-    const module = { id: payload.path, filename: payload.path, loaded: false, exports: {}, parent: null, children: [] };
+    const module = new Module(payload.path, parent);
+    module.filename = payload.path;
+    if (asMain) module.id = '.';
     if (payload.esModule) Object.defineProperty(module.exports, '__esModule', { value: true });
     record.module = module;
-    cache[payload.path] = module;
+    Module._cache[payload.path] = module;
     if (asMain) mainModule = module;
     const slash = payload.path.lastIndexOf('/');
     const directory = slash < 0 ? '.' : payload.path.slice(0, slash);
-    const localRequire = makeRequire(payload.path);
-    module.require = localRequire;
+    const localRequire = makeRequire(module);
     const metadata = Object.create(null);
     metadata.url = fileURL(payload.path);
     metadata.path = payload.path;
@@ -194,19 +252,19 @@
       // its enclosing evaluation budget remains shared across module loads.
       const factory = rawEvaluate ? rawEvaluate(factorySource, `${metadata.url}?home-emitted`) : (0, eval)(factorySource);
       const wrapper = factory(metadata, module, staticImport, dynamicImport);
-      return wrapper(module.exports, localRequire, module, payload.path, directory);
+      return wrapper.call(payload.esModule ? undefined : module.exports, module.exports, localRequire, module, payload.path, directory);
     };
   }
-  function evaluateSync(record, asMain) {
+  function evaluateSync(record, asMain, parent) {
     if (record.builtin) return record;
     if (record.asynchronous) throw moduleError('ERR_REQUIRE_ASYNC_MODULE', `require() cannot evaluate an async module graph: ${record.payload.path}`);
     if (record.state === 'failed') {
       if (record.payload.esModule || !record.module) throw record.error;
       record.state = 'linked';
     }
-    if (Object.prototype.hasOwnProperty.call(cache, record.payload.path)) return record;
+    if (Module._cache[record.payload.path]) return record;
     record.state = 'evaluating';
-    prepare(record, asMain);
+    prepare(record, asMain, parent);
     try {
       record.dependencies.forEach(function(edge) {
         evaluateSync(edge.record, false);
@@ -219,7 +277,13 @@
     catch (error) {
       record.error = error;
       record.state = 'failed';
-      if (!record.payload.esModule) delete cache[record.payload.path];
+      if (!record.payload.esModule) {
+        delete Module._cache[record.payload.path];
+        if (parent && parent.children) {
+          const index = parent.children.indexOf(record.module);
+          if (index !== -1) parent.children.splice(index, 1);
+        }
+      }
       throw error;
     }
   }
@@ -289,8 +353,25 @@
     // resolution procedure may call it, as native dynamic import does.
     return namespace;
   }
-  function load(specifier, parentPath, asMain) {
-    const record = evaluateSync(graph(String(specifier), parentPath), asMain);
+  function load(specifier, parent, asMain) {
+    // Resolve through the live hook before inspecting the actual shared cache.
+    // A cached module's exports may be replaced without executing its source.
+    const filename = Module._resolveFilename(specifier, parent, asMain);
+    if (typeof filename !== 'string') throw new TypeError('Module resolution must return a filename string');
+    if (isBuiltin(filename)) return builtins[filename];
+    const known = records[filename];
+    if (known && known.asynchronous) throw moduleError('ERR_REQUIRE_ASYNC_MODULE', `require() cannot evaluate an async module graph: ${filename}`);
+    if (known && known.state === 'failed' && known.payload.esModule) throw known.error;
+    const cached = Module._cache[filename];
+    if (cached) {
+      attachChild(parent, cached);
+      return cached.exports;
+    }
+    // CommonJS cache eviction means the next load reads and compiles the
+    // current file, including a retry after a throwing or rewritten module.
+    // ESM linkage/error identity remains owned by its separate module record.
+    if (known && !known.payload.esModule) delete records[filename];
+    const record = evaluateSync(graph(filename, parentPath(parent)), asMain, parent);
     return record.builtin ? record.exports : record.module.exports;
   }
   Home.startModule = function(specifier) {
@@ -326,11 +407,15 @@
   Home.createRequire = function(parentPath) {
     if (typeof parentPath !== 'string' || parentPath.charAt(0) !== '/' || parentPath.indexOf('\0') !== -1) throw new TypeError('Home require referrer must be an absolute POSIX filename');
     if (parentPath.charAt(parentPath.length - 1) === '/') parentPath += '__home_require__.js';
-    return makeRequire(parentPath);
+    const module = new Module(parentPath);
+    module.filename = parentPath;
+    return makeRequire(module);
   };
-  Home.require = makeRequire('');
+  const globalModule = new Module('');
+  globalModule.filename = '';
+  Home.require = makeRequire(globalModule);
   Home.runModule = function(specifier) {
-    return load(specifier, '', true);
+    return load(specifier, null, true);
   };
   globalThis.require = Home.require;
   delete globalThis.__home_tool_resolve_module;
