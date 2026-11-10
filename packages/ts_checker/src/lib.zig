@@ -124,6 +124,12 @@ pub const LibCache = struct {
     /// and signature diagnostics (`'(size: number): string'`). Values are
     /// static, so only the map itself is owned.
     lib_param_names: std.AutoHashMapUnmanaged(TypeId, []const []const u8) = .empty,
+    /// `BigInt`'s apparent interface, the surface of a `bigint` (#995).
+    bigint_proto: TypeId = types.Primitive.none,
+    /// `Boolean`'s declared members only — `valueOf` — which is what `keyof
+    /// boolean` reads (#995). Property access on a boolean gets `toString`
+    /// from the `Object` prototype fallback, as in TypeScript.
+    boolean_proto: TypeId = types.Primitive.none,
     /// `every`'s predicate overload returns `this is S[]` (or readonly
     /// `S[]`). The signature's runtime return type is boolean, so retain
     /// the otherwise-erased S binder for the checker's predicate metadata.
@@ -598,10 +604,21 @@ pub fn symbolProto(
     const sig_void_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
     const sig_void_symbol = try ti.internSignature(&[_]TypeId{}, symbol_t, false);
 
+    // `lib.es2015.symbol.wellknown.d.ts`: `[Symbol.toPrimitive](hint: string):
+    // symbol` and `readonly [Symbol.toStringTag]: string`. Keyed by the same
+    // unique symbols the `Symbol` constructor gives its well-known values,
+    // which are deduplicated by name, so `keyof symbol` accepts
+    // `Symbol.toPrimitive` (#995).
+    const to_primitive = try sint.intern("Symbol.toPrimitive");
+    const to_string_tag = try sint.intern("Symbol.toStringTag");
+    const sig_to_primitive = try ti.internSignature(&[_]TypeId{string_t}, symbol_t, false);
+
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("toString"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("valueOf"), .type = sig_void_symbol, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("description"), .type = string_or_undefined_t, .is_optional = true, .is_readonly = true, .is_method = false },
+        .{ .name = to_primitive, .key_type = try ti.internUniqueSymbol(.{ .name = to_primitive }), .type = sig_to_primitive, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = to_string_tag, .key_type = try ti.internUniqueSymbol(.{ .name = to_string_tag }), .type = string_t, .is_optional = false, .is_readonly = true, .is_method = false },
     };
     cache.symbol_proto = try ti.internObjectType(&m);
     return cache.symbol_proto;
@@ -1617,6 +1634,46 @@ pub fn booleanGlobal(
 /// plus the `asIntN(bits, value)` / `asUintN(bits, value)` static
 /// helpers. The call coercion accepts the same primitive union as
 /// lib.es2020.bigint.d.ts: string | number | bigint | boolean.
+/// `BigInt`'s apparent interface (`lib.es2020.bigint.d.ts`): the surface of a
+/// `bigint`. A `bigint` receiver borrowed `Number`'s instead, so `big.toFixed()`
+/// was accepted and `big.valueOf()` was a `number` (#995).
+pub fn bigintProto(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.bigint_proto != types.Primitive.none) return cache.bigint_proto;
+    const string_t = types.Primitive.string_t;
+    const optional_radix = try ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.undefined_t });
+    const string_arr = try ti.internArrayType(sint, string_t);
+    const optional_locales = try ti.internUnion(&.{ string_t, string_arr, types.Primitive.undefined_t });
+    const optional_options = try ti.internUnion(&.{ types.Primitive.object_t, types.Primitive.undefined_t });
+    const to_string_tag = try sint.intern("Symbol.toStringTag");
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("toString"), .type = try ti.internSignature(&.{optional_radix}, string_t, false), .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toLocaleString"), .type = try ti.internSignature(&.{ optional_locales, optional_options }, string_t, false), .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("valueOf"), .type = try ti.internSignature(&.{}, types.Primitive.bigint_t, false), .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = to_string_tag, .key_type = try ti.internUniqueSymbol(.{ .name = to_string_tag }), .type = try ti.internStringLiteral(try sint.intern("BigInt")), .is_optional = false, .is_readonly = true, .is_method = false },
+    };
+    cache.bigint_proto = try ti.internObjectType(&m);
+    return cache.bigint_proto;
+}
+
+/// `Boolean`'s declared members (`lib.es5.d.ts`): only `valueOf`. Used by
+/// `keyof boolean`, which TypeScript resolves to `"valueOf"` (#995).
+pub fn booleanProto(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.boolean_proto != types.Primitive.none) return cache.boolean_proto;
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("valueOf"), .type = try ti.internSignature(&.{}, types.Primitive.boolean_t, false), .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.boolean_proto = try ti.internObjectType(&m);
+    return cache.boolean_proto;
+}
+
 pub fn bigintGlobal(
     cache: *LibCache,
     ti: *interner_mod.Interner,

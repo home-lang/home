@@ -1706,12 +1706,12 @@ pub const Engine = struct {
         if (!is_string and !is_number and !is_boolean and !is_symbol) return false;
         for (self.interner.objectMembers(target)) |member| {
             if (member.is_optional) continue;
-            if (!self.primitiveApparentHasMember(member.name, is_string, is_number)) return false;
+            if (!self.primitiveApparentHasMember(member.name, is_string, is_number, is_symbol)) return false;
         }
         return true;
     }
 
-    fn primitiveApparentHasMember(self: *Engine, name_id: string_interner.StringId, is_string: bool, is_number: bool) bool {
+    fn primitiveApparentHasMember(self: *Engine, name_id: string_interner.StringId, is_string: bool, is_number: bool, is_symbol: bool) bool {
         const si = self.string_interner orelse return false;
         const name = si.getOptional(name_id) orelse return false;
         if (std.mem.eql(u8, name, "toString") or
@@ -1775,6 +1775,12 @@ pub const Engine = struct {
             std.mem.eql(u8, name, "trimLeft") or
             std.mem.eql(u8, name, "trimRight") or
             std.mem.eql(u8, name, "Symbol.iterator")))
+        {
+            return true;
+        }
+        // `Symbol`'s `lib.es2015.symbol.wellknown` members (#995).
+        if (is_symbol and (std.mem.eql(u8, name, "Symbol.toPrimitive") or
+            std.mem.eql(u8, name, "Symbol.toStringTag")))
         {
             return true;
         }

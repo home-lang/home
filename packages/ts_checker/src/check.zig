@@ -89523,12 +89523,26 @@ pub const Checker = struct {
                 else => return null,
             };
         }
-        if (self.typeIsBooleanLike(t)) return self.lowerBuiltinObjectType("Boolean");
-        // `symbol` and `bigint` keep their symbolic `keyof` for now. Their
-        // surfaces lack keys TypeScript has — `Symbol`'s `[Symbol.toPrimitive]`
-        // and `[Symbol.toStringTag]`, and `BigInt` has no surface at all — so
-        // resolving through them would reject a valid key, a new false error
-        // where today's symbolic form only misses an invalid one.
+        if (t == types.Primitive.symbol_t or flags.is_symbol) {
+            return lib.symbolProto(&self.lib_cache, self.interner, self.string_interner) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return null,
+            };
+        }
+        if (t == types.Primitive.bigint_t or flags.is_bigint) {
+            return lib.bigintProto(&self.lib_cache, self.interner, self.string_interner) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return null,
+            };
+        }
+        // Not the `Boolean` builtin, which also carries `toString` for its
+        // own annotation's sake: `keyof boolean` is exactly `"valueOf"`.
+        if (self.typeIsBooleanLike(t)) {
+            return lib.booleanProto(&self.lib_cache, self.interner, self.string_interner) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return null,
+            };
+        }
         return null;
     }
 
@@ -109379,6 +109393,20 @@ pub const Checker = struct {
         if (self.typeHasStringPrimitivePart(receiver_t)) {
             if (try self.declaredInterfaceMember("String", member_name)) |t| return t;
             if (lib.stringProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, &self.rest_signatures)) |proto| {
+                if (self.interner.objectMember(proto, member_name)) |t| return t;
+            } else |_| {}
+            if (try self.broadObjectPrototypeMember(member_name)) |t| return t;
+            return null;
+        }
+        // Ahead of the numeric branch, whose `typeHasNumericPrimitivePart`
+        // counts `bigint` as numeric: a `bigint` reads `BigInt`, not `Number`,
+        // so `big.toFixed()` is TS2339 and `big.valueOf()` is a `bigint` (#995).
+        if (receiver_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(receiver_t).is_bigint and
+            !self.interner.pool.flagsOf(receiver_t).is_number)
+        {
+            if (try self.declaredInterfaceMember("BigInt", member_name)) |t| return t;
+            if (lib.bigintProto(&self.lib_cache, self.interner, self.string_interner)) |proto| {
                 if (self.interner.objectMember(proto, member_name)) |t| return t;
             } else |_| {}
             if (try self.broadObjectPrototypeMember(member_name)) |t| return t;
@@ -301965,4 +301993,49 @@ test "checker: a homomorphic mapped type over a primitive is the primitive" {
     // homomorphically yields `number` itself, as TypeScript does. Only the
     // string-into-number row is an error.
     try T.expectEqual(@as(usize, 1), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+}
+
+test "checker: keyof symbol, bigint and boolean read their apparent types" {
+    const s = try newSetup(
+        \\const a: keyof symbol = "bogus";
+        \\const b: keyof bigint = "bogus";
+        \\const c: keyof boolean = "toString";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // `keyof boolean` is exactly `"valueOf"`: `toString` is `Object`'s, not
+    // a declared member of `Boolean`.
+    try T.expectEqual(@as(usize, 3), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+}
+
+test "checker: keyof symbol and bigint accept their well-known symbol keys" {
+    const s = try newSetup(
+        \\const a: keyof symbol = Symbol.toPrimitive;
+        \\const b: keyof symbol = Symbol.toStringTag;
+        \\const c: keyof symbol = "description";
+        \\const d: keyof bigint = Symbol.toStringTag;
+        \\const e: keyof bigint = "toLocaleString";
+        \\const f: keyof boolean = "valueOf";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The first two and `d` were false errors before #995: the symbolic
+    // `keyof` accepted any string but rejected every unique symbol.
+    try T.expectEqual(@as(usize, 0), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+}
+
+test "checker: a bigint reads BigInt rather than Number" {
+    const s = try newSetup(
+        \\declare const big: bigint;
+        \\const fixed = big.toFixed(2);
+        \\const value: bigint = big.valueOf();
+        \\const sym: symbol = Symbol();
+        \\const wrapped: Symbol = sym;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // `toFixed` is `Number`'s; `valueOf` is a `bigint`, not a `number`. And
+    // `Symbol`'s new well-known members must not break `symbol -> Symbol`.
+    try T.expectEqual(@as(usize, 1), checkerCountDistinctStarts(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
 }
