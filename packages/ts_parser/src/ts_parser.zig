@@ -16445,6 +16445,34 @@ pub const Parser = struct {
         // `(...a: T[]) {}` where the arrow is missing.
         if (after_paren_idx >= self.tokens.len) return null;
         const after_kind = self.tokens[after_paren_idx].kind;
+        // A compound assignment cannot be the first formal parameter. In a
+        // ternary arm, a comparison after the colon may resemble an unclosed
+        // type argument and make recovery scan ahead to a later loop body.
+        // Keep this expression head out of typed-arrow speculation; defaults
+        // such as `(n = seed += 1): T => n` still take the normal path.
+        if (after_kind == .colon and self.disallow_arrow_return_type and
+            isExpressionIdentifierToken(self.peekAt(1).kind))
+        {
+            switch (self.peekAt(2).kind) {
+                .plus_equal,
+                .minus_equal,
+                .asterisk_equal,
+                .slash_equal,
+                .percent_equal,
+                .asterisk_asterisk_equal,
+                .less_less_equal,
+                .greater_greater_equal,
+                .greater_greater_greater_equal,
+                .ampersand_equal,
+                .pipe_equal,
+                .caret_equal,
+                .ampersand_ampersand_equal,
+                .pipe_pipe_equal,
+                .question_question_equal,
+                => return null,
+                else => {},
+            }
+        }
         const recover_missing_arrow_before_block = after_kind == .open_brace and
             self.parenContentsLookLikeTypedOrRestParams(self.cursor, after_paren_idx);
         const recover_missing_arrow_before_semicolon = after_kind == .colon and
@@ -37685,5 +37713,29 @@ test "parser: parenthesized function return types leave the expression arrow" {
         const function = hir_mod.fnDeclOf(&setup.hir, initializer);
         try T.expectEqual(hir_mod.NodeKind.fn_type, setup.hir.kindOf(function.return_type));
         try T.expect(function.body != hir_mod.none_node_id);
+    }
+}
+
+test "parser: compound assignment ternary heads stay expressions" {
+    for ([_][]const u8{ "+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", ">>>=", "&=", "|=", "^=", "&&=", "||=", "??=" }) |op| {
+        const source = try std.fmt.allocPrint(T.allocator, "for (const f = function() {{ let n=2; return true ? (n {s} 1) : value < 10; }}; false;) {{}}", .{op});
+        defer T.allocator.free(source);
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    }
+}
+
+test "parser: compound assignments in typed arrow defaults remain valid" {
+    for ([_][]const u8{
+        "let seed=2; const f = true ? (n = seed += 1): number => n : () => 0;",
+        "let seed=2; const f = true ? (n: number = seed += 1): number => n : () => 0;",
+        "let seed=2; const f = true ? (n = (seed += 1)): number => n : () => 0;",
+    }) |source| {
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
     }
 }

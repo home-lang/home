@@ -15,3 +15,4 @@ import "./esm_strict.mjs";
 import "./esm_strict_async.mjs";
 import "./inflate_output_limit.mjs";
 import "./export_precedence/entry.mjs";
+import "./ternary_compound_heads.mjs";
