@@ -181,7 +181,10 @@
       const source = payload.esModule
         ? `return (${record.asynchronous ? 'async ' : ''}() => {\n${payload.source}\n})();`
         : payload.source;
-      const factorySource = `(function(${payload.metaBinding}, module, ${payload.importBinding || '__home_unused_import'}, ${payload.dynamicImportBinding || '__home_unused_dynamic_import'}) { return ${!payload.esModule && record.asynchronous ? 'async ' : ''}function(exports, require, ${payload.moduleBinding || 'module'}, __filename, __dirname) {\n${source}\n}; })`;
+      // ECMA-262 Strict Mode Code: modules and their enclosed functions are
+      // strict. Apply this to the receiver-owning wrapper as well as the arrow.
+      const strict = payload.esModule ? '"use strict";\n' : '';
+      const factorySource = `(function(${payload.metaBinding}, module, ${payload.importBinding || '__home_unused_import'}, ${payload.dynamicImportBinding || '__home_unused_dynamic_import'}) { return ${!payload.esModule && record.asynchronous ? 'async ' : ''}function(exports, require, ${payload.moduleBinding || 'module'}, __filename, __dirname) {\n${strict}${source}\n}; })`;
       const wrapper = (0, eval)(factorySource)(metadata, module, staticImport, dynamicImport);
       return wrapper(module.exports, localRequire, module, payload.path, directory);
     };

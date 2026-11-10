@@ -11,3 +11,5 @@ import "./buffer_limit_descriptors.mjs";
 if (packageValue !== 42) {
   throw new Error("Home did not resolve the nearest node_modules package");
 }
+import "./esm_strict.mjs";
+import "./esm_strict_async.mjs";
