@@ -842,9 +842,16 @@
   };
   const accountHomedir = globalThis.__home_tool_account_homedir;
   delete globalThis.__home_tool_account_homedir;
+  const nativeParallelism = globalThis.__home_tool_available_parallelism;
+  delete globalThis.__home_tool_available_parallelism;
   const osProcess = process;
   const osNativePlatform = osProcess.platform;
   const osApi = {
+    availableParallelism: function() {
+      const count = nativeParallelism();
+      if (count === null) throw new Error('Cannot query native CPU availability');
+      return count;
+    },
     platform: function() {
       return osProcess.platform;
     },

@@ -973,6 +973,16 @@ pub fn build(b: *std.Build) void {
         const tool_file_test_bin = b.step("home-tool-file-io-test-bin", "Compile the native filesystem tests without running them");
         tool_file_test_bin.dependOn(&b.addInstallArtifact(tool_file_tests, .{}).step);
         home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_file_tests).step);
+        const tool_cpu_tests = b.addTest(.{
+            .name = "home-tool-cpu-availability-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_cpu.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_cpu_tests).step);
         const tool_child_tests = b.addTest(.{
             .name = "home-tool-child-lifecycle-tests",
             .root_module = b.createModule(.{

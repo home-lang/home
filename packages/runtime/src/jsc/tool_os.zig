@@ -1,4 +1,4 @@
-//! POSIX account database lookup for the tool's os.homedir adapter.
+//! Native OS queries for the repository-tool adapter.
 const std = @import("std");
 const builtin = @import("builtin");
 const callback = @import("callback.zig");
@@ -40,6 +40,25 @@ fn homedir(
     return api.JSValueMakeNull(c);
 }
 
+fn availableParallelism(
+    ctx: ?*types.JSContextRef,
+    function: ?*types.JSObject,
+    this: ?*types.JSObject,
+    count: usize,
+    args: [*c]const ?*types.JSValue,
+    exception: api.ExceptionRef,
+) callconv(.c) ?*types.JSValue {
+    _ = function;
+    _ = this;
+    _ = count;
+    _ = args;
+    _ = exception;
+    const c = ctx orelse return null;
+    const cpus = @import("tool_cpu.zig").availableParallelism() catch return api.JSValueMakeNull(c);
+    return api.JSValueMakeNumber(c, @floatFromInt(cpus));
+}
+
 pub fn install(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
     callback.registerCallback(ctx, global, "__home_tool_account_homedir", homedir);
+    callback.registerCallback(ctx, global, "__home_tool_available_parallelism", availableParallelism);
 }
