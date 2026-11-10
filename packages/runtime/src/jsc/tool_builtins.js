@@ -248,6 +248,17 @@
     fsOperation('rmdir', path, false, false);
   }
   fs.rmdirSync = removeEmptyDirectory;
+  function makeTemporaryDirectory(prefix, options) {
+    // https://nodejs.org/api/fs.html#fspromisesmkdtempprefix-options
+    prefix = stringPath(prefix);
+    options = options == null ? {} : typeof options === 'string' ? { encoding: options } : fsOptions(options, ['encoding']);
+    const requested = options.encoding;
+    const encoding = requested == null ? 'utf8' : requested;
+    if (typeof encoding !== 'string' || (encoding !== 'buffer' && !['utf8', 'utf-8'].includes(encoding.toLowerCase()))) unsupported('Home mkdtemp supports UTF-8 or Buffer results only');
+    const result = fsOperation('mkdtemp', prefix, false, false).path;
+    return encoding === 'buffer' ? bufferApi.Buffer.from(result, 'utf8') : result;
+  }
+  fs.mkdtempSync = makeTemporaryDirectory;
   class DirectoryEntry {
     constructor(name, kind, parentPath) {
       this.name = name;
@@ -461,6 +472,9 @@
   fs.lstat = function(path, options, callback) { callbackStat('lstat', path, options, callback); };
   const fsPromises = {
     constants: fsConstants,
+    mkdtemp: async function(prefix, options) {
+      return makeTemporaryDirectory(prefix, options);
+    },
     rmdir: async function(path, options) {
       removeEmptyDirectory(path, options);
     },

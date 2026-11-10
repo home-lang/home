@@ -20,3 +20,4 @@ import "./forof_sequence.mjs";
 import "./stack_origins/entry.mjs";
 import "./node_random_uuid.mjs";
 import "./node_rmdir.mjs";
+import "./node_mkdtemp.mjs";

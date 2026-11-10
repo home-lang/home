@@ -132,6 +132,35 @@ fn mkdir(path: []const u8, recursive: bool, depth: usize, permissions: std.Io.Fi
     return path;
 }
 
+fn temporaryDirectory(allocator: std.mem.Allocator, prefix: []const u8) ![]u8 {
+    const path = try allocator.alloc(u8, try std.math.add(usize, prefix.len, 6));
+    errdefer allocator.free(path);
+    @memcpy(path[0..prefix.len], prefix);
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    for (0..128) |_| {
+        var length: usize = 0;
+        while (length < 6) {
+            var random: [32]u8 = undefined;
+            try io.randomSecure(&random);
+            for (random) |byte| {
+                // Rejection sampling avoids bias when mapping 256 to 62.
+                if (byte >= 248) continue;
+                path[prefix.len + length] = alphabet[byte % 62];
+                length += 1;
+                if (length == 6) break;
+            }
+        }
+        // Atomic exclusive creation, never reuse a colliding path or create
+        // missing parents. A temporary directory belongs to its owner only.
+        std.Io.Dir.cwd().createDir(io, path, .fromMode(0o700)) catch |err| switch (err) {
+            error.PathAlreadyExists => continue,
+            else => return err,
+        };
+        return path;
+    }
+    return error.PathAlreadyExists;
+}
+
 const DirectoryEntry = struct { name: []const u8, kind: std.Io.File.Kind };
 
 fn accessPath(path: [:0]const u8, mode: u3) !void {
@@ -465,6 +494,14 @@ fn operation(
         defer allocator.free(encoded);
         const result = text(c, encoded) orelse return failure(c, object, error.OutOfMemory);
         set(c, object, "entriesJSON", result);
+    } else if (std.mem.eql(u8, op, "mkdtemp")) {
+        const created = temporaryDirectory(allocator, path) catch |err| return failure(c, object, err);
+        defer allocator.free(created);
+        const value = text(c, created) orelse {
+            std.Io.Dir.cwd().deleteDir(io, created) catch {};
+            return failure(c, object, error.OutOfMemory);
+        };
+        set(c, object, "path", value);
     } else if (std.mem.eql(u8, op, "mkdir")) {
         const first = mkdir(path, recursive, 0, permissions) catch |err| return failure(c, object, err);
         if (recursive) if (first) |created| set(c, object, "created", text(c, created));
