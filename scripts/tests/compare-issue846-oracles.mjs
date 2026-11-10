@@ -71,6 +71,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue993-argument-inner-mismatch/') ||
   path.includes('/issue992-tuple-spread-union/') ||
   path.includes('/issue996-named-array-element/') ||
+  path.includes('/issue1000-generic-arguments/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
@@ -119,6 +120,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue993-argument-inner-mismatch/tsconfig.json',
   'packages/ts_cli/testdata/issue992-tuple-spread-union/tsconfig.json',
   'packages/ts_cli/testdata/issue996-named-array-element/tsconfig.json',
+  'packages/ts_cli/testdata/issue1000-generic-arguments/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
