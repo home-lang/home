@@ -88,6 +88,7 @@
   globalThis.Buffer = bufferApi.Buffer;
   const nativeRandomBytes = globalThis.__home_tool_random_bytes;
   delete globalThis.__home_tool_random_bytes;
+  const CryptoBytes = Uint8Array;
   const allocateBytes = bufferApi.Buffer.alloc;
   function nodeArgumentError(code, message, range) {
     const error = range ? new RangeError(message) : new TypeError(message);
@@ -143,6 +144,28 @@
     },
   };
   const cryptoApi = {
+    randomUUID: function(options) {
+      // https://nodejs.org/api/crypto.html#cryptorandomuuidoptions
+      // Fresh OS entropy on every call also honors disableEntropyCache=true.
+      // Do not route through a replaceable public randomBytes/Math.random.
+      if (options !== undefined) {
+        if (options === null || typeof options !== 'object' || Array.isArray(options)) nodeArgumentError('ERR_INVALID_ARG_TYPE', 'randomUUID options must be an object');
+        const disableEntropyCache = options.disableEntropyCache;
+        if (disableEntropyCache !== undefined && typeof disableEntropyCache !== 'boolean') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'options.disableEntropyCache must be a boolean');
+      }
+      const bytes = new CryptoBytes(16);
+      if (!nativeRandomBytes(bytes)) throw new Error('Native crypto entropy source failed');
+      // RFC 4122 section 4.4: retain 122 random bits, version 4 and variant 10.
+      bytes[6] = (bytes[6] & 15) | 64;
+      bytes[8] = (bytes[8] & 63) | 128;
+      const hex = '0123456789abcdef';
+      let result = '';
+      for (let index = 0; index < bytes.length; index++) {
+        if (index === 4 || index === 6 || index === 8 || index === 10) result += '-';
+        result += hex[bytes[index] >> 4] + hex[bytes[index] & 15];
+      }
+      return result;
+    },
     // https://nodejs.org/api/crypto.html#hashupdatedata-inputencoding
     // Native state consumes each update immediately; input mutation and copy()
     // cannot alter another digest. Stream/XOF/other algorithms stay unsupported.
