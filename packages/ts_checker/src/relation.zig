@@ -1756,7 +1756,24 @@ pub const Engine = struct {
             std.mem.eql(u8, name, "normalize") or
             std.mem.eql(u8, name, "localeCompare") or
             std.mem.eql(u8, name, "lastIndexOf") or
-            std.mem.eql(u8, name, "substr")))
+            std.mem.eql(u8, name, "substr") or
+            // `lib.es2015.core.d.ts` HTML methods and the `lib.es2019`
+            // `trimLeft` / `trimRight` aliases (#1001).
+            std.mem.eql(u8, name, "anchor") or
+            std.mem.eql(u8, name, "big") or
+            std.mem.eql(u8, name, "blink") or
+            std.mem.eql(u8, name, "bold") or
+            std.mem.eql(u8, name, "fixed") or
+            std.mem.eql(u8, name, "fontcolor") or
+            std.mem.eql(u8, name, "fontsize") or
+            std.mem.eql(u8, name, "italics") or
+            std.mem.eql(u8, name, "link") or
+            std.mem.eql(u8, name, "small") or
+            std.mem.eql(u8, name, "strike") or
+            std.mem.eql(u8, name, "sub") or
+            std.mem.eql(u8, name, "sup") or
+            std.mem.eql(u8, name, "trimLeft") or
+            std.mem.eql(u8, name, "trimRight")))
         {
             return true;
         }

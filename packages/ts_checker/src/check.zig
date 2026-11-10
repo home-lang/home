@@ -180307,6 +180307,9 @@ pub const Checker = struct {
             if (i == 0) return "a";
             if (i == 1) return "b";
         }
+        if (self.lib_cache.lib_param_names.get(sig)) |names| {
+            if (i < names.len) return names[i];
+        }
         return try std.fmt.allocPrint(self.diag_arena.allocator(), "x{d}", .{i});
     }
 
@@ -301773,4 +301776,36 @@ test "checker: a tuple element target keeps its single positional diagnostic" {
         "Type 'number[]' is not assignable to type '[string, number]'.",
     ));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
+}
+
+test "checker: the String surface carries its legacy and HTML methods" {
+    const s = try newSetup(
+        \\const bold: string = "x".bold();
+        \\const anchor: string = "x".anchor("name");
+        \\const left: string = "x".trimLeft();
+        \\const right: string = "x".trimRight();
+        \\const byNumber: string = "x".fontsize(3);
+        \\const byString: string = "x".fontsize("3");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // Valid calls to members TypeScript declares. Before #1001 these were
+    // TS2551 with the suggestion "Did you mean 'bold'?" for `bold` itself.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: a synthesized String overload names its parameters" {
+    const s = try newSetup(
+        \\const bad = "x".fontsize(false);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var named = false;
+    for (s.checker.diagnostics.items) |d| {
+        for (d.chain) |entry| {
+            if (std.mem.indexOf(u8, entry.message, "'(size: number): string'") != null) named = true;
+            try T.expect(std.mem.indexOf(u8, entry.message, "(x0:") == null);
+        }
+    }
+    try T.expect(named);
 }

@@ -120,6 +120,10 @@ pub const LibCache = struct {
     /// declaration uses `(a: T, b: T) => number` rather than synthesized
     /// positional names. The checker reads this only for diagnostics.
     sort_comparator_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Parameter names for synthesized lib signatures, rendered in overload
+    /// and signature diagnostics (`'(size: number): string'`). Values are
+    /// static, so only the map itself is owned.
+    lib_param_names: std.AutoHashMapUnmanaged(TypeId, []const []const u8) = .empty,
     /// `every`'s predicate overload returns `this is S[]` (or readonly
     /// `S[]`). The signature's runtime return type is boolean, so retain
     /// the otherwise-erased S binder for the checker's predicate metadata.
@@ -133,6 +137,7 @@ pub const LibCache = struct {
         self.array_proto_by_elem.deinit(gpa);
         self.readonly_array_proto_by_elem.deinit(gpa);
         self.sort_comparator_signatures.deinit(gpa);
+        self.lib_param_names.deinit(gpa);
         self.every_guard_type_params.deinit(gpa);
         self.flat_map_type_params.deinit(gpa);
         self.flat_signatures.deinit(gpa);
@@ -303,6 +308,11 @@ pub fn iteratorObjectType(
 /// Build (or fetch from cache) the `String.prototype` member shape.
 /// All methods are typed against the concrete `string` primitive —
 /// generics aren't needed here.
+const param_names_name = [_][]const u8{"name"};
+const param_names_color = [_][]const u8{"color"};
+const param_names_size = [_][]const u8{"size"};
+const param_names_url = [_][]const u8{"url"};
+
 pub fn stringProto(
     cache: *LibCache,
     ti: *interner_mod.Interner,
@@ -416,6 +426,19 @@ pub fn stringProto(
     const sig_substr = try ti.internSignature(&[_]TypeId{ number_t, number_or_undefined_t }, string_t, false);
     // `padStart` etc. plus `valueOf(): string` / `toString(): string`.
     const sig_to_string = sig_void_string;
+    // One signature per named HTML method, because each carries its own
+    // parameter name. Sharing `sig_num_string` would rename `charAt`'s
+    // parameter, and `sig_str_string` is `concat`'s rest signature.
+    const sig_anchor = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
+    try cache.lib_param_names.put(gpa, sig_anchor, &param_names_name);
+    const sig_fontcolor = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
+    try cache.lib_param_names.put(gpa, sig_fontcolor, &param_names_color);
+    const sig_fontsize_number = try ti.internSignature(&[_]TypeId{number_t}, string_t, false);
+    try cache.lib_param_names.put(gpa, sig_fontsize_number, &param_names_size);
+    const sig_fontsize_string = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
+    try cache.lib_param_names.put(gpa, sig_fontsize_string, &param_names_size);
+    const sig_link = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
+    try cache.lib_param_names.put(gpa, sig_link, &param_names_url);
 
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("length"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
@@ -463,6 +486,27 @@ pub fn stringProto(
         .{ .name = try sint.intern("substr"), .type = sig_substr, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("valueOf"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        // `lib.es2015.core.d.ts` HTML methods, in declaration order. Without
+        // them a valid `"x".bold()` was TS2551 with the self-contradicting
+        // suggestion "Did you mean 'bold'?" from
+        // `closestPropertyMemberName`'s own list of these names (#1001).
+        .{ .name = try sint.intern("anchor"), .type = sig_anchor, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("big"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("blink"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("bold"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fixed"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fontcolor"), .type = sig_fontcolor, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fontsize"), .type = sig_fontsize_number, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fontsize"), .type = sig_fontsize_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("italics"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("link"), .type = sig_link, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("small"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("strike"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("sub"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("sup"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        // `lib.es2019.string.d.ts` aliases of `trimStart` / `trimEnd`.
+        .{ .name = try sint.intern("trimLeft"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("trimRight"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     // (concat is actually `(...strs: string[]): string`; we model the
     // common single-arg form. Will be replaced once rest params land
