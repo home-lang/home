@@ -75651,6 +75651,21 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Whether an alias's result is a type TypeScript shares instead of
+    /// naming: a single literal, or whatever a `keyof` evaluates to. Such a
+    /// type has one identity for every place that produces it, so an alias
+    /// name recorded on it labels unrelated code — `type L = "x"` made every
+    /// `"x"` in the program display as `L`, and `type KB = keyof boolean`
+    /// turned `keyof (string | number)` into `KB | "toString"` (#1002).
+    /// TypeScript never shows either alias name.
+    fn aliasResultIsSharedType(self: *Checker, aliased_node: NodeId, aliased_t: TypeId) bool {
+        if (aliased_node != hir_mod.none_node_id and self.hir.kindOf(aliased_node) == .keyof_type) return true;
+        if (aliased_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(aliased_t);
+        if (flags.is_union or flags.is_intersection or flags.is_object_type) return false;
+        return flags.is_literal;
+    }
+
     fn checkTypeAliasDecl(self: *Checker, node: NodeId) CheckError!void {
         const alias = hir_mod.typeAliasOf(self.hir, node);
         if (alias.type_params_len != 0) {
@@ -75826,8 +75841,16 @@ pub const Checker = struct {
             self.hir.setType(node, aliased_t);
             if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, ta.name);
-                try self.putTypeName(id.name, aliased_t);
-                if (aliased_t >= types.Primitive.first_dynamic and aliased_t < self.interner.pool.typeCount()) {
+                const shared_result = aliased_t >= types.Primitive.first_dynamic and
+                    self.aliasResultIsSharedType(ta.aliased, aliased_t);
+                if (shared_result) {
+                    try self.putSharedAliasTypeName(id.name, aliased_t);
+                } else {
+                    try self.putTypeName(id.name, aliased_t);
+                }
+                if (aliased_t >= types.Primitive.first_dynamic and aliased_t < self.interner.pool.typeCount() and
+                    !shared_result)
+                {
                     const bare_name = self.string_interner.get(id.name);
                     const display = try self.diag_arena.allocator().dupe(u8, bare_name);
                     try self.alias_display_names.put(self.gpa, aliased_t, display);
@@ -195008,15 +195031,66 @@ pub const Checker = struct {
         return try self.indexedAccessAnnotationNameForIdentifier(node);
     }
 
-    fn keyofAnnotationNameForIdentifier(self: *Checker, node: NodeId) ?[]const u8 {
-        const type_node = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
-        if (self.hir.kindOf(type_node) != .keyof_type) return null;
+    /// The `keyof X` text TypeScript keeps for an annotated identifier, or
+    /// `null` when it shows the resolved keys instead (#1002).
+    ///
+    /// TypeScript keeps `keyof X` only as the origin of a key *union* whose
+    /// operand is a class, interface, reference or aliased object type. A
+    /// single key is just that literal (`keyof One` is `"a"`), no key is
+    /// `never`, and a primitive, an anonymous object or a union operand
+    /// expands — `keyof boolean` is `"valueOf"`. TypeScript 5.7.3 and native
+    /// 7.0.2 agree on every case. This used to return the annotation's raw
+    /// source text for all of them, comments and spacing included.
+    fn keyofAnnotationNameForIdentifier(self: *Checker, node: NodeId, target_t: TypeId) CheckError!?[]const u8 {
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
+        const type_node = self.keyofNodeBehindAnnotation(annotation) orelse return null;
+        if (target_t >= self.interner.pool.typeCount()) return null;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        // A union of keys, or a `keyof T` still symbolic over a type parameter.
+        if (!target_flags.is_union and !target_flags.is_keyof) return null;
         const operand = hir_mod.keyofTypeOf(self.hir, type_node).operand;
+        if (!self.keyofOperandKeepsName(operand)) return null;
         const operand_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(operand), " \t\r\n");
-        if (std.mem.eql(u8, operand_text, "any")) return null;
-        const text = self.nodeSourceTextOrEmpty(type_node);
-        const trimmed = std.mem.trim(u8, text, " \t\r\n");
-        return if (trimmed.len == 0) null else trimmed;
+        if (operand_text.len == 0) return null;
+        return try std.fmt.allocPrint(self.diag_arena.allocator(), "keyof {s}", .{operand_text});
+    }
+
+    /// The `keyof` node an annotation denotes: the annotation itself, or the
+    /// body of the non-generic alias it names, so `type KS = keyof Shape`
+    /// displays as `keyof Shape` where `KS` is the annotation.
+    fn keyofNodeBehindAnnotation(self: *Checker, annotation: NodeId) ?NodeId {
+        if (self.hir.kindOf(annotation) == .keyof_type) return annotation;
+        const name = self.bareTypeNodeName(annotation) orelse return null;
+        const decl = self.findVisibleNamedTypeDecl(annotation, name) orelse return null;
+        if (self.hir.kindOf(decl) != .type_alias_decl) return null;
+        if (self.typeParamNodesOfDecl(decl).len != 0) return null;
+        const aliased = hir_mod.typeAliasOf(self.hir, decl).aliased;
+        if (aliased == hir_mod.none_node_id or self.hir.kindOf(aliased) != .keyof_type) return null;
+        return aliased;
+    }
+
+    /// Whether a `keyof` operand is one TypeScript keeps by name: an array or
+    /// tuple, a generic or qualified reference, or a name for a class,
+    /// interface, type parameter or aliased object type. A primitive keyword,
+    /// or an alias for a primitive, a literal or a union, is looked through.
+    fn keyofOperandKeepsName(self: *Checker, operand: NodeId) bool {
+        switch (self.hir.kindOf(operand)) {
+            .array_type, .tuple_type => return true,
+            .identifier, .type_ref => {},
+            else => return false,
+        }
+        const name = self.bareTypeNodeName(operand) orelse return true;
+        const text = self.string_interner.get(name);
+        for ([_][]const u8{ "any", "unknown", "never", "void", "null", "undefined", "string", "number", "boolean", "bigint", "symbol", "object" }) |keyword| {
+            if (std.mem.eql(u8, text, keyword)) return false;
+        }
+        const decl = self.findVisibleNamedTypeDecl(operand, name) orelse return true;
+        if (self.hir.kindOf(decl) != .type_alias_decl) return true;
+        const aliased_t = self.type_names.get(name) orelse return true;
+        if (aliased_t < types.Primitive.first_dynamic) return false;
+        if (aliased_t >= self.interner.pool.typeCount()) return true;
+        const flags = self.interner.pool.flagsOf(aliased_t);
+        return flags.is_object_type and !flags.is_union and !flags.is_intersection;
     }
 
     fn genericKeyofTargetRejectsLiteralAssignment(
@@ -195297,10 +195371,18 @@ pub const Checker = struct {
             return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
         }
         if (try self.tryReportConditionalFunctionVarDeclMismatch(node, init_node, target_node, target)) return;
-        if (self.visibleAnnotatedIdentifierTypeNode(target_node)) |type_node| {
-            if (self.hir.kindOf(type_node) == .keyof_type) {
+        if (self.visibleAnnotatedIdentifierTypeNode(target_node)) |annotation| {
+            // The annotation itself, or the `keyof` body of the alias it
+            // names: `type KS = keyof Shape` displays as `keyof Shape`, so an
+            // annotation of `KS` needs the same name-aware path. An alias is
+            // routed only when that name is kept; `type KO = keyof One` is
+            // just `"a"` and stays on the general reporter.
+            if (self.keyofNodeBehindAnnotation(annotation)) |type_node| {
                 const operand = hir_mod.keyofTypeOf(self.hir, type_node).operand;
-                if (self.typeNodeHasArraySyntax(operand) or self.hir.kindOf(operand) == .type_ref) {
+                if ((self.typeNodeHasArraySyntax(operand) or self.hir.kindOf(operand) == .type_ref) and
+                    (type_node == annotation or
+                        (try self.keyofAnnotationNameForIdentifier(target_node, target)) != null))
+                {
                     return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
                 }
             }
@@ -199062,7 +199144,7 @@ pub const Checker = struct {
             (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(target_node, diagnostic_target)) orelse
             (if (target_reduces_to_never) @as(?[]const u8, "never") else null) orelse
             (try self.normalizedKeyofIdentifierAnnotationName(target_node)) orelse
-            self.keyofAnnotationNameForIdentifier(target_node) orelse
+            (try self.keyofAnnotationNameForIdentifier(target_node, diagnostic_target)) orelse
             (try self.indexedAccessAnnotationNameForIdentifier(target_node)) orelse
             (try self.nullableAnnotationDiagnosticNameForIdentifier(
                 target_node,
@@ -202875,6 +202957,22 @@ pub const Checker = struct {
             }
         }
         try self.named_type_by_id.put(self.gpa, t, name);
+    }
+
+    /// `putTypeName` for an alias whose result is a shared type (see
+    /// `aliasResultIsSharedType`): the name resolves to the type, but the
+    /// type is not named back. `putTypeName` records both directions, and
+    /// `namedTypeForId` reads the reverse one for display, which is how
+    /// `type L = "x"` labelled every `"x"` as `L`. A name some other
+    /// declaration already gave the type is kept.
+    fn putSharedAliasTypeName(self: *Checker, name: hir_mod.StringId, t: TypeId) CheckError!void {
+        const prior = self.named_type_by_id.get(t);
+        try self.putTypeName(name, t);
+        if (prior != null and prior.? != name) {
+            try self.named_type_by_id.put(self.gpa, t, prior.?);
+        } else {
+            _ = self.named_type_by_id.remove(t);
+        }
     }
 
     fn namedTypeForId(self: *Checker, t: TypeId) ?hir_mod.StringId {
@@ -294550,7 +294648,12 @@ test "checker: keyof excludes ECMAScript private class members" {
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
     for (s.checker.diagnostics.items) |diagnostic| {
         if (diagnostic.code != TsCodes.type_not_assignable) continue;
-        try T.expect(std.mem.endsWith(u8, diagnostic.message, "is not assignable to type 'keyof A'."));
+        // `A` has one public key, so `keyof A` is the literal `"visible"` and
+        // is displayed as that: TypeScript 5.7.3 and native 7.0.2 both print
+        // `Type '"#field"' is not assignable to type '"visible"'.` This used
+        // to expect `'keyof A'`, the annotation's own text, which #1002
+        // stopped echoing.
+        try T.expect(std.mem.endsWith(u8, diagnostic.message, "is not assignable to type '\"visible\"'."));
     }
 }
 
@@ -302038,4 +302141,51 @@ test "checker: a bigint reads BigInt rather than Number" {
     // `Symbol`'s new well-known members must not break `symbol -> Symbol`.
     try T.expectEqual(@as(usize, 1), checkerCountDistinctStarts(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+}
+
+test "checker: a keyof annotation keeps its name only for a named key union" {
+    const s = try newSetup(
+        \\interface Shape { a: number; b: string }
+        \\interface One { a: number }
+        \\type KS = keyof Shape;
+        \\const kept: keyof   Shape = "bogus";
+        \\const viaAlias: KS = "bogus";
+        \\const single: keyof One = "bogus";
+        \\const primitive: keyof /* c */ boolean = "bogus";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"bogus\"' is not assignable to type 'keyof Shape'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"bogus\"' is not assignable to type '\"a\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"bogus\"' is not assignable to type '\"valueOf\"'."));
+    // Never the annotation's own characters, and never the alias in place of
+    // the `keyof` it stands for.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "keyof   Shape") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "/* c */") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'KS'") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'keyof One'") == null);
+    }
+}
+
+test "checker: an alias for a literal or a keyof result does not name the type" {
+    const s = try newSetup(
+        \\type Lit = "x";
+        \\type KB = keyof boolean;
+        \\const a: Lit = "y";
+        \\const b: "x" = "y";
+        \\const c: keyof boolean = "bogus";
+        \\const d: KB = "bogus";
+        \\const ok: Lit = "x";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"y\"' is not assignable to type '\"x\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"bogus\"' is not assignable to type '\"valueOf\"'."));
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "'Lit'") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'KB'") == null);
+    }
+    // The aliases still resolve: four statements fail and `ok` does not.
+    try T.expectEqual(@as(usize, 4), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
 }
