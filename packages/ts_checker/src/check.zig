@@ -73332,6 +73332,11 @@ pub const Checker = struct {
                 const v = next_numeric.?;
                 try self.enum_member_values.put(self.gpa, key, v);
                 try member_literal_types.append(self.gpa, self.interner.internNumberLiteral(v) catch return error.OutOfMemory);
+                // Create the member's own type now, in declaration order. A
+                // union prints its enum members in that order, and for an
+                // enum the display cannot find again by name — one declared
+                // in a namespace or a function — creation order is all it has.
+                _ = self.interner.internEnumNumberLiteral(v, enum_name, member_name) catch return error.OutOfMemory;
                 next_numeric = v + 1;
                 previous_nonliteral_numeric_for_isolated = false;
                 continue;
@@ -73370,6 +73375,7 @@ pub const Checker = struct {
                 try self.enum_member_string_values.put(self.gpa, key, info.value);
                 try self.enum_member_string_syntax.put(self.gpa, key, info.is_syntactically_string);
                 try member_literal_types.append(self.gpa, self.interner.internStringLiteral(info.value) catch return error.OutOfMemory);
+                _ = self.interner.internEnumStringLiteral(info.value, enum_name, member_name) catch return error.OutOfMemory;
                 next_numeric = null;
                 previous_nonliteral_numeric_for_isolated = false;
                 continue;
@@ -73384,6 +73390,7 @@ pub const Checker = struct {
                 }
                 try self.enum_member_values.put(self.gpa, key, v);
                 try member_literal_types.append(self.gpa, self.interner.internNumberLiteral(v) catch return error.OutOfMemory);
+                _ = self.interner.internEnumNumberLiteral(v, enum_name, member_name) catch return error.OutOfMemory;
                 next_numeric = v + 1;
                 previous_nonliteral_numeric_for_isolated = false;
             } else {
@@ -108238,6 +108245,7 @@ pub const Checker = struct {
     fn enumAnnotationDisplayNameForIdentifier(self: *Checker, node: NodeId) CheckError!?[]const u8 {
         _ = self.enumAnnotationNameForIdentifier(node) orelse return null;
         const text = self.visibleAnnotatedIdentifierTypeText(node) orelse return null;
+        if (try self.orderedUnionAnnotationText(node)) |ordered| return ordered;
         return try self.normalizedTypeAnnotationText(text);
     }
 
@@ -108984,6 +108992,10 @@ pub const Checker = struct {
         var flattened: std.ArrayListUnmanaged(TypeId) = .empty;
         defer flattened.deinit(self.gpa);
         for (members) |member| try self.collectDiagnosticUnionMembers(member, &flattened);
+        // The callers pass members as they were written, which was
+        // TypeScript 5.x's display. Native TypeScript 7 owns the order now, so
+        // a property typed `"yes" | "no"` prints as `"no" | "yes"`.
+        self.sortUnionMembersForDisplay(flattened.items);
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         const arena = self.diag_arena.allocator();
         var first = true;
@@ -135772,6 +135784,11 @@ pub const Checker = struct {
                 var has_null = false;
                 var has_undefined = false;
                 var empty_object_count: usize = 0;
+                // Members are displayed in union order, not as written:
+                // `null | Alpha | undefined | 1` is `1 | Alpha | null |
+                // undefined`.
+                var entries: std.ArrayListUnmanaged(UnionAnnotationEntry) = .empty;
+                defer entries.deinit(self.gpa);
                 for (hir_mod.unionTypeMembers(self.hir, type_node)) |member| {
                     const member_name = (try self.allocTypeAnnotationDiagnosticName(member, false)) orelse return null;
                     if (std.mem.eql(u8, member_name, "null")) {
@@ -135786,8 +135803,6 @@ pub const Checker = struct {
                         empty_object_count += 1;
                         continue;
                     }
-                    if (!first) try buf.appendSlice(arena, " | ");
-                    first = false;
                     const member_kind = self.hir.kindOf(member);
                     const callable_text = member_kind == .fn_type or
                         member_kind == .constructor_type or
@@ -135800,9 +135815,24 @@ pub const Checker = struct {
                     }
                     const add_leading_paren = callable_text and open_parens <= close_parens;
                     const add_trailing_paren = callable_text and close_parens <= open_parens;
-                    if (add_leading_paren) try buf.append(arena, '(');
-                    try buf.appendSlice(arena, member_name);
-                    if (add_trailing_paren) try buf.append(arena, ')');
+                    const member_text = if (add_leading_paren or add_trailing_paren)
+                        try std.fmt.allocPrint(arena, "{s}{s}{s}", .{
+                            if (add_leading_paren) "(" else "",
+                            member_name,
+                            if (add_trailing_paren) ")" else "",
+                        })
+                    else
+                        member_name;
+                    try entries.append(self.gpa, .{
+                        .text = member_text,
+                        .sort = self.unionMemberSortKey(try self.unionAnnotationMemberType(member), member_name),
+                    });
+                }
+                self.sortUnionAnnotationEntries(entries.items);
+                for (entries.items) |entry| {
+                    if (!first) try buf.appendSlice(arena, " | ");
+                    first = false;
+                    try buf.appendSlice(arena, entry.text);
                 }
                 while (empty_object_count > 0) : (empty_object_count -= 1) {
                     if (!first) try buf.appendSlice(arena, " | ");
@@ -156346,7 +156376,7 @@ pub const Checker = struct {
             while (i < entries.items.len) : (i += 1) {
                 var j = i;
                 while (j > 0) : (j -= 1) {
-                    if (!unionSortKeyGreater(entries.items[j - 1].sort, entries.items[j].sort)) break;
+                    if (!self.unionMemberGreater(entries.items[j - 1].sort, entries.items[j].sort)) break;
                     std.mem.swap(Entry, &entries.items[j - 1], &entries.items[j]);
                 }
             }
@@ -180773,12 +180803,14 @@ pub const Checker = struct {
     /// enum units which precede object-ish types, unions, and
     /// intersections); the secondary key is the type's name symbol
     /// (`compareTypeNames` — named types before unnamed, then by
-    /// name). Members that compare equal keep their interned order
-    /// (the consuming sorts are stable).
+    /// name). `unionMemberGreater` then compares the two types' own data
+    /// (`unionMemberDataOrder`) and last their creation order, so the key
+    /// carries the member it was built for.
     const UnionMemberSortKey = struct {
         flags_rank: u8,
         has_name: bool,
         name: []const u8,
+        member: TypeId = types.Primitive.none,
     };
 
     /// Port of tsgo's `getSortOrderFlags`. Home's flags are a packed
@@ -180790,10 +180822,18 @@ pub const Checker = struct {
         if (f.is_undefined) return 2;
         if (f.is_null) return 3;
         if (f.is_void) return 4;
+        // Both carry `is_string` as well, and tsgo ranks them by their own
+        // bit: `"s" | string[] | \`a${string}\` | Uppercase<string>`.
+        if (f.is_template_literal) return 22;
+        if (f.is_string_mapping) return 23;
         if (f.is_string and !f.is_literal) return 5;
         if (f.is_number and !f.is_literal) return 6;
         if (f.is_bigint and !f.is_literal) return 7;
-        if (f.is_boolean and !f.is_literal) return 8;
+        // tsgo has no `boolean` member in a union: it holds `false | true`
+        // (`BooleanLiteral`, bit 13) and prints the pair as `boolean`. So
+        // `boolean` sorts with the boolean literals, after `symbol` and after
+        // string and numeric literals: `symbol | "a" | 1 | boolean`.
+        if (f.is_boolean and !f.is_literal) return 13;
         if (f.is_symbol and !f.is_literal) return 9;
         // tsgo collapses enum unit types to `TypeFlagsEnum` (bit 16),
         // just after the plain literals.
@@ -180828,16 +180868,23 @@ pub const Checker = struct {
     /// — sort non-tuple arrays under "Array" so `Element[]` precedes
     /// `Element` (`checkJsxChildrenProperty7`'s `Element[] | Element`).
     fn unionMemberSortKey(self: *Checker, member: TypeId, member_name: []const u8) UnionMemberSortKey {
-        var key = UnionMemberSortKey{ .flags_rank = 20, .has_name = false, .name = "" };
+        var key = UnionMemberSortKey{ .flags_rank = 20, .has_name = false, .name = "", .member = member };
         if (member >= self.interner.pool.typeCount()) return key;
         const f = self.interner.pool.flagsOf(member);
         key.flags_rank = unionSortOrderFlags(f);
         if (f.is_object_type) {
-            if (self.actualTupleLength(member) == null and
-                self.interner.objectNumberIndex(member) != types.Primitive.none)
-            {
+            if (referenceNameFromDisplayText(member_name)) |text_name| {
+                // The name the member is displayed under is the name tsgo
+                // sorts it by. Asked first, because Home's `Map` and `Set`
+                // carry a number index and would otherwise pass for arrays.
                 key.has_name = true;
-                key.name = "Array";
+                key.name = text_name;
+            } else if (self.actualTupleLength(member) == null and self.typeIsArrayLikeObject(member)) {
+                key.has_name = true;
+                // Two different interfaces in tsgo, so they order by name
+                // before their elements are compared: `number[]` precedes
+                // `readonly string[]` although `string` precedes `number`.
+                key.name = if (self.typeHasReadonlyIndexSignature(member)) "ReadonlyArray" else "Array";
             } else if (self.namedTypeForId(member)) |name_id| {
                 key.has_name = true;
                 key.name = self.string_interner.get(name_id);
@@ -180855,12 +180902,223 @@ pub const Checker = struct {
         return key;
     }
 
-    fn unionSortKeyGreater(a: UnionMemberSortKey, b: UnionMemberSortKey) bool {
+    /// The name in a displayed type reference: `Map` for `Map<string, number>`,
+    /// `Color` for `NS.Color`. `null` for anything that is not a bare,
+    /// optionally qualified name with an optional type-argument list — an
+    /// array, a tuple, an object or function type, `typeof x`.
+    fn referenceNameFromDisplayText(text: []const u8) ?[]const u8 {
+        var end: usize = 0;
+        var segment_start: usize = 0;
+        while (end < text.len) : (end += 1) {
+            const c = text[end];
+            if (std.ascii.isAlphanumeric(c) or c == '_' or c == '$') continue;
+            if (c != '.') break;
+            segment_start = end + 1;
+        }
+        if (segment_start >= end or std.ascii.isDigit(text[segment_start])) return null;
+        if (end == text.len) return text[segment_start..end];
+        if (text[end] != '<') return null;
+        // Only the name's own argument list may follow it.
+        var depth: usize = 0;
+        for (text[end..], end..) |c, index| {
+            if (c == '<') depth += 1;
+            if (c == '>') {
+                if (index > 0 and text[index - 1] == '=') continue;
+                depth -= 1;
+                if (depth == 0) return if (index + 1 == text.len) text[segment_start..end] else null;
+            }
+        }
+        return null;
+    }
+
+    /// tsgo's `CompareTypes` over two union members, as "`a` sorts after
+    /// `b`": sort-order flags, then the type name, then data specific to the
+    /// kind. Native TypeScript 7 owns union member order (decided 2026-11-11);
+    /// TypeScript 5.x printed type-allocation order instead, which is not
+    /// reproducible and even changes with `skipLibCheck` (#975).
+    fn unionMemberGreater(self: *Checker, a: UnionMemberSortKey, b: UnionMemberSortKey) bool {
         if (a.flags_rank != b.flags_rank) return a.flags_rank > b.flags_rank;
         // Unnamed types sort after named ones (`s1 == nil → 1`).
         if (a.has_name != b.has_name) return !a.has_name;
-        if (a.has_name and b.has_name) return std.mem.order(u8, a.name, b.name) == .gt;
-        return false;
+        if (a.has_name and b.has_name) {
+            const by_name = std.mem.order(u8, a.name, b.name);
+            if (by_name != .eq) return by_name == .gt;
+        }
+        const by_data = self.unionMemberDataOrder(a.member, b.member, 0);
+        if (by_data != .eq) return by_data == .gt;
+        // tsgo's last resort is type creation order. For a list that is not
+        // already in interned order — an annotation's members as written —
+        // that is what puts `Color.Green | Color.Red` back in declaration
+        // order, which is how tsgo orders enum members.
+        return a.member > b.member;
+    }
+
+    /// `CompareTypes` for two types reached through a type-argument or
+    /// constituent list, where no display name has been rendered yet.
+    fn unionMemberOrder(self: *Checker, a: TypeId, b: TypeId, depth: u8) std.math.Order {
+        if (a == b) return .eq;
+        const ka = self.unionMemberSortKey(a, "");
+        const kb = self.unionMemberSortKey(b, "");
+        if (ka.flags_rank != kb.flags_rank) return std.math.order(ka.flags_rank, kb.flags_rank);
+        if (ka.has_name != kb.has_name) return if (ka.has_name) .lt else .gt;
+        if (ka.has_name and kb.has_name) {
+            const by_name = std.mem.order(u8, ka.name, kb.name);
+            if (by_name != .eq) return by_name;
+        }
+        const by_data = self.unionMemberDataOrder(a, b, depth);
+        if (by_data != .eq) return by_data;
+        return std.math.order(a, b);
+    }
+
+    /// tsgo's `compareTypeLists`: a shorter list first, then pairwise.
+    fn unionMemberListOrder(self: *Checker, a: []const TypeId, b: []const TypeId, depth: u8) std.math.Order {
+        if (a.len != b.len) return std.math.order(a.len, b.len);
+        for (a, b) |x, y| {
+            const order = self.unionMemberOrder(x, y, depth + 1);
+            if (order != .eq) return order;
+        }
+        return .eq;
+    }
+
+    /// The last step of `CompareTypes`, for two types with equal sort-order
+    /// flags and equal or absent names: string and numeric literals by value,
+    /// `false` before `true`, references to the same generic by their
+    /// type-argument lists (so `string[]` precedes `number[]`), tuples after
+    /// other unnamed object types and among themselves mutable first, then by
+    /// length, then by elements, template literal types by their text spans,
+    /// and unions and intersections by their constituents. `.eq` leaves it to
+    /// the caller, which falls back to type creation order as tsgo does.
+    fn unionMemberDataOrder(self: *Checker, a: TypeId, b: TypeId, depth: u8) std.math.Order {
+        if (a == b or depth > 8) return .eq;
+        const count = self.interner.pool.typeCount();
+        if (a >= count or b >= count) return .eq;
+        const fa = self.interner.pool.flagsOf(a);
+        const fb = self.interner.pool.flagsOf(b);
+        if (fa.is_union or fb.is_union) {
+            if (!(fa.is_union and fb.is_union)) return .eq;
+            return self.unionMemberListOrder(self.interner.unionMembers(a), self.interner.unionMembers(b), depth);
+        }
+        if (fa.is_intersection or fb.is_intersection) {
+            if (!(fa.is_intersection and fb.is_intersection)) return .eq;
+            return self.unionMemberListOrder(self.interner.intersectionMembers(a), self.interner.intersectionMembers(b), depth);
+        }
+        if (fa.is_enum_literal and fb.is_enum_literal) {
+            // tsgo orders enum members by their symbols, which is by where
+            // each member is declared. Home creates a member's type the first
+            // time it is referenced, so creation order would follow the
+            // annotation instead: `Color.Green | Color.Red` has to come out as
+            // `Color.Red | Color.Green`.
+            const pa = self.enumLiteralDeclarationStart(a) orelse return .eq;
+            const pb = self.enumLiteralDeclarationStart(b) orelse return .eq;
+            return std.math.order(pa, pb);
+        }
+        if (fa.is_literal and fb.is_literal) {
+            if (fa.is_enum_literal or fb.is_enum_literal) return .eq;
+            const la = self.interner.literalOfOrNull(a) orelse return .eq;
+            const lb = self.interner.literalOfOrNull(b) orelse return .eq;
+            switch (la) {
+                .string_lit => |sa| switch (lb) {
+                    .string_lit => |sb| return std.mem.order(u8, self.string_interner.get(sa), self.string_interner.get(sb)),
+                    else => return .eq,
+                },
+                .number_lit => |na| switch (lb) {
+                    .number_lit => |nb| {
+                        const x: f64 = @bitCast(na);
+                        const y: f64 = @bitCast(nb);
+                        if (std.math.isNan(x) or std.math.isNan(y)) return .eq;
+                        return std.math.order(x, y);
+                    },
+                    else => return .eq,
+                },
+                .boolean_lit => |ba| switch (lb) {
+                    .boolean_lit => |bb| {
+                        if (ba == bb) return .eq;
+                        return if (ba) .gt else .lt;
+                    },
+                    else => return .eq,
+                },
+                else => return .eq,
+            }
+        }
+        if (fa.is_template_literal and fb.is_template_literal) {
+            // `slices.Compare` over the text spans, then the placeholder
+            // types: `\`a${string}\`` precedes `\`b${string}\``.
+            const a_texts = self.interner.templateLiteralTexts(a);
+            const b_texts = self.interner.templateLiteralTexts(b);
+            const shared = @min(a_texts.len, b_texts.len);
+            for (a_texts[0..shared], b_texts[0..shared]) |x, y| {
+                const order = std.mem.order(u8, self.string_interner.get(x), self.string_interner.get(y));
+                if (order != .eq) return order;
+            }
+            if (a_texts.len != b_texts.len) return std.math.order(a_texts.len, b_texts.len);
+            return self.unionMemberListOrder(self.interner.templateLiteralTypes(a), self.interner.templateLiteralTypes(b), depth);
+        }
+        if (fa.is_string_mapping and fb.is_string_mapping) {
+            return self.unionMemberOrder(self.interner.stringMappingPayload(a).inner, self.interner.stringMappingPayload(b).inner, depth + 1);
+        }
+        if (!fa.is_object_type or !fb.is_object_type) return .eq;
+        const a_tuple_length = self.actualTupleLength(a);
+        const b_tuple_length = self.actualTupleLength(b);
+        if (a_tuple_length != null or b_tuple_length != null) {
+            // A tuple has no symbol, and tsgo's `compareSymbols` puts a type
+            // without one after a type with one: `{ a: 1 } | [string]`.
+            if (a_tuple_length == null) return .lt;
+            if (b_tuple_length == null) return .gt;
+            // `compareTupleTypes`: mutable before readonly, then by length,
+            // then the element types as a type-argument list.
+            const a_readonly = self.tupleTypeLooksReadonly(a);
+            const b_readonly = self.tupleTypeLooksReadonly(b);
+            if (a_readonly != b_readonly) return if (a_readonly) .gt else .lt;
+            if (a_tuple_length.? != b_tuple_length.?) return std.math.order(a_tuple_length.?, b_tuple_length.?);
+            var index: usize = 0;
+            while (index < a_tuple_length.? and index < 64) : (index += 1) {
+                const a_item = self.tupleElementType(a, index);
+                const b_item = self.tupleElementType(b, index);
+                if (a_item == types.Primitive.none or b_item == types.Primitive.none) return .eq;
+                const order = self.unionMemberOrder(a_item, b_item, depth + 1);
+                if (order != .eq) return order;
+            }
+            return .eq;
+        }
+        // Home's arrays are structural objects; tsgo's are `Array<T>`
+        // references ordered by their one type argument.
+        if (self.typeIsArrayLikeObject(a) and self.typeIsArrayLikeObject(b)) {
+            return self.unionMemberOrder(self.interner.objectNumberIndex(a), self.interner.objectNumberIndex(b), depth + 1);
+        }
+        const a_args = self.alias_type_args.get(a) orelse return .eq;
+        const b_args = self.alias_type_args.get(b) orelse return .eq;
+        return self.unionMemberListOrder(a_args, b_args, depth);
+    }
+
+    /// Where an enum member's type is declared, for ordering it among other
+    /// enum members. `null` when the member cannot be found in the first
+    /// declaration of its enum, as for one added by a later merged
+    /// declaration.
+    fn enumLiteralDeclarationStart(self: *Checker, t: TypeId) ?u32 {
+        const info = self.interner.enumLiteralInfo(t) orelse return null;
+        const decl = self.enumDeclForName(info.enum_name) orelse return null;
+        for (hir_mod.enumMembers(self.hir, decl)) |member| {
+            const name = self.enumMemberNameFromProperty(member) orelse continue;
+            if (name == info.member_name) return self.hir.spanOf(member).start;
+        }
+        return null;
+    }
+
+    /// Put a copy of a union's members in display order. An elaboration names
+    /// the first member that fails, so it has to walk them in the order the
+    /// union is printed: `string[] | number[]` against `boolean[]` is
+    /// explained by `string[]`. Left in interned order past a size where the
+    /// quadratic insertion sort would cost more than the diagnostic is worth.
+    fn sortUnionMembersForDisplay(self: *Checker, members: []TypeId) void {
+        if (members.len > 256) return;
+        var i: usize = 1;
+        while (i < members.len) : (i += 1) {
+            var j = i;
+            while (j > 0) : (j -= 1) {
+                if (self.unionMemberOrder(members[j - 1], members[j], 0) != .gt) break;
+                std.mem.swap(TypeId, &members[j - 1], &members[j]);
+            }
+        }
     }
 
     /// Restricted variant of `allocSimpleTypeName` for diagnostic
@@ -181024,7 +181282,7 @@ pub const Checker = struct {
                             while (sj > 0) : (sj -= 1) {
                                 const a = entries.items[sj - 1];
                                 const b = entries.items[sj];
-                                if (!unionSortKeyGreater(a.sort, b.sort)) break;
+                                if (!self.unionMemberGreater(a.sort, b.sort)) break;
                                 entries.items[sj - 1] = b;
                                 entries.items[sj] = a;
                             }
@@ -196269,6 +196527,7 @@ pub const Checker = struct {
         }
         if (source < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source).is_union) {
             const members = try self.diag_arena.allocator().dupe(TypeId, self.interner.unionMembers(source));
+            self.sortUnionMembersForDisplay(members);
             for (members) |member| {
                 if (try self.checkerAssignableTo(member, target)) continue;
                 const entries = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
@@ -199853,7 +200112,96 @@ pub const Checker = struct {
         if (!has_object_member) return null;
         const text = self.visibleAnnotatedIdentifierTypeText(node) orelse return null;
         if (std.mem.indexOfScalar(u8, text, '|') == null) return null;
+        if (try self.orderedUnionAnnotationText(node)) |ordered| return ordered;
         return try self.normalizedTypeAnnotationText(text);
+    }
+
+    /// One member of a union annotation: the text it is displayed as, and
+    /// where that puts it among the others.
+    const UnionAnnotationEntry = struct { text: []const u8, sort: UnionMemberSortKey };
+
+    /// The type a union annotation's member stands for, to order it by.
+    fn unionAnnotationMemberType(self: *Checker, member_node: NodeId) CheckError!TypeId {
+        const recorded = self.hir.typeOf(member_node);
+        if (recorded != types.Primitive.none) return recorded;
+        return try self.lowererLowerWithTypeParams(member_node);
+    }
+
+    /// Stable insertion sort into display order: equal members keep the
+    /// order they were written in.
+    fn sortUnionAnnotationEntries(self: *Checker, entries: []UnionAnnotationEntry) void {
+        var i: usize = 1;
+        while (i < entries.len) : (i += 1) {
+            var j = i;
+            while (j > 0) : (j -= 1) {
+                if (!self.unionMemberGreater(entries[j - 1].sort, entries[j].sort)) break;
+                std.mem.swap(UnionAnnotationEntry, &entries[j - 1], &entries[j]);
+            }
+        }
+    }
+
+    /// A union annotation's text with its members in display order: each
+    /// member as it was written, arranged by `unionMemberGreater`, with `null`
+    /// and `undefined` last. The annotation's own order is TypeScript 5.x's
+    /// display; native TypeScript 7 prints `Zed | Alpha` as `Alpha | Zed`.
+    ///
+    /// `null` when the members cannot be rearranged safely — when anything
+    /// but `|` stands between them, such as the parentheses of
+    /// `(() => void) | string`, whose member span may not include them.
+    fn orderedUnionAnnotationText(self: *Checker, node: NodeId) CheckError!?[]const u8 {
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
+        if (self.hir.kindOf(annotation) != .union_type) return null;
+        const src = self.source orelse return null;
+        const member_nodes = hir_mod.unionTypeMembers(self.hir, annotation);
+        if (member_nodes.len < 2) return null;
+        const union_span = self.hir.spanOf(annotation);
+        if (union_span.start > union_span.end or union_span.end > src.len) return null;
+        var cursor = union_span.start;
+        for (member_nodes, 0..) |member_node, index| {
+            const span = self.hir.spanOf(member_node);
+            if (span.start < cursor or span.start > span.end or span.end > union_span.end) return null;
+            const gap = std.mem.trim(u8, src[cursor..span.start], " \t\r\n");
+            const separated = std.mem.eql(u8, gap, "|") or (index == 0 and gap.len == 0);
+            if (!separated) return null;
+            cursor = span.end;
+        }
+        if (std.mem.trim(u8, src[cursor..union_span.end], " \t\r\n").len != 0) return null;
+
+        var entries: std.ArrayListUnmanaged(UnionAnnotationEntry) = .empty;
+        defer entries.deinit(self.gpa);
+        var has_null = false;
+        var has_undefined = false;
+        for (member_nodes) |member_node| {
+            const member_t = try self.unionAnnotationMemberType(member_node);
+            if (member_t == types.Primitive.null_t) {
+                has_null = true;
+                continue;
+            }
+            if (member_t == types.Primitive.undefined_t) {
+                has_undefined = true;
+                continue;
+            }
+            const member_text = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(member_node));
+            if (member_text.len == 0) return null;
+            try entries.append(self.gpa, .{ .text = member_text, .sort = self.unionMemberSortKey(member_t, member_text) });
+        }
+        self.sortUnionAnnotationEntries(entries.items);
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        for (entries.items) |entry| {
+            if (buf.items.len > 0) try buf.appendSlice(arena, " | ");
+            try buf.appendSlice(arena, entry.text);
+        }
+        if (has_null) {
+            if (buf.items.len > 0) try buf.appendSlice(arena, " | ");
+            try buf.appendSlice(arena, "null");
+        }
+        if (has_undefined) {
+            if (buf.items.len > 0) try buf.appendSlice(arena, " | ");
+            try buf.appendSlice(arena, "undefined");
+        }
+        if (buf.items.len == 0) return null;
+        return buf.items;
     }
 
     fn singleLiteralAliasAssignmentName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
@@ -200106,6 +200454,9 @@ pub const Checker = struct {
         {
             return null;
         }
+        // `Box<number> | Box<string>` is written in one order and displayed
+        // in another: instances of one generic sort by their type arguments.
+        if (try self.orderedUnionAnnotationText(node)) |ordered| return ordered;
         return try self.normalizedTypeAnnotationText(text);
     }
 
@@ -202364,7 +202715,7 @@ pub const Checker = struct {
                             while (sj > 0) : (sj -= 1) {
                                 const a = entries.items[sj - 1];
                                 const b = entries.items[sj];
-                                if (!unionSortKeyGreater(a.sort, b.sort)) break;
+                                if (!self.unionMemberGreater(a.sort, b.sort)) break;
                                 entries.items[sj - 1] = b;
                                 entries.items[sj] = a;
                             }
@@ -261167,7 +261518,11 @@ test "checker: cached JavaScript constructor heritage applies JSDoc type argumen
     try T.expect(hasDiagnosticCodeMessage(
         s,
         TsCodes.argument_type_mismatch,
-        "Argument of type 'number' is not assignable to parameter of type '{ claim: \"yes\" | \"no\"; }'.",
+        // Member order is native TypeScript 7's: string literals by value.
+        // Native 7 itself no longer accepts a JavaScript constructor function
+        // as a base class, so the order is the one it prints for the same
+        // parameter type in TypeScript (issue975-union-member-order).
+        "Argument of type 'number' is not assignable to parameter of type '{ claim: \"no\" | \"yes\"; }'.",
     ));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
@@ -302188,4 +302543,224 @@ test "checker: an alias for a literal or a keyof result does not name the type" 
     }
     // The aliases still resolve: four statements fail and `ok` does not.
     try T.expectEqual(@as(usize, 4), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+}
+
+/// Distinct source positions reporting exactly this code and message.
+fn checkerCountCodeAndMessage(s: *TestSetup, code: u32, message: []const u8) usize {
+    var starts: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer starts.deinit(T.allocator);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != code or !std.mem.eql(u8, d.message, message)) continue;
+        starts.put(T.allocator, s.checker.diagnosticStart(d), {}) catch return 0;
+    }
+    return starts.count();
+}
+
+fn checkerHasChainLine(s: *TestSetup, message: []const u8) bool {
+    for (s.checker.diagnostics.items) |d| {
+        for (d.chain) |entry| {
+            if (std.mem.eql(u8, entry.message, message)) return true;
+        }
+    }
+    return false;
+}
+
+// Union member order is native TypeScript 7's (`CompareTypes` in
+// typescript-go), not TypeScript 5.7.3's allocation order, which varies with
+// `skipLibCheck` (#975). Every expectation in the three tests below is native
+// 7.0.2's output for the same source; the `issue975-union-member-order`
+// fixture pins the full streams.
+test "checker: union literals display by value in every position" {
+    const s = try newSetup(
+        \\declare const obj: { q: 1 };
+        \\const v1: "zeta" | "alpha" | "mid" = "x";
+        \\function f1(p: "zeta" | "alpha" | "mid") { void p; }
+        \\f1("x");
+        \\let v2: "zeta" | "alpha" | "mid" = "zeta";
+        \\v2 = "x";
+        \\const e1: ("zeta" | "alpha")[] = ["x"];
+        \\const p1: { p: "zeta" | "alpha" } = { p: "x" };
+        \\const n1: 3 | 1 | 2 = 9;
+        \\const pl: number | "b" | "a" = true;
+        \\const lits: 2 | "two" | true = obj;
+        \\const m2: boolean | number | string = obj;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // A variable, a reassignment and an argument all print the same order.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"x\"' is not assignable to type '\"alpha\" | \"mid\" | \"zeta\"'."));
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"x\"' is not assignable to type '\"alpha\" | \"mid\" | \"zeta\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.argument_type_mismatch, "Argument of type '\"x\"' is not assignable to parameter of type '\"alpha\" | \"mid\" | \"zeta\"'."));
+    // An array element and an object property.
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"x\"' is not assignable to type '\"alpha\" | \"zeta\"'."));
+    // Numbers by value; a primitive before a literal; literal kinds in the
+    // order string, number, boolean; primitives in the order string, number,
+    // boolean.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '9' is not assignable to type '1 | 2 | 3'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'true' is not assignable to type 'number | \"a\" | \"b\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ q: 1; }' is not assignable to type '\"two\" | 2 | true'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ q: 1; }' is not assignable to type 'string | number | boolean'."));
+    // The written order never survives.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "\"zeta\" | \"alpha\"") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "3 | 1 | 2") == null);
+    }
+}
+
+test "checker: union arrays, named types and enum members display in native order" {
+    const s = try newSetup(
+        \\interface Zed { z: 1 }
+        \\interface Alpha { a: 1 }
+        \\enum Color { Red, Green, Blue }
+        \\declare const arrs: number[] | string[];
+        \\declare const ro: readonly string[] | number[];
+        \\declare const za: Zed | Alpha;
+        \\const ar: boolean[] = arrs;
+        \\const rr: boolean = ro;
+        \\const iz: string = za;
+        \\const en: Color.Green | Color.Red = "x";
+        \\void Color.Blue;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // Arrays by element type, and the explanation names the first member in
+    // the displayed order rather than the first one written.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string[] | number[]' is not assignable to type 'boolean[]'."));
+    try T.expect(checkerHasChainLine(s, "Type 'string[]' is not assignable to type 'boolean[]'."));
+    // A mutable array before a readonly one, whatever their elements.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number[] | readonly string[]' is not assignable to type 'boolean'."));
+    // Named types by name.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'Alpha | Zed' is not assignable to type 'string'."));
+    try T.expect(checkerHasChainLine(s, "Type 'Alpha' is not assignable to type 'string'."));
+    // Enum members by declaration, not by name: `Green` sorts before `Red`
+    // alphabetically and after it here.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"x\"' is not assignable to type 'Color.Red | Color.Green'."));
+}
+
+test "checker: a union inside another type displays in native order" {
+    const s = try newSetup(
+        \\interface Zed { z: 1 }
+        \\interface Alpha { a: 1 }
+        \\interface Box<T> { value: T }
+        \\declare const num: 1;
+        \\declare function take(p: { claim: "yes" | "no" }): void;
+        \\const g1: Box<"zeta" | "alpha"> = num;
+        \\const t1: ["zeta" | "alpha", number] = num;
+        \\const fn: (x: "zeta" | "alpha") => "b" | "a" = num;
+        \\const o2: { p: Zed | Alpha; q: number[] | string[] } = num;
+        \\const m1: Map<"zeta" | "alpha", Zed | Alpha> = num;
+        \\const n1: "zeta" | "alpha" | null | undefined = num;
+        \\take(0);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'Box<\"alpha\" | \"zeta\">'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '[\"alpha\" | \"zeta\", number]'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '(x: \"alpha\" | \"zeta\") => \"a\" | \"b\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '{ p: Alpha | Zed; q: string[] | number[]; }'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'Map<\"alpha\" | \"zeta\", Alpha | Zed>'."));
+    // `null` and `undefined` stay last.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1' is not assignable to type '\"alpha\" | \"zeta\" | null | undefined'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.argument_type_mismatch, "Argument of type 'number' is not assignable to parameter of type '{ claim: \"no\" | \"yes\"; }'."));
+}
+
+test "checker: union tuples, generic instances and boolean display in native order" {
+    const s = try newSetup(
+        \\interface Box<T> { value: T }
+        \\declare const obj: { q: 1 };
+        \\declare const tup: [string, number] | [string];
+        \\declare const tup2: [number] | [string];
+        \\declare const boxes: Box<number> | Box<string>;
+        \\declare const prims: symbol | bigint | boolean | number | string;
+        \\declare const mixed: boolean | 1 | "a" | symbol;
+        \\declare const upper: Uppercase<string> | string[] | "z";
+        \\const t1: symbol = tup;
+        \\const t2: symbol = tup2;
+        \\const t3: readonly [string] | [string] = obj;
+        \\const t4: [number, string] | [string, number] | [boolean] = obj;
+        \\const g1: symbol = boxes;
+        \\const g2: Box<Box<number>> | Box<Box<string>> | Box<"z"> | Box<"a"> = 1;
+        \\const b1: { z: 1 } = prims;
+        \\const b2: { z: 1 } = mixed;
+        \\const b3: boolean | "a" = obj;
+        \\const l1: `b${string}` | `a${string}` | "s" = obj;
+        \\const l2: `a${string}` | "s" | string[] = obj;
+        \\const l3: 1 = upper;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // A tuple by length, then by its elements; a mutable one before a
+    // readonly one.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '[string] | [string, number]' is not assignable to type 'symbol'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '[string] | [number]' is not assignable to type 'symbol'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ q: 1; }' is not assignable to type '[string] | readonly [string]'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ q: 1; }' is not assignable to type '[boolean] | [string, number] | [number, string]'."));
+    // Instances of one generic by their type arguments, on both sides.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'Box<string> | Box<number>' is not assignable to type 'symbol'."));
+    try T.expect(checkerHasChainLine(s, "Type 'Box<string>' is not assignable to type 'symbol'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'Box<\"a\"> | Box<\"z\"> | Box<Box<string>> | Box<Box<number>>'."));
+    // `boolean` with the boolean literals: after `symbol` and after string
+    // and numeric literals.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string | number | bigint | symbol | boolean' is not assignable to type '{ z: 1; }'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'symbol | \"a\" | 1 | boolean' is not assignable to type '{ z: 1; }'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ q: 1; }' is not assignable to type '\"a\" | boolean'."));
+    // A template literal type and a string mapping type after an object type,
+    // and template literal types by their text.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ q: 1; }' is not assignable to type '\"s\" | `a${string}` | `b${string}`'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ q: 1; }' is not assignable to type '\"s\" | string[] | `a${string}`'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"z\" | string[] | Uppercase<string>' is not assignable to type '1'."));
+}
+
+test "checker: union names, nullable members and nested enums display in native order" {
+    const s = try newSetup(
+        \\interface Alpha { a: 1 }
+        \\declare const nullable: null | Alpha | undefined | 1;
+        \\declare const shapes: [string] | { a: 1 } | Alpha;
+        \\const n1: Map<string, number> | Set<string> | Promise<number> | Date | RegExp = 1;
+        \\const n2: symbol = shapes;
+        \\const n3: symbol = nullable;
+        \\namespace Scope {
+        \\  export enum Tone { Low, Mid, High }
+        \\  export const tone: Tone.Mid | Tone.Low = "x";
+        \\}
+        \\function local() {
+        \\  enum Step { One, Two, Three }
+        \\  const step: Step.Two | Step.One = "x";
+        \\  void step;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // A built-in generic sorts by its name like any named type. Home's `Map`
+    // and `Set` carry a number index, and must not be taken for arrays.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'Date | Map<string, number> | Promise<number> | RegExp | Set<string>'."));
+    // Named before unnamed, and a tuple after both.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'Alpha | { a: 1; } | [string]' is not assignable to type 'symbol'."));
+    // A nullable annotation is ordered too, with `null` and `undefined` last.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1 | Alpha | null | undefined' is not assignable to type 'symbol'."));
+    // An enum the display cannot look up by name — declared in a namespace or
+    // a function — still prints its members in declaration order.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"x\"' is not assignable to type 'Tone.Low | Tone.Mid'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"x\"' is not assignable to type 'Step.One | Step.Two'."));
+}
+
+test "checker: a displayed type reference yields the name it sorts by" {
+    const name = Checker.referenceNameFromDisplayText;
+    try T.expectEqualStrings("Map", name("Map<string, number>").?);
+    try T.expectEqualStrings("Date", name("Date").?);
+    try T.expectEqualStrings("Color", name("NS.Color").?);
+    try T.expectEqualStrings("Box", name("Box<() => void>").?);
+    try T.expectEqualStrings("Box", name("Box<Box<string>>").?);
+    // Not a reference: an array, a tuple, an object or function type, a
+    // literal, `typeof x`, and anything following the argument list.
+    try T.expect(name("") == null);
+    try T.expect(name("string[]") == null);
+    try T.expect(name("Box<string>[]") == null);
+    try T.expect(name("[string]") == null);
+    try T.expect(name("{ a: 1; }") == null);
+    try T.expect(name("() => void") == null);
+    try T.expect(name("\"a\"") == null);
+    try T.expect(name("typeof x") == null);
+    try T.expect(name("Box<string> & Alpha") == null);
+    try T.expect(name("1") == null);
 }
