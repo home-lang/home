@@ -21,3 +21,4 @@ import "./stack_origins/entry.mjs";
 import "./node_random_uuid.mjs";
 import "./node_rmdir.mjs";
 import "./node_mkdtemp.mjs";
+import "./node_sync_fs.mjs";

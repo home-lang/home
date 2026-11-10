@@ -241,6 +241,21 @@
     }
     return result;
   }
+  // Share the real native operations across sync/promise entry points. Keep
+  // first-created mkdir paths and rm's nonrecursive directory guard intact.
+  function makeDirectory(path, options) {
+    // https://nodejs.org/api/fs.html#fsmkdirsyncpath-options
+    options = fsOptions(options, ['recursive', 'mode']);
+    const result = fsOperation('mkdir', path, booleanFsOption(options, 'recursive'), false, creationMode(options.mode, 0o777));
+    return result.created;
+  }
+  function removePath(path, options) {
+    // https://nodejs.org/api/fs.html#fsrmsyncpath-options
+    options = fsOptions(options, ['recursive', 'force']);
+    fsOperation('rm', path, booleanFsOption(options, 'recursive'), booleanFsOption(options, 'force'));
+  }
+  fs.mkdirSync = makeDirectory;
+  fs.rmSync = removePath;
   function removeEmptyDirectory(path, options) {
     // https://nodejs.org/api/fs.html#fspromisesrmdirpath-options
     // This profile exposes empty-directory removal, not legacy recursion.
@@ -505,13 +520,10 @@
       catch (error) { error.dest = destination; throw error; }
     },
     mkdir: async function(path, options) {
-      options = fsOptions(options, ['recursive', 'mode']);
-      const result = fsOperation('mkdir', path, booleanFsOption(options, 'recursive'), false, creationMode(options.mode, 0o777));
-      return result.created;
+      return makeDirectory(path, options);
     },
     rm: async function(path, options) {
-      options = fsOptions(options, ['recursive', 'force']);
-      fsOperation('rm', path, booleanFsOption(options, 'recursive'), booleanFsOption(options, 'force'));
+      removePath(path, options);
     },
     stat: async function(path, options) {
       fsOptions(options, []);
