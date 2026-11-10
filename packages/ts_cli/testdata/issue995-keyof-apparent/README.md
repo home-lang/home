@@ -39,18 +39,29 @@ Run TypeScript 5.7.3 and Home from this directory with
 `-p tsconfig.json --pretty false --noEmit`; the `test-tsc-streams` step
 compares stdout, stderr and exit status exactly.
 
+`symbol`, `bigint` and `boolean` needed their own surfaces. `Symbol` gained
+`[Symbol.toPrimitive]` and `[Symbol.toStringTag]`, keyed by the same
+deduplicated unique symbols the `Symbol` constructor gives its well-known
+values — before, `keyof symbol = Symbol.toPrimitive` was a false error. A
+`bigint` had no surface at all: `typeHasNumericPrimitivePart` counts it as
+numeric, so it borrowed `Number`'s, accepting `big.toFixed()` and making
+`big.valueOf()` a `number`. `lib.bigintProto` is now its surface for both
+`keyof` and property access. `keyof boolean` reads `Boolean`'s declared member,
+`valueOf`, rather than the `Boolean` builtin, which also carries `toString`.
+
 `keyof.ts` pins every valid key against each operand kind — so no valid key
-became an error — together with the `unknown` and `any` extremes and the
-symbolic `keyof T` of a genuine type parameter.
+became an error — including the well-known symbol keys of `symbol` and
+`bigint`, together with the `unknown` and `any` extremes and the symbolic
+`keyof T` of a genuine type parameter. `bigint.ts` pins a `bigint`'s members:
+`Number`'s `toFixed` and `toPrecision` are TS2339, and `valueOf`, `toString`,
+`toLocaleString` and `[Symbol.toStringTag]` have `BigInt`'s types.
 
 What it does not pin, and why: the rejection of an *invalid* key against a
 primitive's `keyof` is covered by the checker's unit tests rather than here,
 because Home does not yet display that target as TypeScript does. It renders
 `'keyof string'` where TypeScript expands the union, and the member order of
 an expanded lib-derived union follows TypeScript's internal type allocation
-(#975). `keyof symbol` and `keyof bigint` stay symbolic: their surfaces lack
-keys TypeScript has, so resolving them would reject a valid key. `keyof
-boolean` still accepts `"toString"`, which Home's `Boolean` carries and
-TypeScript's does not.
+(#975); that work is #1002. The `BigInt` *annotation* type is not modelled, so
+`const x: BigInt = 1` is still accepted.
 
 [Issue #995](https://github.com/home-lang/home/issues/995) tracks this work.

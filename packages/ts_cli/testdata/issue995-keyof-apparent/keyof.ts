@@ -15,6 +15,11 @@ const locale: keyof number = "toLocaleString";
 const fromNumbers: keyof (1 | 2) = "toPrecision";
 const value: keyof boolean = "valueOf";
 const common: keyof (string | number) = "toString";
+const description: keyof symbol = "description";
+const toPrimitive: keyof symbol = Symbol.toPrimitive;
+const symbolTag: keyof symbol = Symbol.toStringTag;
+const bigLocale: keyof bigint = "toLocaleString";
+const bigTag: keyof bigint = Symbol.toStringTag;
 const anything: keyof any = "anything";
 const unrestricted: keyof never = "anything";
 
@@ -30,4 +35,5 @@ function generic<T>() {
 }
 
 void [length, index, iterator, bold, fromLiterals, fromTemplate, fixed, locale,
-  fromNumbers, value, common, anything, unrestricted, nothing, notAKey, generic];
+  fromNumbers, value, common, description, toPrimitive, symbolTag, bigLocale,
+  bigTag, anything, unrestricted, nothing, notAKey, generic];

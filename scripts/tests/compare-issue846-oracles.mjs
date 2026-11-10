@@ -127,6 +127,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue999-object-array-element/tsconfig.json',
   'packages/ts_cli/testdata/issue1001-string-surface/tsconfig.json',
   'packages/ts_cli/testdata/issue995-keyof-apparent/tsconfig.json',
+  'packages/ts_cli/testdata/issue995-keyof-apparent/tsconfig-bigint.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
