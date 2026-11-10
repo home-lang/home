@@ -87,6 +87,10 @@ pub fn decompress(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 // RFC 1950 is a separate framing format from gzip. The stdlib exposes the
 // footer but leaves FCHECK, preset dictionaries and Adler-32 to the caller.
 pub fn inflate(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    return inflateBounded(allocator, input, max_bytes);
+}
+
+fn inflateBounded(allocator: std.mem.Allocator, input: []const u8, output_limit: usize) ![]u8 {
     if (input.len > max_bytes + max_bytes / 8 + 1024) return error.LimitExceeded;
     if (input.len < 2) return error.TruncatedInput;
     const cmf = input[0];
@@ -101,7 +105,7 @@ pub fn inflate(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     const history = try allocator.alloc(u8, std.compress.flate.max_window_len);
     defer allocator.free(history);
     var decoder: std.compress.flate.Decompress = .init(&source, .zlib, history);
-    const bytes = decoder.reader.allocRemaining(allocator, .limited(max_bytes)) catch |err| {
+    const bytes = decoder.reader.allocRemaining(allocator, .limited(@min(max_bytes, output_limit))) catch |err| {
         if (err == error.StreamTooLong) return error.LimitExceeded;
         if (decoder.err) |reason| {
             if (reason == error.EndOfStream) return error.TruncatedInput;
@@ -140,10 +144,18 @@ fn operation(
     _ = function;
     _ = this;
     const c = ctx orelse return null;
-    if (count != 2 or args[0] == null or args[1] == null or api.JSValueGetTypedArrayType(c, args[1], exception) != .kJSTypedArrayTypeUint8Array)
+    if ((count != 2 and count != 3) or args[0] == null or args[1] == null or api.JSValueGetTypedArrayType(c, args[1], exception) != .kJSTypedArrayTypeUint8Array)
         return failure(c, error.BadInput);
     const mode = api.JSValueToNumber(c, args[0], exception);
     if (mode != 0 and mode != 1 and mode != 2) return failure(c, error.BadInput);
+    var output_limit: usize = max_bytes;
+    if (count == 3) {
+        if (mode != 2 or args[2] == null or !api.JSValueIsNumber(c, args[2])) return failure(c, error.BadInput);
+        const limit = api.JSValueToNumber(c, args[2], exception);
+        if (!std.math.isFinite(limit) or limit < 1 or limit > max_bytes or @floor(limit) != limit)
+            return failure(c, error.BadInput);
+        output_limit = @intFromFloat(limit);
+    }
     const object = api.JSValueToObject(c, args[1], exception) orelse return null;
     const length = api.JSObjectGetTypedArrayByteLength(c, object, exception);
     if (length > max_bytes + max_bytes / 8 + 1024) return failure(c, error.LimitExceeded);
@@ -154,7 +166,7 @@ fn operation(
     // before any further JS allocation and never retain a borrowed pointer.
     const input = allocator.dupe(u8, borrowed) catch return failure(c, error.OutOfMemory);
     defer allocator.free(input);
-    const output = (if (mode == 0) compress(allocator, input) else if (mode == 1) decompress(allocator, input) else inflate(allocator, input)) catch |err| return failure(c, err);
+    const output = (if (mode == 0) compress(allocator, input) else if (mode == 1) decompress(allocator, input) else inflateBounded(allocator, input, output_limit)) catch |err| return failure(c, err);
     defer allocator.free(output);
     const result = api.JSObjectMakeTypedArray(c, .kJSTypedArrayTypeUint8Array, output.len, exception) orelse return null;
     if (output.len != 0) {
@@ -254,4 +266,15 @@ test "zlib returns only the first stream without consuming trailing data" {
     const output = try inflate(std.testing.allocator, &.{ 0x78, 0x9c, 0x4b, 0xcb, 0x2c, 0x2a, 0x2e, 0x01, 0x00, 0x06, 0x57, 0x02, 0x29, 0x78, 0x9c, 0x2b, 0x4e, 0x4d, 0xce, 0xcf, 0x4b, 0x01, 0x00, 0x08, 0xca, 0x02, 0x7d });
     defer std.testing.allocator.free(output);
     try std.testing.expectEqualStrings("first", output);
+}
+
+test "zlib explicit output limit bounds native decoding before returning bytes" {
+    const allocator = std.testing.allocator;
+    const input = "\x78\x9c\x4b\x4c\x2e\x29\x4d\xcc\x51\x48\xaa\x2c\x49\x2d\x06\x00\x1e\xa1\x04\xc2";
+    for (1..12) |limit| try std.testing.expectError(error.LimitExceeded, inflateBounded(allocator, input, limit));
+    for ([_]usize{ 12, 13, max_bytes, max_bytes + 1 }) |limit| {
+        const output = try inflateBounded(allocator, input, limit);
+        defer allocator.free(output);
+        try std.testing.expectEqualStrings("actual bytes", output);
+    }
 }

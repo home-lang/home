@@ -26,15 +26,15 @@ globalThis.__home_tool_zlib_factory = function(nativeGzip, Buffer, Transform) {
       fail('ERR_INVALID_ARG_TYPE', `${label} input must be a string, Buffer or Uint8Array`, TypeError);
     return Buffer.from(input);
   }
-  function operation(mode, input, options) {
+  function operation(mode, input, options, outputLimit) {
     optionsFor(options, false);
     const limit = mode === 0 ? maxBytes : maxBytes + maxBytes / 8 + 1024;
     if ((typeof input === 'string' || input instanceof Uint8Array) && input.length > limit)
       fail('ERR_BUFFER_TOO_LARGE', `Home ${mode === 2 ? 'inflate' : 'gzip'} input exceeds its bounded profile`, RangeError);
     const value = bytes(input, mode === 2 ? 'Inflate' : 'Gzip');
-    const result = nativeGzip(mode, value);
+    const result = mode === 2 ? nativeGzip(mode, value, outputLimit) : nativeGzip(mode, value);
     if (typeof result === 'string')
-      fail(result, `Home ${mode === 2 ? 'inflate' : 'gzip'} operation failed`);
+      fail(result, `Home ${mode === 2 ? 'inflate' : 'gzip'} operation failed`, result === 'ERR_BUFFER_TOO_LARGE' ? RangeError : undefined);
     if (!(result instanceof Uint8Array))
       fail('ERR_HOME_COMPRESSION', `Native ${mode === 2 ? 'inflate' : 'gzip'} did not return bytes`);
     return Buffer.from(result);
@@ -46,16 +46,29 @@ globalThis.__home_tool_zlib_factory = function(nativeGzip, Buffer, Transform) {
     return operation(1, input, options);
   }
   function inflateSync(input, options) {
+    let outputLimit = maxBytes;
     if (options !== undefined && options !== null) {
       if (typeof options !== 'object') fail('ERR_INVALID_ARG_TYPE', 'Inflate options must be an object', TypeError);
       const prototype = Object.getPrototypeOf(options);
-      if ((prototype !== null && prototype !== Object.prototype) || Reflect.ownKeys(options).length !== 0)
-        fail('ERR_HOME_UNSUPPORTED', 'Home inflate supports default options only');
+      if (prototype !== null && prototype !== Object.prototype)
+        fail('ERR_HOME_UNSUPPORTED', 'Home inflate requires plain options');
+      for (const key of Reflect.ownKeys(options)) {
+        if (key !== 'maxOutputLength') fail('ERR_HOME_UNSUPPORTED', 'Home inflate supports maxOutputLength only');
+      }
+      const requested = options.maxOutputLength;
+      if (requested !== undefined && !Number.isNaN(requested)) {
+        if (typeof requested !== 'number') fail('ERR_INVALID_ARG_TYPE', 'Inflate maxOutputLength must be a number', TypeError);
+        if (!Number.isFinite(requested) || requested < 1 || requested > Number.MAX_SAFE_INTEGER)
+          fail('ERR_OUT_OF_RANGE', 'Inflate maxOutputLength is out of range', RangeError);
+        // The requested bound narrows native decoding. A larger ceiling never
+        // lifts the host's independent 2 MiB codec profile or allocates it.
+        outputLimit = Math.min(maxBytes, Math.floor(requested));
+      }
     }
     if (input instanceof ArrayBuffer) input = new Uint8Array(input);
     else if (ArrayBuffer.isView(input) && !(input instanceof Uint8Array))
       input = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-    return operation(2, input);
+    return operation(2, input, undefined, outputLimit);
   }
   function Gzip(options) {
     if (!this || !(this instanceof Gzip)) return new Gzip(options);
