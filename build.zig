@@ -1523,6 +1523,10 @@ pub fn build(b: *std.Build) void {
         // The script checks its inventory and throws on any failed operation.
         // Inherit stdout so CI retains the actual executed check count.
         file_url_step.dependOn(&run_file_url_fs.step);
+        const run_module_url = b.addRunArtifact(home_tool_exe);
+        run_module_url.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_module_url.addArgs(&.{ "run", "node_module_url.mjs" });
+        file_url_step.dependOn(&run_module_url.step);
         inline for (.{
             .{ "node_path_to_url.mjs", "OK Home provider-backed POSIX file URLs: 282 paths, 9 invalid paths, 6 relative paths, 3 runtime surrogate controls and retained constructor\n" },
             .{ "node_path_to_url_profile.mjs", "OK Home file URL options remain explicitly unsupported\n" },

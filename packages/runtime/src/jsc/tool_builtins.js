@@ -756,8 +756,12 @@
     createRequire: function(filename) {
       if (process.platform === 'win32') unsupported('Home createRequire currently supports POSIX referrers only');
       if (typeof filename !== 'string') {
-        if (filename && typeof filename === 'object') unsupported('Home createRequire URL objects require a shared URL implementation');
-        invalidReferrer();
+        if (!filename || typeof filename !== 'object') invalidReferrer();
+        try { filename = fileURLObjectPath(filename); }
+        catch (error) {
+          if (error.code === 'ERR_HOME_UNSUPPORTED') throw error;
+          invalidReferrer();
+        }
       }
       if (!filename.startsWith('/')) {
         try {
