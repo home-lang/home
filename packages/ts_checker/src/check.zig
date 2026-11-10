@@ -95019,7 +95019,6 @@ pub const Checker = struct {
             if (!(ok and self.arrayTargetElementIsTupleShaped(declared_type)) and
                 !recursive_tuple_annotation_ok and
                 self.hir.kindOf(v.init) == .array_literal and
-                !self.arrayLiteralHasObjectElementMismatch(v.init, declared_type) and
                 try self.tryReportArrayLiteralArrayElementMismatch(v.init, declared_type))
             {
                 contextual_literal_diag_emitted = true;
@@ -192162,30 +192161,6 @@ pub const Checker = struct {
         return flags.is_object_type and !flags.is_union and !flags.is_intersection and !flags.is_instantiation;
     }
 
-    fn arrayLiteralHasObjectElementMismatch(self: *Checker, node: NodeId, target: TypeId) bool {
-        if (self.hir.kindOf(node) != .array_literal) return false;
-        const array = self.arrayTypeFromMaybeOptional(target) orelse return false;
-        const raw_element = self.interner.objectNumberIndex(array);
-        const element = self.resolveGenericType(raw_element) catch raw_element;
-        if (element == types.Primitive.none) return false;
-        // An array element type is not the object-shaped case this gate was
-        // built for: a nested array literal owns the diagnostic at its own
-        // offending element, which
-        // `tryReportArrayLiteralArrayElementMismatch` descends to. Keyed to
-        // array provenance so a merely indexed object still elaborates the
-        // enclosing assignment.
-        if (self.array_origin_types.contains(element) and !self.isTupleShapedTarget(element)) return false;
-        if (!self.isConcreteObjectForArrayRelation(element)) return false;
-        for (hir_mod.arrayLiteralElements(self.hir, node)) |item| {
-            if (item == hir_mod.none_node_id or self.hir.kindOf(item) == .spread) continue;
-            const raw_source = self.hir.typeOf(item);
-            const source = self.resolveGenericType(raw_source) catch raw_source;
-            if (self.isConcreteObjectForArrayRelation(source) and
-                !(self.engine.isAssignableTo(source, element) catch true)) return true;
-        }
-        return false;
-    }
-
     fn tryReportObjectLiteralPropertyMismatchForCall(
         self: *Checker,
         init_node: NodeId,
@@ -193243,9 +193218,6 @@ pub const Checker = struct {
         target_t: TypeId,
     ) !bool {
         if (self.hir.kindOf(init_node) != .array_literal) return false;
-        // Object-shaped element failures elaborate the enclosing array's
-        // assignment, argument or return diagnostic.
-        if (self.arrayLiteralHasObjectElementMismatch(init_node, target_t)) return false;
         const resolved_target = self.arrayTypeFromMaybeOptional(target_t) orelse return false;
         if (self.isTupleShapedTarget(resolved_target)) return false;
         // An array literal made only of spreads of non-tuple arrays has the
@@ -193265,9 +193237,33 @@ pub const Checker = struct {
         // display name: TypeScript descends through a nested array literal to
         // the innermost offending element, and reports any other failing
         // element against the element type at the element itself.
-        const elem_target_is_array = self.array_origin_types.contains(elem_target_t) and
-            !self.isTupleShapedTarget(elem_target_t);
+        const resolved_elem_target_t = self.resolveGenericType(elem_target_t) catch elem_target_t;
+        // A tuple element target owns its own positional pass and must be
+        // excluded from both descents below. `isTupleShapedTarget` alone does
+        // not answer this: it looks for a `"0"` member or a literal `length`,
+        // and a lowered `[string, number]` carries neither — it carries the
+        // `is_tuple` flag, which is what `isActualTupleType` reads.
+        const elem_target_is_tuple = self.isTupleShapedTarget(elem_target_t) or
+            self.isActualTupleType(elem_target_t) or
+            self.isTupleShapedTarget(resolved_elem_target_t) or
+            self.isActualTupleType(resolved_elem_target_t);
+        // A tuple element target is owned end to end by the positional pass,
+        // which reports the innermost offending element itself. Anything this
+        // reporter adds for such a target is a second diagnostic TypeScript
+        // does not emit — `[string, number][]` against `[[1, 2]]` gains one at
+        // the inner literal, which is what #990 and #993 pin.
+        if (elem_target_is_tuple) return false;
+        const elem_target_is_array = self.array_origin_types.contains(elem_target_t);
+        // An object-shaped element target keeps per-element reporting for the
+        // same reason an array-shaped one does: TypeScript descends into an
+        // object literal element and reports its failing property, and
+        // reports any other failing element against the element type where it
+        // stands. An anonymous element type has no simple display name
+        // either, so it needs the same bypass.
+        const elem_target_is_object = !elem_target_is_array and
+            self.isConcreteObjectForArrayRelation(resolved_elem_target_t);
         if (!self.typeIsNullishOnly(elem_target_t) and !elem_target_is_array and
+            !elem_target_is_object and
             (try self.simpleDiagnosticTypeName(elem_target_t)) == null) return false;
 
         var emitted = false;
@@ -193311,6 +193307,16 @@ pub const Checker = struct {
                 continue;
             }
             if (try self.checkerAssignableExpressionTo(elem_node, report_elem_t, elem_target_t)) continue;
+            // An object literal element owns the diagnostic at its own
+            // failing property, which is what the tuple element path already
+            // reports; reuse it so an array target and a tuple target cannot
+            // disagree about excess, missing and mismatched properties.
+            if (elem_target_is_object and self.hir.kindOf(elem_node) == .object_literal) {
+                if (try self.tryReportTupleElementObjectLiteralMismatch(elem_node, resolved_elem_target_t)) {
+                    emitted = true;
+                    continue;
+                }
+            }
             // A nested array literal owns the element diagnostic one level
             // down; when it declines — an all-spread literal reports as a
             // whole value — the element itself is reported here instead.
@@ -301718,4 +301724,53 @@ test "checker: a union generic instance keeps its failing member" {
     // type-argument shortcut must decline rather than take it over.
     try T.expect(checkerHasAnyCode(s, TsCodes.type_not_assignable));
     try T.expect(!checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
+}
+
+test "checker: an object literal array element reports its failing property" {
+    const s = try newSetup(
+        \\interface P { a: number }
+        \\interface Q { p: P }
+        \\declare const values: { a: string }[];
+        \\const one: P[] = [{ a: "s" }];
+        \\const nested: Q[] = [{ p: { a: "s" } }];
+        \\const missing: P[] = [{}];
+        \\const value: P[] = [values[0]];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The failing property owns the diagnostic, and nothing reports the whole
+    // value against the array target.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
+    try T.expect(!checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '{ a: string; }[]' is not assignable to type 'P[]'.",
+    ));
+    try T.expect(!checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '{ p: { a: string; }; }[]' is not assignable to type 'Q[]'.",
+    ));
+    // A missing property is still the literal's own diagnostic, not the
+    // array's, and an element that is not a literal is reported against the
+    // element type where it stands.
+    try T.expect(checkerHasAnyCode(s, TsCodes.property_missing_required));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ a: string; }' is not assignable to type 'P'."));
+}
+
+test "checker: a tuple element target keeps its single positional diagnostic" {
+    const s = try newSetup(
+        \\const element: [string, number][] = [[1, 2]];
+        \\const deep: [string, number][][] = [[[1, 2]]];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The positional pass owns a tuple element target end to end. Descending
+    // into such an element would add a diagnostic TypeScript does not emit.
+    try T.expect(!checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'number[]' is not assignable to type '[string, number]'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
 }
