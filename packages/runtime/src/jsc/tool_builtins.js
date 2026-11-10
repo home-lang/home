@@ -94,7 +94,68 @@
     error.code = code;
     throw error;
   }
+  const nativeSha256 = globalThis.__home_tool_sha256;
+  delete globalThis.__home_tool_sha256;
+  const hashStates = new WeakMap();
+  function hashOptions(options) {
+    if (options === undefined || options === null) return;
+    if (typeof options !== 'object' ||
+      (Object.getPrototypeOf(options) !== null && Object.getPrototypeOf(options) !== Object.prototype) ||
+      Reflect.ownKeys(options).length !== 0)
+      unsupported('Home createHash supports default synchronous SHA-256 options only');
+  }
+  function hashState(hash) {
+    const state = hashStates.get(hash);
+    if (!state) nodeArgumentError('ERR_INVALID_THIS', 'Invalid Hash receiver');
+    if (state.finalized) {
+      const error = new Error('Digest already called');
+      error.code = 'ERR_CRYPTO_HASH_FINALIZED';
+      throw error;
+    }
+    return state;
+  }
+  const hashPrototype = {
+    update: function(data, inputEncoding) {
+      const state = hashState(this);
+      let bytes;
+      if (typeof data === 'string') bytes = bufferApi.Buffer.from(data, inputEncoding);
+      else if (ArrayBuffer.isView(data)) bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      else nodeArgumentError('ERR_INVALID_ARG_TYPE', 'Hash update requires a string or ArrayBuffer view');
+      if (nativeSha256(1, state.bytes, bytes) !== true) throw new Error('Native SHA-256 update failed');
+      return this;
+    },
+    digest: function(encoding) {
+      const state = hashState(this);
+      const bytes = nativeSha256(2, state.bytes);
+      if (!(bytes instanceof Uint8Array)) throw new Error('Native SHA-256 digest failed');
+      state.finalized = true;
+      state.bytes = null;
+      const result = bufferApi.Buffer.from(bytes);
+      if (typeof encoding !== 'string' || encoding === '' || encoding === 'buffer') return result;
+      return result.toString(encoding);
+    },
+    copy: function(options) {
+      const state = hashState(this);
+      hashOptions(options);
+      const hash = Object.create(hashPrototype);
+      hashStates.set(hash, { bytes: new Uint8Array(state.bytes), finalized: false });
+      return hash;
+    },
+  };
   const cryptoApi = {
+    // https://nodejs.org/api/crypto.html#hashupdatedata-inputencoding
+    // Native state consumes each update immediately; input mutation and copy()
+    // cannot alter another digest. Stream/XOF/other algorithms stay unsupported.
+    createHash: function(algorithm, options) {
+      if (typeof algorithm !== 'string') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'Hash algorithm must be a string');
+      if (algorithm.toLowerCase() !== 'sha256') unsupported('Home createHash currently implements SHA-256 only');
+      hashOptions(options);
+      const bytes = nativeSha256(0);
+      if (!(bytes instanceof Uint8Array)) throw new Error('Native SHA-256 initialization failed');
+      const hash = Object.create(hashPrototype);
+      hashStates.set(hash, { bytes, finalized: false });
+      return hash;
+    },
     randomBytes: function(size, callback) {
       // https://nodejs.org/api/crypto.html#cryptorandombytessize-callback
       if (typeof size !== 'number') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'randomBytes size must be a number');
