@@ -1721,6 +1721,12 @@ pub fn build(b: *std.Build) void {
         function_mocks_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
         home_tool_smoke_step.dependOn(&function_mocks_fixture.step);
         b.step("home-tool-function-mocks-smoke", "Verify real function call traces and method spy restoration").dependOn(&function_mocks_fixture.step);
+        const arrow_heads_fixture = b.addRunArtifact(home_tool_exe);
+        arrow_heads_fixture.addArg("run");
+        arrow_heads_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/arrow_object_heads.mts"));
+        arrow_heads_fixture.expectStdOutEqual("ARROW OBJECT HEAD 20 CHECKS OK\nTYPED ARROW OBJECT HEAD 4 CHECKS OK\n");
+        home_tool_smoke_step.dependOn(&arrow_heads_fixture.step);
+        b.step("home-tool-arrow-head-smoke", "Execute object-leading arrow bodies after JS and TypeScript emission").dependOn(&arrow_heads_fixture.step);
         const net_fixture = b.addSystemCommand(&.{"python3"});
         net_fixture.addFileArg(b.path("packages/runtime/test/tool_net_fixture.py"));
         net_fixture.addArtifactArg(home_tool_exe);

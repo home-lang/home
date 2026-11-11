@@ -1312,17 +1312,26 @@ pub const Printer = struct {
     /// Descends the left edge: binary/logical/conditional expressions need not
     /// have outer parentheses at statement precedence (notably minified IIFEs).
     fn exprStmtNeedsParens(self: *const Printer, node: NodeId) bool {
+        return self.exprHeadNeedsParens(node, false);
+    }
+
+    /// Concise arrow bodies prohibit a leading `{` too, even when the object
+    /// is the base of a member/call or the left operand of a larger expression.
+    /// Unlike statement position, function/class expressions are legal there.
+    fn exprHeadNeedsParens(self: *const Printer, node: NodeId, object_only: bool) bool {
         return switch (self.hir.kindOf(node)) {
             // (`fn_decl`/`class_decl` appear here too: the parser emits them
             // even in expression position.)
-            .object_literal, .fn_expr, .fn_decl, .class_expr, .class_decl => true,
-            .call_expr => self.exprStmtNeedsParens(hir_mod.callOf(self.hir, node).callee),
-            .member_access => self.exprStmtNeedsParens(hir_mod.memberOf(self.hir, node).object),
-            .element_access => self.exprStmtNeedsParens(hir_mod.elementOf(self.hir, node).object),
-            .assignment => self.exprStmtNeedsParens(hir_mod.assignmentOf(self.hir, node).target),
-            .binary_op => self.exprStmtNeedsParens(hir_mod.binopOf(self.hir, node).lhs),
-            .logical_op => self.exprStmtNeedsParens(hir_mod.logicalOf(self.hir, node).lhs),
-            .conditional => self.exprStmtNeedsParens(hir_mod.conditionalOf(self.hir, node).cond),
+            .object_literal => true,
+            .fn_expr, .fn_decl, .class_expr, .class_decl => !object_only,
+            .call_expr => self.exprHeadNeedsParens(hir_mod.callOf(self.hir, node).callee, object_only),
+            .member_access => self.exprHeadNeedsParens(hir_mod.memberOf(self.hir, node).object, object_only),
+            .element_access => self.exprHeadNeedsParens(hir_mod.elementOf(self.hir, node).object, object_only),
+            .assignment => self.exprHeadNeedsParens(hir_mod.assignmentOf(self.hir, node).target, object_only),
+            .binary_op => self.exprHeadNeedsParens(hir_mod.binopOf(self.hir, node).lhs, object_only),
+            .logical_op => self.exprHeadNeedsParens(hir_mod.logicalOf(self.hir, node).lhs, object_only),
+            .conditional => self.exprHeadNeedsParens(hir_mod.conditionalOf(self.hir, node).cond, object_only),
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => self.exprHeadNeedsParens(hir_mod.asExpressionOf(self.hir, node).expr, object_only),
             else => false,
         };
     }
@@ -2323,9 +2332,9 @@ pub const Printer = struct {
                     self.next_block_is_fn_body = true;
                     try self.printBlock(f.body);
                 } else {
-                    // An object-literal concise body must be parenthesized,
-                    // else `=> { … }` parses as a block, not a returned object.
-                    const needs_parens = self.hir.kindOf(f.body) == .object_literal;
+                    // ECMA-262 ConciseBody: [lookahead != {] AssignmentExpression.
+                    // Inspect the emitted head, not just the root node kind.
+                    const needs_parens = self.exprHeadNeedsParens(f.body, true);
                     if (needs_parens) try self.write("(");
                     // Concise body is an AssignmentExpression — print at
                     // `.comma` so a top-level sequence wraps (`() => (a, b)`),

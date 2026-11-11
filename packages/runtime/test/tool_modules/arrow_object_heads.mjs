@@ -1,0 +1,25 @@
+let checks=0;
+function check(value){if(!value)throw new Error('Arrow object head mismatch at '+checks);checks++;}
+const object=()=>({a:2});check(object().a===2);
+const member=()=>({a:3}).a;check(member()===3);
+const element=k=>({a:4})[k];check(element('a')===4);
+const method=()=>({a:5,f(){return this.a;}}).f();check(method()===5);
+const keyedMethod=()=>({f(){return 6;}})['f']();check(keyedMethod()===6);
+const optional=()=>({a:7})?.a;check(optional()===7);
+const optionalCall=()=>({f(){return 8;}}).f?.();check(optionalCall()===8);
+const add=()=>({a:3}).a+6;check(add()===9);
+const fallback=()=>({a:0}).a||10;check(fallback()===10);
+const and=()=>({a:1}).a&&11;check(and()===11);
+const nullish=()=>({a:null}).a??12;check(nullish()===12);
+const conditional=()=>({a:false}).a?0:13;check(conditional()===13);
+let visits=0;const sequence=()=>((({get a(){visits++;return 1;}}).a),14);check(sequence()===14&&visits===1);
+const asynchronous=async()=>({a:15}).a;check(await asynchronous()===15);
+const sanitize=text=>text.replace(/[<>'"&]/g,key=>({'<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#x27;','&':'&amp;'})[key]||key);
+check(sanitize('<>"\'&')==='&lt;&gt;&quot;&#x27;&amp;');
+check((()=>({a:16}).a)()===16);
+const reason={},throwing=()=>({get a(){throw reason;}}).a;let caught;try{throwing();}catch(error){caught=error;}check(caught===reason);
+const order=[];const keyed=()=>({get a(){order.push('get');return 17;}})[(()=>{order.push('key');return 'a';})()];check(keyed()===17&&order.join(',')==='key,get');
+const functionValue=()=>function(){return 18;};check(functionValue()()===18);
+const classValue=()=>class{value(){return 19;}};check(new (classValue())().value()===19);
+if(checks!==20)throw new Error('Arrow fixture denominator mismatch');
+console.log('ARROW OBJECT HEAD 20 CHECKS OK');
