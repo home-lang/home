@@ -1668,6 +1668,12 @@ pub fn build(b: *std.Build) void {
         run_home_tool_assertions.addArgs(&.{ "run", "assert_core.mjs" });
         run_home_tool_assertions.expectStdOutEqual("OK core assertions 678 actual truthiness, SameValue, negative, error and argument checks\n");
         home_tool_smoke_step.dependOn(&run_home_tool_assertions.step);
+        const strict_assert_fixture = b.addSystemCommand(&.{"python3"});
+        strict_assert_fixture.addFileArg(b.path("packages/runtime/test/tool_assert_strict_fixture.py"));
+        strict_assert_fixture.addArtifactArg(home_tool_exe);
+        strict_assert_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/assert_strict.mjs"));
+        home_tool_smoke_step.dependOn(&strict_assert_fixture.step);
+        b.step("home-tool-assert-strict-smoke", "Verify real strict callable namespaces and negative assertions").dependOn(&strict_assert_fixture.step);
         const run_home_tool_assertion_failure = b.addRunArtifact(home_tool_exe);
         run_home_tool_assertion_failure.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_assertion_failure.addArgs(&.{ "run", "assert_failure.cjs" });

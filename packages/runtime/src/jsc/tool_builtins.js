@@ -1347,6 +1347,19 @@
     if (arguments.length < 2) nodeArgumentError('ERR_MISSING_ARGS', 'The actual and expected arguments must be specified');
     if (assertSameValue(actual, expected)) assertionFailure(actual, expected, 'notStrictEqual', message, arguments.length > 3);
   };
+  function strict() {
+    return utilApply(assert, undefined, arguments);
+  }
+  strict.ok = assertOk;
+  strict.AssertionError = AssertionError;
+  strict.strictEqual = assert.strictEqual;
+  strict.notStrictEqual = assert.notStrictEqual;
+  strict.equal = strict.strictEqual;
+  strict.notEqual = strict.notStrictEqual;
+  strict.strict = strict;
+  assert.strict = strict;
+  builtins['assert/strict'] = strict;
+  builtins['node:assert/strict'] = strict;
   const sqliteFactory = globalThis.__home_tool_sqlite_factory;
   const sqliteNative = globalThis.__home_tool_sqlite;
   delete globalThis.__home_tool_sqlite_factory;
