@@ -1,5 +1,5 @@
-// Real RFC 1950/1952 bytes over the owned native codecs and managed streams.
-globalThis.__home_tool_zlib_factory = function(nativeGzip, Buffer, Transform) {
+// Real RFC 1950/1951/1952 bytes over the owned native codecs and managed streams.
+globalThis.__home_tool_zlib_factory = function(nativeGzip, Buffer, Transform, scheduleImmediate) {
   'use strict';
   const maxBytes = 2 * 1024 * 1024;
   function fail(code, message, Type) {
@@ -28,15 +28,15 @@ globalThis.__home_tool_zlib_factory = function(nativeGzip, Buffer, Transform) {
   }
   function operation(mode, input, options, outputLimit) {
     optionsFor(options, false);
-    const limit = mode === 0 ? maxBytes : maxBytes + maxBytes / 8 + 1024;
+    const limit = mode === 0 || mode === 3 ? maxBytes : maxBytes + maxBytes / 8 + 1024;
     if ((typeof input === 'string' || input instanceof Uint8Array) && input.length > limit)
-      fail('ERR_BUFFER_TOO_LARGE', `Home ${mode === 2 ? 'inflate' : 'gzip'} input exceeds its bounded profile`, RangeError);
+      fail('ERR_BUFFER_TOO_LARGE', `Home ${mode === 2 ? 'inflate' : mode === 3 ? 'deflateRaw' : 'gzip'} input exceeds its bounded profile`, RangeError);
     const value = bytes(input, mode === 2 ? 'Inflate' : 'Gzip');
     const result = mode === 2 ? nativeGzip(mode, value, outputLimit) : nativeGzip(mode, value);
     if (typeof result === 'string')
-      fail(result, `Home ${mode === 2 ? 'inflate' : 'gzip'} operation failed`, result === 'ERR_BUFFER_TOO_LARGE' ? RangeError : undefined);
+      fail(result, `Home ${mode === 2 ? 'inflate' : mode === 3 ? 'deflateRaw' : 'gzip'} operation failed`, result === 'ERR_BUFFER_TOO_LARGE' ? RangeError : undefined);
     if (!(result instanceof Uint8Array))
-      fail('ERR_HOME_COMPRESSION', `Native ${mode === 2 ? 'inflate' : 'gzip'} did not return bytes`);
+      fail('ERR_HOME_COMPRESSION', `Native ${mode === 2 ? 'inflate' : mode === 3 ? 'deflateRaw' : 'gzip'} did not return bytes`);
     return Buffer.from(result);
   }
   function gzipSync(input, options) {
@@ -69,6 +69,32 @@ globalThis.__home_tool_zlib_factory = function(nativeGzip, Buffer, Transform) {
     else if (ArrayBuffer.isView(input) && !(input instanceof Uint8Array))
       input = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
     return operation(2, input, undefined, outputLimit);
+  }
+  function rawInput(input, options) {
+    optionsFor(options, false);
+    if (input instanceof ArrayBuffer) input = new Uint8Array(input);
+    else if (ArrayBuffer.isView(input) && !(input instanceof Uint8Array))
+      input = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    if ((typeof input === 'string' || input instanceof Uint8Array) && input.length > maxBytes)
+      fail('ERR_BUFFER_TOO_LARGE', 'Home deflateRaw input exceeds 2 MiB', RangeError);
+    return bytes(input, 'DeflateRaw');
+  }
+  function deflateRawSync(input, options) {
+    return operation(3, rawInput(input, options));
+  }
+  function deflateRaw(input, options, callback) {
+    if (typeof options === 'function') { callback = options; options = undefined; }
+    if (typeof callback !== 'function')
+      fail('ERR_INVALID_ARG_TYPE', 'DeflateRaw callback must be a function', TypeError);
+    const snapshot = rawInput(input, options);
+    // A bounded native codec runs on the owner thread in a real immediate task.
+    // Input is snapshotted now; no worker-pool or libuv completion-order claim.
+    scheduleImmediate(() => {
+      let output;
+      try { output = operation(3, snapshot); }
+      catch (error) { callback(error); return; }
+      callback(null, output);
+    });
   }
   function Gzip(options) {
     if (!this || !(this instanceof Gzip)) return new Gzip(options);
@@ -118,5 +144,5 @@ globalThis.__home_tool_zlib_factory = function(nativeGzip, Buffer, Transform) {
   function createGzip(options) {
     return new Gzip(options);
   }
-  return { gzipSync, gunzipSync, inflateSync, Gzip, createGzip };
+  return { gzipSync, gunzipSync, inflateSync, deflateRawSync, deflateRaw, Gzip, createGzip };
 };

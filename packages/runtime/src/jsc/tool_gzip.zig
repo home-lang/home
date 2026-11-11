@@ -1,4 +1,4 @@
-//! Bounded RFC 1950/1952 data operations for the repository-tool host.
+//! Bounded RFC 1950/1951/1952 data operations for the repository-tool host.
 const std = @import("std");
 const api = @import("extern_fns.zig");
 const types = @import("opaques.zig");
@@ -7,6 +7,14 @@ const callback = @import("callback.zig");
 pub const max_bytes = 2 * 1024 * 1024;
 
 pub fn compress(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    return compressFramed(allocator, input, .gzip);
+}
+
+pub fn deflateRaw(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    return compressFramed(allocator, input, .raw);
+}
+
+fn compressFramed(allocator: std.mem.Allocator, input: []const u8, container: std.compress.flate.Container) ![]u8 {
     if (input.len > max_bytes) return error.LimitExceeded;
     const storage = try allocator.alloc(u8, input.len + input.len / 8 + 1024);
     errdefer allocator.free(storage);
@@ -15,7 +23,7 @@ pub fn compress(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     defer allocator.free(history);
     const compressor = try allocator.create(std.compress.flate.Compress);
     defer allocator.destroy(compressor);
-    compressor.* = try .init(&output, history, .gzip, .default);
+    compressor.* = try .init(&output, history, container, .default);
     try compressor.writer.writeAll(input);
     try compressor.finish();
     return try allocator.realloc(storage, output.end);
@@ -147,7 +155,7 @@ fn operation(
     if ((count != 2 and count != 3) or args[0] == null or args[1] == null or api.JSValueGetTypedArrayType(c, args[1], exception) != .kJSTypedArrayTypeUint8Array)
         return failure(c, error.BadInput);
     const mode = api.JSValueToNumber(c, args[0], exception);
-    if (mode != 0 and mode != 1 and mode != 2) return failure(c, error.BadInput);
+    if (mode != 0 and mode != 1 and mode != 2 and mode != 3) return failure(c, error.BadInput);
     var output_limit: usize = max_bytes;
     if (count == 3) {
         if (mode != 2 or args[2] == null or !api.JSValueIsNumber(c, args[2])) return failure(c, error.BadInput);
@@ -166,7 +174,7 @@ fn operation(
     // before any further JS allocation and never retain a borrowed pointer.
     const input = allocator.dupe(u8, borrowed) catch return failure(c, error.OutOfMemory);
     defer allocator.free(input);
-    const output = (if (mode == 0) compress(allocator, input) else if (mode == 1) decompress(allocator, input) else inflateBounded(allocator, input, output_limit)) catch |err| return failure(c, err);
+    const output = (if (mode == 0) compress(allocator, input) else if (mode == 1) decompress(allocator, input) else if (mode == 2) inflateBounded(allocator, input, output_limit) else deflateRaw(allocator, input)) catch |err| return failure(c, err);
     defer allocator.free(output);
     const result = api.JSObjectMakeTypedArray(c, .kJSTypedArrayTypeUint8Array, output.len, exception) orelse return null;
     if (output.len != 0) {
@@ -277,4 +285,32 @@ test "zlib explicit output limit bounds native decoding before returning bytes" 
         defer allocator.free(output);
         try std.testing.expectEqualStrings("actual bytes", output);
     }
+}
+
+test "raw deflate has real payloads without gzip framing" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "", "actual raw bytes\x00\xff", "repeat repeat repeat repeat repeat repeat" }) |input| {
+        const encoded = try deflateRaw(allocator, input);
+        defer allocator.free(encoded);
+        var source: std.Io.Reader = .fixed(encoded);
+        const history = try allocator.alloc(u8, std.compress.flate.max_window_len);
+        defer allocator.free(history);
+        var decoder: std.compress.flate.Decompress = .init(&source, .raw, history);
+        const decoded = try decoder.reader.allocRemaining(allocator, .limited(max_bytes));
+        defer allocator.free(decoded);
+        try std.testing.expectEqualSlices(u8, input, decoded);
+    }
+}
+
+test "raw deflate retains input bounds and allocation failure cleanup" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const encoded = try deflateRaw(allocator, "real allocator lifecycle");
+            defer allocator.free(encoded);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{});
+    const oversized = try std.testing.allocator.alloc(u8, max_bytes + 1);
+    defer std.testing.allocator.free(oversized);
+    try std.testing.expectError(error.LimitExceeded, deflateRaw(std.testing.allocator, oversized));
 }

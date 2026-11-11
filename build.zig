@@ -1358,6 +1358,24 @@ pub fn build(b: *std.Build) void {
         run_home_tool_pending_stream.expectExitCode(1);
         run_home_tool_pending_stream.expectStdOutEqual("waiting for actual write acknowledgment\n");
         home_tool_smoke_step.dependOn(&run_home_tool_pending_stream.step);
+        const compression_tests = b.addTest(.{
+            .name = "home-tool-compression-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_gzip.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        const compression_step = b.step("home-tool-compression-test", "Verify real bounded native codecs and allocation cleanup");
+        compression_step.dependOn(&b.addRunArtifact(compression_tests).step);
+        home_tool_smoke_step.dependOn(compression_step);
+        const raw_deflate_fixture = b.addSystemCommand(&.{"python3"});
+        raw_deflate_fixture.addFileArg(b.path("packages/runtime/test/tool_deflate_raw_fixture.py"));
+        raw_deflate_fixture.addArtifactArg(home_tool_exe);
+        raw_deflate_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_deflate_raw.mjs"));
+        home_tool_smoke_step.dependOn(&raw_deflate_fixture.step);
+        b.step("home-tool-deflate-raw-smoke", "Decode actual raw-deflate outputs independently and verify callbacks").dependOn(&raw_deflate_fixture.step);
         const run_home_tool_gzip = b.addRunArtifact(home_tool_exe);
         run_home_tool_gzip.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_gzip.addArgs(&.{ "run", "node_gzip_contract.mjs" });

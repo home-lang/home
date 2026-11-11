@@ -1123,7 +1123,6 @@
   delete globalThis.__home_tool_zlib_factory;
   const nativeGzip = globalThis.__home_tool_gzip;
   delete globalThis.__home_tool_gzip;
-  const zlibApi = zlibFactory(nativeGzip, bufferApi.Buffer, streamsApi.Transform);
   const nativeIsatty = globalThis.__home_tool_isatty;
   delete globalThis.__home_tool_isatty;
   const ttyApi = {
@@ -1194,6 +1193,7 @@
   delete globalThis.__home_tool_get_async_context;
   delete globalThis.__home_tool_swap_async_context;
   const timers = timerFactory(timerSchedule, timerControl, immediateSchedule, getAsyncContext, swapAsyncContext);
+  const zlibApi = zlibFactory(nativeGzip, bufferApi.Buffer, streamsApi.Transform, timers.setImmediate);
   const scheduleFilesystemTask = timers.setTimeout;
   globalThis.setTimeout = timers.setTimeout;
   globalThis.clearTimeout = timers.clearTimeout;
