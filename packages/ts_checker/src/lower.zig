@@ -28,6 +28,43 @@ const types = @import("types.zig");
 const interner = @import("interner.zig");
 const string_interner = @import("string_interner");
 
+/// The value a bigint literal type holds, as TypeScript keeps it: base ten,
+/// without separators or the `n` suffix, and signed only when nonzero. `16n`,
+/// `0x10n` and `1_6n` are one type, `16n`, and `-0n` is `0n`
+/// (`pseudoBigIntToString`). `raw` is the literal's source digits without
+/// the `n`. Text that is not a valid bigint literal is kept as written.
+pub fn bigIntLiteralValueId(
+    gpa: std.mem.Allocator,
+    si: *string_interner.Interner,
+    raw: []const u8,
+    negative: bool,
+) error{OutOfMemory}!hir_mod.StringId {
+    const digits = try gpa.alloc(u8, raw.len);
+    defer gpa.free(digits);
+    var length: usize = 0;
+    for (raw) |byte| {
+        if (byte == '_') continue;
+        digits[length] = byte;
+        length += 1;
+    }
+    const base: u8 = if (length > 2 and digits[0] == '0') switch (std.ascii.toLower(digits[1])) {
+        'x' => 16,
+        'o' => 8,
+        'b' => 2,
+        else => 10,
+    } else 10;
+    var integer = try std.math.big.int.Managed.init(gpa);
+    defer integer.deinit();
+    integer.setString(base, digits[if (base == 10) 0 else 2..length]) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return si.intern(raw) catch error.OutOfMemory;
+    };
+    if (negative and !integer.eqlZero()) integer.negate();
+    const canonical = try integer.toConst().toStringAlloc(gpa, 10, .lower);
+    defer gpa.free(canonical);
+    return si.intern(canonical) catch error.OutOfMemory;
+}
+
 pub const TypeId = types.TypeId;
 pub const NodeId = hir_mod.NodeId;
 pub const Hir = hir_mod.Hir;
@@ -297,12 +334,8 @@ pub const Lowerer = struct {
             },
             .literal_bigint => blk: {
                 const b = hir_mod.literalBigIntOf(self.hir, lit);
-                if (!lt.negative) break :blk self.interner.internBigIntLiteral(b.digits) catch error.OutOfMemory;
-                const digits = self.string_interner.get(b.digits);
-                const signed = try std.fmt.allocPrint(self.gpa, "-{s}", .{digits});
-                defer self.gpa.free(signed);
-                const signed_id = self.string_interner.intern(signed) catch return error.OutOfMemory;
-                break :blk self.interner.internBigIntLiteral(signed_id) catch error.OutOfMemory;
+                const value = try bigIntLiteralValueId(self.gpa, self.string_interner, self.string_interner.get(b.digits), lt.negative);
+                break :blk self.interner.internBigIntLiteral(value) catch error.OutOfMemory;
             },
             else => types.Primitive.unknown,
         };
@@ -527,6 +560,33 @@ pub const Lowerer = struct {
 
 const T = std.testing;
 const ts_lexer = @import("ts_lexer");
+
+test "lower: a bigint literal type holds its base-ten value" {
+    var si = try string_interner.Interner.init(T.allocator);
+    defer si.deinit();
+    const cases = [_]struct { raw: []const u8, negative: bool, value: []const u8 }{
+        .{ .raw = "16", .negative = false, .value = "16" },
+        .{ .raw = "0x10", .negative = false, .value = "16" },
+        .{ .raw = "0X1f", .negative = false, .value = "31" },
+        .{ .raw = "0o7", .negative = false, .value = "7" },
+        .{ .raw = "0b11", .negative = false, .value = "3" },
+        .{ .raw = "1_000", .negative = false, .value = "1000" },
+        .{ .raw = "5", .negative = true, .value = "-5" },
+        .{ .raw = "0x10", .negative = true, .value = "-16" },
+        // `-0n` is `0n`.
+        .{ .raw = "0", .negative = true, .value = "0" },
+        .{ .raw = "123456789012345678901234567890", .negative = false, .value = "123456789012345678901234567890" },
+    };
+    for (cases) |case| {
+        const id = try bigIntLiteralValueId(T.allocator, &si, case.raw, case.negative);
+        try T.expectEqualStrings(case.value, si.get(id));
+    }
+    // Every spelling of one value is one string, so one type.
+    try T.expectEqual(
+        try bigIntLiteralValueId(T.allocator, &si, "0x10", false),
+        try bigIntLiteralValueId(T.allocator, &si, "1_6", false),
+    );
+}
 const ts_parser = @import("ts_parser");
 
 const TestSetup = struct {

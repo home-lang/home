@@ -12821,6 +12821,18 @@ pub const Parser = struct {
                 const lit = try self.builder.addLiteralNumber(tokenSpan(t), value);
                 break :blk try self.builder.addLiteralType(tokenSpan(t), lit, false);
             },
+            // `1n` as a type. Without this branch the token fell through to
+            // the recovery case below and became a reference to `unknown`,
+            // which accepts every value without a diagnostic (#1005). The
+            // negative form `-1n` is handled under `.minus`.
+            .bigint_literal => blk: {
+                _ = self.advance();
+                const slice_with_n = self.source[t.span.start..t.span.end];
+                const digits_slice = slice_with_n[0 .. slice_with_n.len - 1];
+                const id = self.interner.intern(digits_slice) catch return error.OutOfMemory;
+                const lit = try self.builder.addLiteralBigInt(tokenSpan(t), id);
+                break :blk try self.builder.addLiteralType(tokenSpan(t), lit, false);
+            },
             // Template literal type: `\`hello-${T}\`` (in type position).
             .no_substitution_template => blk: {
                 _ = self.advance();
@@ -24961,6 +24973,22 @@ test "parser: bigint literal" {
     try T.expectEqual(hir_mod.NodeKind.literal_bigint, s.hir.kindOf(top));
     const bi = hir_mod.literalBigIntOf(&s.hir, top);
     try T.expectEqualStrings("9007199254740993", s.interner.get(bi.digits));
+}
+
+test "parser: bigint literal type" {
+    var s = try newTestSetup("type T = 42n;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const alias = hir_mod.typeAliasOf(&s.hir, top);
+    // Not the recovery reference to `unknown` it used to fall through to.
+    try T.expectEqual(hir_mod.NodeKind.type_literal, s.hir.kindOf(alias.aliased));
+    const lt = hir_mod.literalTypeOf(&s.hir, alias.aliased);
+    try T.expect(!lt.negative);
+    try T.expectEqual(hir_mod.NodeKind.literal_bigint, s.hir.kindOf(lt.literal));
+    const bi = hir_mod.literalBigIntOf(&s.hir, lt.literal);
+    try T.expectEqualStrings("42", s.interner.get(bi.digits));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: negative bigint literal type" {

@@ -19819,7 +19819,27 @@ pub const Checker = struct {
         };
     }
 
+    /// The literal type of a bigint literal expression, `2n` or `-2n`. tsc
+    /// gives it a fresh literal type, like a numeric literal; Home types the
+    /// expression itself as `bigint` and asks for the literal where a numeric
+    /// literal would be asked for too.
+    fn bigIntLiteralExpressionType(self: *Checker, node: NodeId) CheckError!?TypeId {
+        var operand = node;
+        var negative = false;
+        if (self.hir.kindOf(operand) == .unary_op) {
+            const u = hir_mod.unaryOf(self.hir, operand);
+            if (u.op != .neg) return null;
+            operand = u.operand;
+            negative = true;
+        }
+        if (self.hir.kindOf(operand) != .literal_bigint) return null;
+        const big = hir_mod.literalBigIntOf(self.hir, operand);
+        const value = try lower.bigIntLiteralValueId(self.gpa, self.string_interner, self.string_interner.get(big.digits), negative);
+        return self.interner.internBigIntLiteral(value) catch return error.OutOfMemory;
+    }
+
     fn expressionNarrowLiteralType(self: *Checker, node: NodeId) CheckError!?TypeId {
+        if (try self.bigIntLiteralExpressionType(node)) |bigint_t| return bigint_t;
         return switch (self.hir.kindOf(node)) {
             .literal_string => blk: {
                 const sid = try self.literalStringCookedId(node);
@@ -81114,12 +81134,8 @@ pub const Checker = struct {
                     },
                     .literal_bigint => blk: {
                         const big = hir_mod.literalBigIntOf(self.hir, lit);
-                        if (!lt.negative) break :blk self.interner.internBigIntLiteral(big.digits) catch return error.OutOfMemory;
-                        const digits = self.string_interner.get(big.digits);
-                        const signed = try std.fmt.allocPrint(self.gpa, "-{s}", .{digits});
-                        defer self.gpa.free(signed);
-                        const signed_id = self.string_interner.intern(signed) catch return error.OutOfMemory;
-                        break :blk self.interner.internBigIntLiteral(signed_id) catch return error.OutOfMemory;
+                        const value = try lower.bigIntLiteralValueId(self.gpa, self.string_interner, self.string_interner.get(big.digits), lt.negative);
+                        break :blk self.interner.internBigIntLiteral(value) catch return error.OutOfMemory;
                     },
                     else => types.Primitive.unknown,
                 };
@@ -100376,6 +100392,8 @@ pub const Checker = struct {
     fn constInitializerType(self: *Checker, init_node: NodeId, fallback: TypeId) CheckError!TypeId {
         return switch (self.hir.kindOf(init_node)) {
             .literal_string, .literal_number, .literal_bool, .literal_bigint => self.literalizeForAsConst(init_node, fallback) catch return error.OutOfMemory,
+            // `const n = -5n` is `-5n`.
+            .unary_op => (try self.bigIntLiteralExpressionType(init_node)) orelse fallback,
             .as_expr, .type_assertion => blk: {
                 const a = hir_mod.asExpressionOf(self.hir, init_node);
                 if (a.type_node != hir_mod.none_node_id and self.isAsConstMarker(a.type_node)) {
@@ -142132,43 +142150,15 @@ pub const Checker = struct {
         // narrowing above handles the member-access case
         // (`x.kind === "circle"`); this branch handles the
         // bare-identifier case.
-        const rhs_is_neg_bigint = blk: {
-            if (self.hir.kindOf(b.rhs) != .unary_op) break :blk false;
-            const u = hir_mod.unaryOf(self.hir, b.rhs);
-            break :blk u.op == .neg and self.hir.kindOf(u.operand) == .literal_bigint;
-        };
         if (self.hir.kindOf(b.lhs) == .identifier and
-            ((!self.nodeIsNullLiteralish(b.rhs) and
-                !self.nodeIsUndefinedLiteralish(b.rhs) and
-                (try self.expressionNarrowLiteralType(b.rhs)) != null) or
-                self.hir.kindOf(b.rhs) == .literal_bigint or
-                rhs_is_neg_bigint))
+            !self.nodeIsNullLiteralish(b.rhs) and
+            !self.nodeIsUndefinedLiteralish(b.rhs) and
+            (try self.expressionNarrowLiteralType(b.rhs)) != null)
         {
             const id = hir_mod.identifierOf(self.hir, b.lhs);
-            const lit_t: TypeId = blk: {
-                if (rhs_is_neg_bigint) {
-                    const u = hir_mod.unaryOf(self.hir, b.rhs);
-                    const lit = hir_mod.literalBigIntOf(self.hir, u.operand);
-                    const digits_str = self.string_interner.get(lit.digits);
-                    // Build "-<digits>" so the rendered literal is
-                    // `-<digits>n` and equality of TypeIds tracks
-                    // sign + magnitude.
-                    var buf: [64]u8 = undefined;
-                    if (digits_str.len + 1 > buf.len) return;
-                    buf[0] = '-';
-                    @memcpy(buf[1 .. 1 + digits_str.len], digits_str);
-                    const neg_digits_id = self.string_interner.intern(buf[0 .. 1 + digits_str.len]) catch return;
-                    break :blk self.interner.internBigIntLiteral(neg_digits_id) catch return;
-                }
-                if (try self.expressionNarrowLiteralType(b.rhs)) |lit| break :blk lit;
-                switch (self.hir.kindOf(b.rhs)) {
-                    .literal_bigint => {
-                        const lit = hir_mod.literalBigIntOf(self.hir, b.rhs);
-                        break :blk self.interner.internBigIntLiteral(lit.digits) catch return;
-                    },
-                    else => unreachable,
-                }
-            };
+            // Includes `42n` and `-42n`, whose literal types are canonical
+            // base-ten values, as in an annotation.
+            const lit_t = (try self.expressionNarrowLiteralType(b.rhs)).?;
             const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(b.lhs);
             if (positive) {
                 try self.recordNarrow(id.name, try self.narrowTypeByPredicate(current, lit_t));
@@ -167387,6 +167377,33 @@ pub const Checker = struct {
         return false;
     }
 
+    /// `maybeTypeOfKind(t, NumberLike)`: `number`, a numeric literal or a
+    /// numeric enum member, alone or as a member of `t`.
+    fn typeMaybeNumberLike(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_number) return true;
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeMaybeNumberLike(member)) return true;
+            }
+            return false;
+        }
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeMaybeNumberLike(member)) return true;
+            }
+            return false;
+        }
+        if (f.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.typeMaybeNumberLike(constraint);
+        }
+        return false;
+    }
+
     fn typeHasNumericPrimitivePart(self: *Checker, t: TypeId) bool {
         const f = self.interner.pool.flagsOf(t);
         if (f.is_number or f.is_bigint) return true;
@@ -168330,6 +168347,19 @@ pub const Checker = struct {
                         .{type_name},
                     );
                     try self.report(u.operand, TsCodes.unary_plus_bigint_operand, msg);
+                }
+                // `-` and `~` keep a bigint operand a bigint
+                // (`getUnaryResultType`): `-big` is `bigint`, and an
+                // operand that may also be a number gives
+                // `number | bigint`. `-5n` is the literal `-5n`.
+                if (u.op != .plus and self.typeMaybeBigintLike(operand_t)) {
+                    if (u.op == .neg) {
+                        if (try self.bigIntLiteralExpressionType(node)) |literal_t| break :blk literal_t;
+                    }
+                    if (self.typeMaybeNumberLike(operand_t)) {
+                        break :blk self.interner.internUnion(&.{ types.Primitive.number_t, types.Primitive.bigint_t }) catch return error.OutOfMemory;
+                    }
+                    break :blk types.Primitive.bigint_t;
                 }
                 // `-<numeric literal>` keeps its literal type (`-1`,
                 // not `number`) — tsc renders the negative literal in
@@ -176414,6 +176444,11 @@ pub const Checker = struct {
                     if (display_param_t == types.Primitive.never) {
                         diagnostic_arg_t = self.expressionLiteralType(args[i], diagnostic_arg_t) catch diagnostic_arg_t;
                     }
+                    // A bigint literal argument is a fresh literal, as a
+                    // numeric one is; the formatter widens it against a
+                    // target that is not a literal (`Argument of type
+                    // 'bigint'`) and keeps `2n` against `1n`.
+                    if (try self.bigIntLiteralExpressionType(args[i])) |bigint_t| diagnostic_arg_t = bigint_t;
                     const missing_relation_target = try self.missingPropertyRelationTarget(display_param_t);
                     if (self.actualTupleLength(missing_relation_target) == null and
                         !self.argumentMissingPropertyUsesArgumentHeader(diagnostic_arg_t) and
@@ -181530,7 +181565,7 @@ pub const Checker = struct {
                 break :blk switch (literal) {
                     .string_lit => |sid| try self.allocStringLiteralDisplay(sid),
                     .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
-                    .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
+                    .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}n", .{self.string_interner.get(sid)}),
                     .boolean_lit => |b| if (b) "true" else "false",
                     .symbol_lit => "unique symbol",
                 };
@@ -194657,7 +194692,7 @@ pub const Checker = struct {
                 }
                 break :blk false;
             },
-            .bigint_lit => false,
+            .bigint_lit => (try self.bigIntLiteralExpressionType(value_node)) == target_t,
             .boolean_lit => |b| self.hir.kindOf(value_node) == .literal_bool and hir_mod.literalBoolOf(self.hir, value_node) == b,
             .symbol_lit => false,
         };
@@ -194743,6 +194778,7 @@ pub const Checker = struct {
     }
 
     fn expressionLiteralType(self: *Checker, value_node: NodeId, fallback: TypeId) !TypeId {
+        if (try self.bigIntLiteralExpressionType(value_node)) |bigint_t| return bigint_t;
         return switch (self.hir.kindOf(value_node)) {
             .literal_string => blk: {
                 const sid = try self.literalStringCookedId(value_node);
@@ -201064,7 +201100,7 @@ pub const Checker = struct {
         return switch (literal) {
             .string_lit => |sid| try self.allocStringLiteralDisplay(sid),
             .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
-            .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
+            .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}n", .{self.string_interner.get(sid)}),
             .boolean_lit => |b| if (b) "true" else "false",
             .symbol_lit => "unique symbol",
         };
@@ -202981,7 +203017,7 @@ pub const Checker = struct {
                 break :blk switch (literal) {
                     .string_lit => |sid| try self.allocStringLiteralDisplay(sid),
                     .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
-                    .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
+                    .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}n", .{self.string_interner.get(sid)}),
                     .boolean_lit => |b| if (b) "true" else "false",
                     .symbol_lit => "unique symbol",
                 };
@@ -204357,6 +204393,10 @@ pub const Checker = struct {
             .literal_bool => {
                 const v = hir_mod.literalBoolOf(self.hir, expr);
                 return if (v) types.Primitive.true_lit else types.Primitive.false_lit;
+            },
+            // `1n` and `-1n`. A negative numeric literal is left as it was.
+            .literal_bigint, .unary_op => {
+                return (try self.bigIntLiteralExpressionType(expr)) orelse fallback;
             },
             .template_literal => return try self.templateLiteralConstType(expr, fallback),
             .conditional => {
@@ -302788,4 +302828,78 @@ test "checker: a unique symbol and the keys of a primitive display in native ord
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"bogus\"' is not assignable to type '\"toLocaleString\" | \"toString\" | \"valueOf\" | unique symbol'."));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.argument_type_mismatch, "Argument of type '\"bogus\"' is not assignable to parameter of type '\"toLocaleString\" | \"toString\" | \"valueOf\" | unique symbol'."));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"bogus\"' is not assignable to type '\"toExponential\" | \"toFixed\" | \"toLocaleString\" | \"toPrecision\" | \"toString\" | \"valueOf\"'."));
+}
+
+test "checker: a bigint literal annotation rejects other values (#1005)" {
+    const s = try newSetup(
+        \\declare const obj: { q: 1 };
+        \\declare const big: bigint;
+        \\declare const one: 1n;
+        \\const a: 1n = obj;
+        \\const c: 1n = 2n;
+        \\const d: 1n = 1;
+        \\const f: 1n = big;
+        \\const i: -1n = 1n;
+        \\const m: number = one;
+        \\const e: 1n = 1n;
+        \\const h: 2n | 1n = 1n;
+        \\const j: -1n = -1n;
+        \\const k: bigint = one;
+        \\const hex: 0x10n = 16n;
+        \\const zero: -0n = 0n;
+        \\const sepBad: 1_000n = 0x10n;
+        \\function take(p: 1n) { void p; }
+        \\take(2n);
+        \\take(1n);
+        \\function wide(p: number) { void p; }
+        \\wide(2n);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ q: 1; }' is not assignable to type '1n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '2n' is not assignable to type '1n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1' is not assignable to type '1n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'bigint' is not assignable to type '1n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1n' is not assignable to type '-1n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'bigint' is not assignable to type 'number'."));
+    // A value is compared by what it is, not how it is spelled.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '16n' is not assignable to type '1000n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.argument_type_mismatch, "Argument of type '2n' is not assignable to parameter of type '1n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.argument_type_mismatch, "Argument of type 'bigint' is not assignable to parameter of type 'number'."));
+    // Seven statements and two calls fail; `e`, `h`, `j`, `k`, `hex`, `zero`
+    // and `take(1n)` do not.
+    try T.expectEqual(@as(usize, 7), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountDistinctStarts(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: a bigint literal value keeps its literal type where a number does (#1005)" {
+    const s = try newSetup(
+        \\declare const big: bigint;
+        \\declare const nb: number | bigint;
+        \\declare const u: 1n | 2n | 3n;
+        \\const c = 1n;
+        \\const c2: 2n = c;
+        \\let l = 1n;
+        \\const l2: 2n = l;
+        \\const neg = -5n;
+        \\const neg2: 5n = neg;
+        \\const o = { k: 1n } as const;
+        \\const o2: { k: 2n } = o;
+        \\if (u === 2n) { const n: 3n = u; void n; }
+        \\const x1: string = -big;
+        \\const x2: string = ~big;
+        \\const x3: string = -nb;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // `const` keeps the literal and `let` widens it.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1n' is not assignable to type '2n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'bigint' is not assignable to type '2n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '-5n' is not assignable to type '5n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ readonly k: 1n; }' is not assignable to type '{ k: 2n; }'."));
+    // Narrowing by a bigint literal.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '2n' is not assignable to type '3n'."));
+    // `-` and `~` of a bigint is a bigint, never a number.
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'bigint' is not assignable to type 'string'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number | bigint' is not assignable to type 'string'."));
 }
