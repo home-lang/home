@@ -72,6 +72,9 @@ fn runSource(
     var children = try tool_runtime.spawn.Host.init(allocator, ctx);
     defer children.deinit();
     children.install(global);
+    var databases = tool_runtime.sqlite.Host.init(allocator, ctx);
+    defer databases.deinit();
+    databases.install(global);
     tool_runtime.util_types.install(ctx, global);
     tool_runtime.builtins.install(allocator, ctx);
     tool_runtime.modules.installWithConditions(allocator, ctx, global, conditions);

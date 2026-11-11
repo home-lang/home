@@ -1292,6 +1292,11 @@
     if (arguments.length < 2) nodeArgumentError('ERR_MISSING_ARGS', 'The actual and expected arguments must be specified');
     if (assertSameValue(actual, expected)) assertionFailure(actual, expected, 'notStrictEqual', message, arguments.length > 3);
   };
+  const sqliteFactory = globalThis.__home_tool_sqlite_factory;
+  const sqliteNative = globalThis.__home_tool_sqlite;
+  delete globalThis.__home_tool_sqlite_factory;
+  delete globalThis.__home_tool_sqlite;
+  builtins['bun:sqlite'] = sqliteFactory(sqliteNative, bufferApi.Buffer);
   builtins.assert = assert;
   builtins['node:assert'] = assert;
   builtins.constants = legacyConstants;

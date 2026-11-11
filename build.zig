@@ -761,6 +761,17 @@ pub fn build(b: *std.Build) void {
         tool_glob_matcher_pkg.addImport("home", tool_glob_support_pkg);
         const tool_markdown_parser_pkg = createPackage(b, "packages/runtime/src/tool_markdown_parser.zig", target, optimize, zig_test_framework);
         tool_markdown_parser_pkg.addImport("bun", tool_compat_pkg);
+        const tool_sqlite_native_pkg = createPackage(b, "packages/database/src/sqlite.zig", target, optimize, zig_test_framework);
+        tool_sqlite_native_pkg.addImport("c", database_pkg.import_table.get("c").?);
+        tool_sqlite_native_pkg.link_libc = true;
+        if (target.result.os.tag == .macos) {
+            tool_sqlite_native_pkg.linkSystemLibrary("sqlite3", .{});
+        } else {
+            tool_sqlite_native_pkg.addCSourceFile(.{
+                .file = b.path("packages/database/vendor/sqlite3.c"),
+                .flags = &sqlite_amalgamation_flags,
+            });
+        }
         const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
         tool_runtime_pkg.addImport("bun", tool_compat_pkg);
         tool_runtime_pkg.addImport("tool_glob_matcher", tool_glob_matcher_pkg);
@@ -772,6 +783,7 @@ pub fn build(b: *std.Build) void {
         tool_runtime_pkg.addImport("tsconfig", tsconfig_pkg);
         tool_runtime_pkg.addImport("ts_resolver", ts_resolver_pkg);
         tool_runtime_pkg.addImport("tool_yaml_parser", tool_yaml_parser_pkg);
+        tool_runtime_pkg.addImport("tool_sqlite_native", tool_sqlite_native_pkg);
         tool_runtime_pkg.link_libc = true;
         if (tool_use_zig_js) {
             linkZigJs(b, tool_runtime_pkg, configured_zig_js_root);
@@ -980,6 +992,31 @@ pub fn build(b: *std.Build) void {
         run_native_copy.addFileArg(b.path("packages/runtime/test/tool_modules/node_cp_unsupported.mjs"));
         run_native_copy.expectStdOutEqual("NODE CP 49 CHECKS OK\nNODE CP UNSUPPORTED 12 CHECKS OK\nHOST CP INDEPENDENT 9 MiB FILE HASHES OK\n");
         home_tool_smoke_step.dependOn(&run_native_copy.step);
+        const tool_sqlite_tests = b.addTest(.{
+            .name = "home-tool-native-sqlite-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_sqlite_pool.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        tool_sqlite_tests.root_module.addImport("tool_sqlite_native", tool_sqlite_native_pkg);
+        const sqlite_test_step = b.step("home-tool-sqlite-test", "Run real native SQLite ownership and data tests");
+        sqlite_test_step.dependOn(&b.addRunArtifact(tool_sqlite_tests).step);
+        home_tool_smoke_step.dependOn(sqlite_test_step);
+        const sqlite_fixture = b.addSystemCommand(&.{"python3"});
+        sqlite_fixture.addFileArg(b.path("packages/runtime/test/tool_sqlite_fixture.py"));
+        sqlite_fixture.addArtifactArg(home_tool_exe);
+        sqlite_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/bun_sqlite_contract.mjs"));
+        sqlite_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/bun_sqlite_reopen.mjs"));
+        home_tool_smoke_step.dependOn(&sqlite_fixture.step);
+        const sqlite_unsupported = b.addRunArtifact(home_tool_exe);
+        sqlite_unsupported.setCwd(b.path("packages/runtime/test/tool_modules"));
+        sqlite_unsupported.addArgs(&.{ "run", "bun_sqlite_unsupported.mjs" });
+        sqlite_unsupported.expectStdOutEqual("HOME SQLITE UNSUPPORTED 12 REFUSALS OK\n");
+        home_tool_smoke_step.dependOn(&sqlite_unsupported.step);
+
         const tool_cpu_tests = b.addTest(.{
             .name = "home-tool-cpu-availability-tests",
             .root_module = b.createModule(.{
