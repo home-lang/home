@@ -1,5 +1,5 @@
-//! Owner-thread timer queue. JavaScript only registers/cancels tasks; the host
-//! waits on real kernel timer events after the current script/jobs complete.
+//! Owner-thread timer and check-phase queues. JavaScript registers/cancels
+//! tasks; the host dispatches immediate batches or waits on real kernel timers.
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("build_options");
@@ -82,6 +82,7 @@ pub const Loop = struct {
     ctx: *types.JSContextRef,
     kernel: Kernel,
     tasks: std.ArrayListUnmanaged(Task) = .empty,
+    immediates: std.ArrayListUnmanaged(Task) = .empty,
     next_id: u64 = 1,
     previous: ?*Loop = null,
 
@@ -94,6 +95,7 @@ pub const Loop = struct {
         active = self;
         callback.registerCallback(self.ctx, global, "__home_tool_timer_schedule", schedule);
         callback.registerCallback(self.ctx, global, "__home_tool_timer_control", control);
+        callback.registerCallback(self.ctx, global, "__home_tool_immediate_schedule", scheduleImmediate);
     }
 
     fn release(self: *Loop, task: Task) void {
@@ -104,6 +106,8 @@ pub const Loop = struct {
         if (active == self) active = self.previous;
         for (self.tasks.items) |task| self.release(task);
         self.tasks.deinit(self.allocator);
+        for (self.immediates.items) |task| self.release(task);
+        self.immediates.deinit(self.allocator);
         _ = std.c.close(self.kernel.fd);
     }
 
@@ -115,6 +119,39 @@ pub const Loop = struct {
         api.JSValueProtect(self.ctx, @ptrCast(function));
         self.next_id += 1;
         return id;
+    }
+
+    fn enqueueImmediate(self: *Loop, function: *types.JSObject, referenced: bool) !u64 {
+        if (self.next_id >= 0x1fffffffffffff) return error.TimerIdExhausted;
+        const id = self.next_id;
+        try self.immediates.append(self.allocator, .{ .id = id, .deadline = 0, .function = function, .referenced = referenced, .interval_ns = 0 });
+        api.JSValueProtect(self.ctx, @ptrCast(function));
+        self.next_id += 1;
+        return id;
+    }
+
+    fn hasReferences(self: *Loop) bool {
+        for (self.tasks.items) |task| if (task.referenced) return true;
+        for (self.immediates.items) |task| if (task.referenced) return true;
+        return false;
+    }
+
+    fn earliestTimer(self: *Loop, cutoff: u64, deadline: u64) ?usize {
+        var result: ?usize = null;
+        for (self.tasks.items, 0..) |task, index| {
+            if (task.id > cutoff or task.deadline > deadline) continue;
+            if (result == null or task.deadline < self.tasks.items[result.?].deadline or
+                (task.deadline == self.tasks.items[result.?].deadline and task.id < self.tasks.items[result.?].id)) result = index;
+        }
+        return result;
+    }
+
+    fn nextImmediate(self: *Loop, cutoff: u64) ?usize {
+        var result: ?usize = null;
+        for (self.immediates.items, 0..) |task, index| {
+            if (task.id <= cutoff and (result == null or task.id < self.immediates.items[result.?].id)) result = index;
+        }
+        return result;
     }
 
     fn invoke(self: *Loop, function: *types.JSObject, handler: *types.JSValue) !?[]u8 {
@@ -144,35 +181,42 @@ pub const Loop = struct {
 
     pub fn drain(self: *Loop, handler: *types.JSValue) !?[]u8 {
         if (try self.checkpoint(handler)) |diagnostic| return diagnostic;
-        while (true) {
-            var referenced = false;
-            var earliest: ?usize = null;
-            for (self.tasks.items, 0..) |task, index| {
-                referenced = referenced or task.referenced;
-                if (earliest == null or task.deadline < self.tasks.items[earliest.?].deadline or
-                    (task.deadline == self.tasks.items[earliest.?].deadline and task.id < self.tasks.items[earliest.?].id)) earliest = index;
+        while (self.hasReferences()) {
+            var progressed = false;
+            // Freeze the timer phase so tasks registered during callbacks do
+            // not recursively consume the same turn, including intervals.
+            const timer_cutoff = self.next_id - 1;
+            const phase_time = try now();
+            while (self.earliestTimer(timer_cutoff, phase_time)) |index| {
+                const task = self.tasks.swapRemove(index);
+                defer self.release(task);
+                if (task.interval_ns != 0) {
+                    var repeated = task;
+                    repeated.deadline = try std.math.add(u64, try now(), task.interval_ns);
+                    try self.tasks.append(self.allocator, repeated);
+                    api.JSValueProtect(self.ctx, @ptrCast(repeated.function));
+                }
+                progressed = true;
+                if (try self.invoke(task.function, handler)) |diagnostic| return diagnostic;
+                if (try self.checkpoint(handler)) |diagnostic| return diagnostic;
             }
-            if (!referenced) return null;
-            const index = earliest orelse return null;
-            const deadline = self.tasks.items[index].deadline;
-            if (try now() < deadline) {
-                try self.kernel.waitUntil(deadline);
-                continue;
+            // Immediates registered by timers enter this check phase. New
+            // immediates registered by this batch (or its jobs) wait until the
+            // next turn, allowing due timers to run before that next batch.
+            const immediate_cutoff = self.next_id - 1;
+            while (self.nextImmediate(immediate_cutoff)) |index| {
+                const task = self.immediates.swapRemove(index);
+                defer self.release(task);
+                progressed = true;
+                if (try self.invoke(task.function, handler)) |diagnostic| return diagnostic;
+                if (try self.checkpoint(handler)) |diagnostic| return diagnostic;
             }
-            const task = self.tasks.swapRemove(index);
-            defer self.release(task);
-            if (task.interval_ns != 0) {
-                // Reinsert before invocation so cancellation/ref changes made
-                // by the callback affect this same id. Keep a separate root
-                // for the in-flight call even if it cancels its own record.
-                var repeated = task;
-                repeated.deadline = try std.math.add(u64, try now(), task.interval_ns);
-                try self.tasks.append(self.allocator, repeated);
-                api.JSValueProtect(self.ctx, @ptrCast(repeated.function));
+            if (!progressed) {
+                const index = self.earliestTimer(std.math.maxInt(u64), std.math.maxInt(u64)) orelse return null;
+                try self.kernel.waitUntil(self.tasks.items[index].deadline);
             }
-            if (try self.invoke(task.function, handler)) |diagnostic| return diagnostic;
-            if (try self.checkpoint(handler)) |diagnostic| return diagnostic;
         }
+        return null;
     }
 };
 
@@ -195,6 +239,18 @@ fn schedule(ctx: ?*types.JSContextRef, function: ?*types.JSObject, this: ?*types
     return api.JSValueMakeNumber(c, @floatFromInt(id));
 }
 
+fn scheduleImmediate(ctx: ?*types.JSContextRef, function: ?*types.JSObject, this: ?*types.JSObject, count: usize, args: [*c]const ?*types.JSValue, exception: api.ExceptionRef) callconv(.c) ?*types.JSValue {
+    _ = function;
+    _ = this;
+    const c = ctx orelse return null;
+    const loop = owner(c) orelse return api.JSValueMakeNumber(c, -1);
+    if (count != 2) return api.JSValueMakeNumber(c, -1);
+    const callback_object = api.JSValueToObject(c, args[0], exception) orelse return null;
+    if (!api.JSObjectIsFunction(c, callback_object)) return api.JSValueMakeNumber(c, -1);
+    const id = loop.enqueueImmediate(callback_object, api.JSValueToBoolean(c, args[1])) catch return api.JSValueMakeNumber(c, -1);
+    return api.JSValueMakeNumber(c, @floatFromInt(id));
+}
+
 fn control(ctx: ?*types.JSContextRef, function: ?*types.JSObject, this: ?*types.JSObject, count: usize, args: [*c]const ?*types.JSValue, exception: api.ExceptionRef) callconv(.c) ?*types.JSValue {
     _ = function;
     _ = this;
@@ -204,12 +260,13 @@ fn control(ctx: ?*types.JSContextRef, function: ?*types.JSObject, this: ?*types.
     const number = api.JSValueToNumber(c, args[1], exception);
     if (!std.math.isFinite(number) or number < 1 or number > 0x1fffffffffffff or @floor(number) != number) return api.JSValueMakeBoolean(c, false);
     const id: u64 = @intFromFloat(number);
-    for (loop.tasks.items, 0..) |*task, index| {
+    const queue = if (count > 3 and api.JSValueToBoolean(c, args[3])) &loop.immediates else &loop.tasks;
+    for (queue.items, 0..) |*task, index| {
         if (task.id != id) continue;
         if (api.JSValueToBoolean(c, args[0])) {
             task.referenced = count > 2 and api.JSValueToBoolean(c, args[2]);
         } else {
-            const removed = loop.tasks.swapRemove(index);
+            const removed = queue.swapRemove(index);
             loop.release(removed);
         }
         return api.JSValueMakeBoolean(c, true);

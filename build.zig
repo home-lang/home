@@ -817,7 +817,7 @@ pub fn build(b: *std.Build) void {
         inline for (.{
             .{ "timers.mjs", "OK actual timer deadlines, cancellation, callback jobs, values and aliases\n" },
             .{ "timers_interval.mjs", "OK actual recurring timer deadlines, self-cancellation, aliases and references\n" },
-            .{ "timers_unsupported.mjs", "OK unsupported timer lifecycle and signal APIs remain explicit\n" },
+            .{ "timers_unsupported.mjs", "OK owned immediate exports and unsupported timer signal APIs remain explicit\n" },
         }) |case| {
             const run_timer = b.addRunArtifact(home_tool_exe);
             run_timer.setCwd(b.path("packages/runtime/test/tool_modules"));
@@ -1197,6 +1197,22 @@ pub fn build(b: *std.Build) void {
         run_timer_context.addArgs(&.{ "run", "timers_async_context.mjs" });
         run_timer_context.expectStdOutEqual("OK actual timer context across callbacks, nested tasks, jobs, awaits and exceptions\n");
         home_tool_async_context_step.dependOn(&run_timer_context.step);
+        const run_immediate_context = b.addSystemCommand(&.{"python3"});
+        run_immediate_context.addFileArg(b.path("packages/runtime/test/tool_immediates_fixture.py"));
+        run_immediate_context.addArtifactArg(home_tool_exe);
+        run_immediate_context.addFileArg(b.path("packages/runtime/test/tool_modules/immediates_async_context.mjs"));
+        run_immediate_context.addArg("--context");
+        home_tool_async_context_step.dependOn(&run_immediate_context.step);
+        inline for (.{ .{ "reject", 1, "exit 1\n" }, .{ "reject-listener", 0, "rejected identity\nexit 0\n" } }) |case| {
+            const run_immediate_rejection = b.addRunArtifact(home_tool_exe);
+            run_immediate_rejection.setCwd(b.path("packages/runtime/test/tool_modules"));
+            run_immediate_rejection.addArg("run");
+            run_immediate_rejection.addFileArg(b.path("packages/runtime/test/tool_modules/node_immediates.mjs"));
+            run_immediate_rejection.addArg(case[0]);
+            run_immediate_rejection.expectExitCode(case[1]);
+            run_immediate_rejection.expectStdOutEqual(case[2]);
+            home_tool_rejections_step.dependOn(&run_immediate_rejection.step);
+        }
         inline for (.{
             .{ "reject", 1, "exit 1\n" },
             .{ "reject-listener", 0, "rejected identity\nexit 0\n" },
@@ -1530,6 +1546,12 @@ pub fn build(b: *std.Build) void {
         buffer_writes_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_writes.mjs"));
         home_tool_smoke_step.dependOn(&buffer_writes_fixture.step);
         b.step("home-tool-buffer-writes-smoke", "Verify real fixed-width integer byte writes and native file encodings").dependOn(&buffer_writes_fixture.step);
+        const immediate_fixture = b.addSystemCommand(&.{"python3"});
+        immediate_fixture.addFileArg(b.path("packages/runtime/test/tool_immediates_fixture.py"));
+        immediate_fixture.addArtifactArg(home_tool_exe);
+        immediate_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_immediates.mjs"));
+        home_tool_smoke_step.dependOn(&immediate_fixture.step);
+        b.step("home-tool-immediates-smoke", "Verify real owned check-phase batches, refs and failures").dependOn(&immediate_fixture.step);
         const run_home_tool_crypto = b.addRunArtifact(home_tool_exe);
         run_home_tool_crypto.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_crypto.addArgs(&.{ "run", "node_crypto_entry.cjs" });

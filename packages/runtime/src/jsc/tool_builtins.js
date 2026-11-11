@@ -1182,24 +1182,25 @@
   const timerFactory = globalThis.__home_tool_timers_factory;
   const timerSchedule = globalThis.__home_tool_timer_schedule;
   const timerControl = globalThis.__home_tool_timer_control;
+  const immediateSchedule = globalThis.__home_tool_immediate_schedule;
   delete globalThis.__home_tool_timers_factory;
   delete globalThis.__home_tool_timer_schedule;
   delete globalThis.__home_tool_timer_control;
+  delete globalThis.__home_tool_immediate_schedule;
   const asyncHooksFactory = globalThis.__home_tool_async_hooks_factory;
   delete globalThis.__home_tool_async_hooks_factory;
   const getAsyncContext = globalThis.__home_tool_get_async_context;
   const swapAsyncContext = globalThis.__home_tool_swap_async_context;
   delete globalThis.__home_tool_get_async_context;
   delete globalThis.__home_tool_swap_async_context;
-  const timers = timerFactory(timerSchedule, timerControl, getAsyncContext, swapAsyncContext);
+  const timers = timerFactory(timerSchedule, timerControl, immediateSchedule, getAsyncContext, swapAsyncContext);
   const scheduleFilesystemTask = timers.setTimeout;
   globalThis.setTimeout = timers.setTimeout;
   globalThis.clearTimeout = timers.clearTimeout;
   globalThis.setInterval = timers.setInterval;
   globalThis.clearInterval = timers.clearInterval;
-  // Engine-owned immediate queues cannot participate in this host's task
-  // dispatch, context restoration or fatal-exception policy.
-  for (const key of ['setImmediate', 'clearImmediate']) delete globalThis[key];
+  globalThis.setImmediate = timers.setImmediate;
+  globalThis.clearImmediate = timers.clearImmediate;
   builtins.timers = timers;
   builtins['node:timers'] = timers;
   builtins['timers/promises'] = timers.promises;

@@ -1,5 +1,5 @@
 // Timers backed by the host's kernel event queue, not Promise jobs.
-globalThis.__home_tool_timers_factory = function(schedule, control, getContext, swapContext) {
+globalThis.__home_tool_timers_factory = function(schedule, control, scheduleImmediate, getContext, swapContext) {
   'use strict';
   const states = new WeakMap();
   let warnedNegative = false;
@@ -95,6 +95,69 @@ globalThis.__home_tool_timers_factory = function(schedule, control, getContext, 
   function clearInterval(handle) {
     clearTimeout(handle);
   }
+  const immediateStates = new WeakMap();
+  function immediateState(handle) {
+    const state = immediateStates.get(handle);
+    if (!state) throw new TypeError('Invalid Immediate receiver');
+    return state;
+  }
+  class Immediate {
+    ref() {
+      const state = immediateState(this);
+      if (state.active && control(true, state.id, true, true)) state.refed = true;
+      return this;
+    }
+    unref() {
+      const state = immediateState(this);
+      if (state.active && control(true, state.id, false, true)) state.refed = false;
+      return this;
+    }
+    hasRef() { return immediateState(this).refed; }
+  }
+  function setImmediate(callback, ...args) {
+    if (typeof callback !== 'function') invalid('Immediate callback must be a function');
+    const handle = new Immediate();
+    const state = { id: 0, active: true, refed: true };
+    immediateStates.set(handle, state);
+    const hasContext = typeof getContext === 'function' && typeof swapContext === 'function';
+    const context = hasContext ? getContext() : undefined;
+    const id = scheduleImmediate(function(uncaught) {
+      state.active = false;
+      state.refed = false;
+      const previous = hasContext ? swapContext(context) : undefined;
+      try {
+        try { Reflect.apply(callback, handle, args); }
+        catch (error) { uncaught(error); }
+      } finally { if (hasContext) swapContext(previous); }
+    }, true);
+    if (!(id > 0)) {
+      immediateStates.delete(handle);
+      throw new Error('Native immediate registration failed');
+    }
+    state.id = id;
+    return handle;
+  }
+  function clearImmediate(handle) {
+    const state = handle !== null && typeof handle === 'object' ? immediateStates.get(handle) : undefined;
+    if (state && state.active && control(false, state.id, false, true)) {
+      state.active = false;
+      state.refed = false;
+    }
+  }
+  const callbackImmediate = setImmediate;
+  const promiseImmediate = function setImmediate(value, options = undefined) {
+    return new Promise(function(resolve) {
+      if (options === undefined) options = {};
+      if (options === null || typeof options !== 'object' || Array.isArray(options)) invalid('Immediate options must be an object');
+      const ref = options.ref;
+      const signal = options.signal;
+      if (ref !== undefined && typeof ref !== 'boolean') invalid('Immediate ref must be a boolean');
+      if (signal !== undefined) unsupported('Home immediate AbortSignal integration is not implemented');
+      for (const key of Object.keys(options)) if (key !== 'ref' && key !== 'signal') unsupported(`Unsupported immediate option: ${key}`);
+      const handle = callbackImmediate(resolve, value);
+      if (ref === false) handle.unref();
+    });
+  };
   const callbackTimeout = setTimeout;
   const promiseTimeout = function setTimeout(after, value, options = undefined) {
     return new Promise(function(resolve) {
@@ -112,5 +175,5 @@ globalThis.__home_tool_timers_factory = function(schedule, control, getContext, 
       if (ref === false) handle.unref();
     });
   };
-  return { setTimeout, clearTimeout, setInterval, clearInterval, promises: { setTimeout: promiseTimeout } };
+  return { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, promises: { setTimeout: promiseTimeout, setImmediate: promiseImmediate } };
 };
