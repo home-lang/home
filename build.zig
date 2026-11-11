@@ -1002,6 +1002,28 @@ pub fn build(b: *std.Build) void {
             }),
         });
         tool_sqlite_tests.root_module.addImport("tool_sqlite_native", tool_sqlite_native_pkg);
+        const exec_capture_tests = b.addTest(.{
+            .name = "home-tool-exec-capture-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_exec_capture.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        const exec_capture_step = b.step("home-tool-exec-capture-test", "Verify genuine duplex pipe transport, limits and ownership");
+        exec_capture_step.dependOn(&b.addRunArtifact(exec_capture_tests).step);
+        home_tool_smoke_step.dependOn(exec_capture_step);
+        const exec_capture_fixture = b.addSystemCommand(&.{"python3"});
+        exec_capture_fixture.addFileArg(b.path("packages/runtime/test/tool_exec_fixture.py"));
+        exec_capture_fixture.addArtifactArg(home_tool_exe);
+        exec_capture_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_exec_capture.mjs"));
+        exec_capture_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_exec_mirror.mjs"));
+        exec_capture_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_exec_unsupported.mjs"));
+        exec_capture_fixture.addFileArg(b.path("packages/runtime/test/tool_exec_child.py"));
+        home_tool_smoke_step.dependOn(&exec_capture_fixture.step);
+        b.step("home-tool-exec-capture-smoke", "Verify genuine binary child input/output and explicit unsupported modes").dependOn(&exec_capture_fixture.step);
+
         const sqlite_test_step = b.step("home-tool-sqlite-test", "Run real native SQLite ownership and data tests");
         sqlite_test_step.dependOn(&b.addRunArtifact(tool_sqlite_tests).step);
         home_tool_smoke_step.dependOn(sqlite_test_step);
