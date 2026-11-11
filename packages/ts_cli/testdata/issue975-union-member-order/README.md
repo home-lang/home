@@ -41,7 +41,7 @@ stderr are compared exactly against native 7, the exit status against
 TypeScript 5.7.3 (native 7 exits 1 where 5.7.3 and Home exit 2, #982), and the
 step fails unless both TypeScript versions report the same diagnostics at the
 same positions — so only the spelling of a union can differ, and here it does
-on 41 of the 61 output lines.
+on 47 of the 67 output lines.
 
 - `order.ts` pins literal, primitive, array and named-type order at a
   variable, a parameter, a reassignment, an array element and an object
@@ -55,6 +55,9 @@ on 41 of the 61 output lines.
   generics by name, a tuple beside named and unnamed object types, a nullable
   annotation on the source side, a `unique symbol`, and the keys of `number`
   and `bigint` at a variable, an array element and a parameter (#1002).
+- `template.ts` pins a template literal type over a union of literals, printed
+  as the union of its strings by value, alone, with text around it, as a
+  cross product, through an alias and with mixed literal kinds (#1011).
 
 Not covered, and why — none of these is an order, and on each one TypeScript
 5.7.3 and native 7 agree with each other against Home:
