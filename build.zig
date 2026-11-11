@@ -1518,6 +1518,12 @@ pub fn build(b: *std.Build) void {
         run_home_tool_buffer_esm.addArgs(&.{ "run", "node_buffer_esm.mjs" });
         run_home_tool_buffer_esm.expectStdOutEqual("OK home-tool ESM Buffer identity\n");
         home_tool_smoke_step.dependOn(&run_home_tool_buffer_esm.step);
+        const buffer_unsafe_fixture = b.addSystemCommand(&.{"python3"});
+        buffer_unsafe_fixture.addFileArg(b.path("packages/runtime/test/tool_buffer_unsafe_fixture.py"));
+        buffer_unsafe_fixture.addArtifactArg(home_tool_exe);
+        buffer_unsafe_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_unsafe.mjs"));
+        home_tool_smoke_step.dependOn(&buffer_unsafe_fixture.step);
+        b.step("home-tool-buffer-unsafe-smoke", "Verify genuine managed Buffer allocations and physical binary bytes").dependOn(&buffer_unsafe_fixture.step);
         const run_home_tool_crypto = b.addRunArtifact(home_tool_exe);
         run_home_tool_crypto.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_crypto.addArgs(&.{ "run", "node_crypto_entry.cjs" });

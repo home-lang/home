@@ -128,6 +128,21 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
     if (value !== undefined) buffer.fill(value, 0, buffer.length, name);
     return buffer;
   };
+  // These methods promise writable bytes, not observable prior heap contents.
+  // Home's managed TypedArray allocator supplies fresh zeroed, unpooled storage
+  // for both variants; do not expose native uninitialized memory or pretend a
+  // slab pool exists. Keep allocation independent of mutable public alloc().
+  function unsafeAllocation(size, alignment) {
+    const length = allocationSize(size);
+    if (alignment !== undefined) unsupported('Home Buffer aligned native allocations are not implemented');
+    return wrap(new Bytes(length));
+  }
+  Buffer.allocUnsafe = function(size, alignment) {
+    return unsafeAllocation(size, alignment);
+  };
+  Buffer.allocUnsafeSlow = function(size, alignment) {
+    return unsafeAllocation(size, alignment);
+  };
   Buffer.isBuffer = function(value) {
     return value instanceof Buffer;
   };
