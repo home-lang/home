@@ -13,7 +13,7 @@ rng = random.Random(0x4E4554)
 validators = []
 for version, Address in [(4, ipaddress.IPv4Address), (6, ipaddress.IPv6Address)]:
     for _ in range(128):
-        address = Address(rng.getrandbits(Address.max_prefixlen))
+        address = Address(rng.getrandbits(Address(0).max_prefixlen))
         for spelling in {str(address), address.exploded.upper()}:
             validators.append([spelling, version])
         validators.append([str(address) + '/0', 0])
@@ -23,7 +23,8 @@ for version, Address in [(4, ipaddress.IPv4Address), (6, ipaddress.IPv6Address)]
 blocks = []
 mapped = int(ipaddress.IPv6Address('::ffff:0:0'))
 for version, Address, Network in [(4, ipaddress.IPv4Address, ipaddress.IPv4Network), (6, ipaddress.IPv6Address, ipaddress.IPv6Network)]:
-    width = Address.max_prefixlen
+    # Before Python 3.14 this is a property on the class, not an integer.
+    width = Address(0).max_prefixlen
     for bits in range(width + 1):
         host = Address(rng.getrandbits(width))
         network = Network((host, bits), strict=False)
