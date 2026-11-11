@@ -1282,6 +1282,13 @@
   const netApi = netFactory();
   builtins.net = netApi;
   builtins['node:net'] = netApi;
+  const dnsFactory = globalThis.__home_tool_dns_factory;
+  const nativeDnsLookup = globalThis.__home_tool_dns_lookup;
+  delete globalThis.__home_tool_dns_factory;
+  delete globalThis.__home_tool_dns_lookup;
+  const dnsPromises = dnsFactory(nativeDnsLookup, timers.setTimeout, netApi.isIP);
+  builtins['dns/promises'] = dnsPromises;
+  builtins['node:dns/promises'] = dnsPromises;
   const utilPromise = Promise;
   const utilApply = Reflect.apply;
   const utilPush = Array.prototype.push;

@@ -1045,6 +1045,22 @@ pub fn build(b: *std.Build) void {
         sqlite_unsupported.expectStdOutEqual("HOME SQLITE UNSUPPORTED 12 REFUSALS OK\n");
         home_tool_smoke_step.dependOn(&sqlite_unsupported.step);
 
+        const tool_dns_tests = b.addTest(.{
+            .name = "home-tool-system-lookup-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_dns_lookup.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_dns_tests).step);
+        const tool_dns_fixture = b.addSystemCommand(&.{"python3"});
+        tool_dns_fixture.addFileArg(b.path("packages/runtime/test/tool_dns_fixture.py"));
+        tool_dns_fixture.addArtifactArg(home_tool_exe);
+        tool_dns_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
+        home_tool_smoke_step.dependOn(&tool_dns_fixture.step);
+        b.step("home-tool-dns-lookup-smoke", "Verify actual system lookup, physical host answers and promise liveness").dependOn(&tool_dns_fixture.step);
         const tool_cpu_tests = b.addTest(.{
             .name = "home-tool-cpu-availability-tests",
             .root_module = b.createModule(.{
