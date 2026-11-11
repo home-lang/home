@@ -1693,6 +1693,12 @@ pub fn build(b: *std.Build) void {
         callback_reads_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
         home_tool_smoke_step.dependOn(&callback_reads_fixture.step);
         b.step("home-tool-fs-callback-reads-smoke", "Verify native callback reads, physical bytes and fatal policy").dependOn(&callback_reads_fixture.step);
+        const net_fixture = b.addSystemCommand(&.{"python3"});
+        net_fixture.addFileArg(b.path("packages/runtime/test/tool_net_fixture.py"));
+        net_fixture.addArtifactArg(home_tool_exe);
+        net_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
+        home_tool_smoke_step.dependOn(&net_fixture.step);
+        b.step("home-tool-net-addresses-smoke", "Verify numeric IP and BlockList operations against independent address oracles").dependOn(&net_fixture.step);
         const run_home_tool_assertion_failure = b.addRunArtifact(home_tool_exe);
         run_home_tool_assertion_failure.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_assertion_failure.addArgs(&.{ "run", "assert_failure.cjs" });

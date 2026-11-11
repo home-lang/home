@@ -1277,6 +1277,11 @@
   const v8Api = v8Factory(bufferApi.Buffer, nativeIsProxy, nativeIsPromise);
   builtins.v8 = v8Api;
   builtins['node:v8'] = v8Api;
+  const netFactory = globalThis.__home_tool_net_factory;
+  delete globalThis.__home_tool_net_factory;
+  const netApi = netFactory();
+  builtins.net = netApi;
+  builtins['node:net'] = netApi;
   const utilPromise = Promise;
   const utilApply = Reflect.apply;
   const utilPush = Array.prototype.push;
