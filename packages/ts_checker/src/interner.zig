@@ -449,7 +449,10 @@ pub const Interner = struct {
     }
 
     pub fn internNumberLiteral(self: *Interner, value: f64) !TypeId {
-        const bits: u64 = @bitCast(value);
+        // TypeScript keeps number literal types in a Map, whose
+        // SameValueZero keys make `-0` the `0` literal.
+        const canonical: f64 = if (value == 0) 0 else value;
+        const bits: u64 = @bitCast(canonical);
         const key: TypeKey = .{ .number_lit = bits };
         return try self.internKey(key, .{ .is_number = true, .is_literal = true });
     }

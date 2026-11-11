@@ -16087,7 +16087,9 @@ pub const Checker = struct {
     /// whitespace) is `(`. Used to distinguish parenthesized computed
     /// comma keys such as `[(super(), "prop")]` from unparenthesized
     /// comma expressions that should report TS1171.
-    fn computedKeyExprIsParenthesized(self: *Checker, expr: NodeId) bool {
+    /// Whether the source has `(` just before `expr`. The HIR drops
+    /// parentheses, so `-(5)` and `-5` are otherwise the same tree.
+    fn nodeIsParenthesizedInSource(self: *Checker, expr: NodeId) bool {
         const src = self.source orelse return false;
         const span = self.hir.spanOf(expr);
         if (span.start == 0 or span.start > src.len) return false;
@@ -19838,6 +19840,23 @@ pub const Checker = struct {
         return self.interner.internBigIntLiteral(value) catch return error.OutOfMemory;
     }
 
+    /// `-5` and `+5` as the literals `-5` and `5`, as TypeScript's
+    /// `checkPrefixUnaryExpression` types a sign applied directly to a
+    /// numeric literal. `-(5)` and `- -5` stay `number`: the operand must be
+    /// the literal itself. The operand's own value is read without
+    /// `literalNumberWithSourceSign`, which would apply the `-` a second
+    /// time.
+    fn numericLiteralExpressionType(self: *Checker, node: NodeId) CheckError!?TypeId {
+        if (self.hir.kindOf(node) != .unary_op) return null;
+        const u = hir_mod.unaryOf(self.hir, node);
+        if (u.op != .neg and u.op != .plus) return null;
+        if (self.hir.kindOf(u.operand) != .literal_number) return null;
+        if (self.nodeIsParenthesizedInSource(u.operand)) return null;
+        const value = hir_mod.literalNumberOf(self.hir, u.operand);
+        const signed = if (u.op == .neg) -value else value;
+        return self.interner.internNumberLiteral(signed) catch return error.OutOfMemory;
+    }
+
     fn expressionNarrowLiteralType(self: *Checker, node: NodeId) CheckError!?TypeId {
         if (try self.bigIntLiteralExpressionType(node)) |bigint_t| return bigint_t;
         return switch (self.hir.kindOf(node)) {
@@ -19853,12 +19872,7 @@ pub const Checker = struct {
             // numeric literal type — tsc renders `Type '-1' is not
             // assignable …` and matches it against enum member values.
             // Mirrors `validEnumAssignments.ts(26,1)`.
-            .unary_op => blk: {
-                const u = hir_mod.unaryOf(self.hir, node);
-                if (u.op != .neg or self.hir.kindOf(u.operand) != .literal_number) break :blk null;
-                const value = hir_mod.literalNumberOf(self.hir, u.operand);
-                break :blk self.interner.internNumberLiteral(-value) catch return error.OutOfMemory;
-            },
+            .unary_op => try self.numericLiteralExpressionType(node),
             .literal_bool => self.interner.internBooleanLiteral(hir_mod.literalBoolOf(self.hir, node)),
             .literal_undefined => types.Primitive.undefined_t,
             .template_literal => blk: {
@@ -100553,8 +100567,9 @@ pub const Checker = struct {
     fn constInitializerType(self: *Checker, init_node: NodeId, fallback: TypeId) CheckError!TypeId {
         return switch (self.hir.kindOf(init_node)) {
             .literal_string, .literal_number, .literal_bool, .literal_bigint => self.literalizeForAsConst(init_node, fallback) catch return error.OutOfMemory,
-            // `const n = -5n` is `-5n`.
-            .unary_op => (try self.bigIntLiteralExpressionType(init_node)) orelse fallback,
+            // `const n = -5n` is `-5n`, and `const n = -5` is `-5`.
+            .unary_op => (try self.bigIntLiteralExpressionType(init_node)) orelse
+                (try self.numericLiteralExpressionType(init_node)) orelse fallback,
             .as_expr, .type_assertion => blk: {
                 const a = hir_mod.asExpressionOf(self.hir, init_node);
                 if (a.type_node != hir_mod.none_node_id and self.isAsConstMarker(a.type_node)) {
@@ -125357,7 +125372,7 @@ pub const Checker = struct {
                         // `[(super(), "prop")]` keys produce zero TS1171.
                         if (self.hir.kindOf(op.key) == .binary_op) {
                             const b = hir_mod.binopOf(self.hir, op.key);
-                            if (b.op == .comma and !self.computedKeyExprIsParenthesized(op.key)) {
+                            if (b.op == .comma and !self.nodeIsParenthesizedInSource(op.key)) {
                                 try self.report(op.key, TsCodes.comma_in_computed_property_name, "A comma expression is not allowed in a computed property name.");
                             }
                         }
@@ -194947,12 +194962,7 @@ pub const Checker = struct {
             // `-1` as a unary negation renders as the negative numeric
             // literal — `Type '-1' is not assignable to type 'E'.`,
             // mirroring `validEnumAssignments.ts(26,1)`.
-            .unary_op => blk: {
-                const u = hir_mod.unaryOf(self.hir, value_node);
-                if (u.op != .neg or self.hir.kindOf(u.operand) != .literal_number) break :blk fallback;
-                const value = hir_mod.literalNumberOf(self.hir, u.operand);
-                break :blk self.interner.internNumberLiteral(-value) catch return error.OutOfMemory;
-            },
+            .unary_op => (try self.numericLiteralExpressionType(value_node)) orelse fallback,
             .literal_bool => if (hir_mod.literalBoolOf(self.hir, value_node)) types.Primitive.true_lit else types.Primitive.false_lit,
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, value_node);
@@ -204579,9 +204589,10 @@ pub const Checker = struct {
                 const v = hir_mod.literalBoolOf(self.hir, expr);
                 return if (v) types.Primitive.true_lit else types.Primitive.false_lit;
             },
-            // `1n` and `-1n`. A negative numeric literal is left as it was.
+            // `1n`, `-1n`, and a signed numeric literal such as `-1` or `+1`.
             .literal_bigint, .unary_op => {
-                return (try self.bigIntLiteralExpressionType(expr)) orelse fallback;
+                return (try self.bigIntLiteralExpressionType(expr)) orelse
+                    (try self.numericLiteralExpressionType(expr)) orelse fallback;
             },
             .template_literal => return try self.templateLiteralConstType(expr, fallback),
             .conditional => {
@@ -303165,4 +303176,40 @@ test "checker: spreading every literal union keeps equal template types equal (#
     // Only the last line fails, and its union prints by value.
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"z\"' is not assignable to type '\"ac\" | \"ad\" | \"bc\" | \"bd\"'."));
+}
+
+test "checker: a signed numeric literal keeps its literal type in a const (#1012)" {
+    const s = try newSetup(
+        \\const n = -5;
+        \\const n2: 5 = n;
+        \\const p = +5;
+        \\const p2: 6 = p;
+        \\const o = { k: -1 } as const;
+        \\const o2: { k: 1 } = o;
+        \\const arr = [-1, +2] as const;
+        \\const arr2: readonly [1, 2] = arr;
+        \\const asc = -7 as const;
+        \\const asc2: 1 = asc;
+        \\const z = -0;
+        \\const z2: 0 = z;
+        \\const zt: 1 = z;
+        \\const par = -(3);
+        \\const par2: 1 = par;
+        \\const dbl = - -4;
+        \\const dbl2: 1 = dbl;
+        \\let l = -6;
+        \\const l2: 1 = l;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '-5' is not assignable to type '5'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '5' is not assignable to type '6'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ readonly k: -1; }' is not assignable to type '{ k: 1; }'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'readonly [-1, 2]' is not assignable to type 'readonly [1, 2]'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '-7' is not assignable to type '1'."));
+    // `-0` is the `0` literal: assignable to `0`, and printed as `0`.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '0' is not assignable to type '1'."));
+    // A parenthesized or doubly signed operand, and a `let`, stay `number`.
+    try T.expectEqual(@as(usize, 3), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '1'."));
+    try T.expectEqual(@as(usize, 9), checkerCountCode(s, TsCodes.type_not_assignable));
 }
