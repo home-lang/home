@@ -16510,8 +16510,13 @@ pub const Parser = struct {
             // We need to scan past the type annotation to find a `=>`.
             // Simple approach: look for the next top-level `=>` before
             // a statement-terminator-class token.
+            // In a conditional arm this colon may instead terminate an
+            // ordinary parenthesized expression. Without an actual arrow,
+            // recovery must not borrow a later statement's block as its body.
+            const recover_missing_arrow_block = !self.disallow_arrow_return_type and
+                self.scanForMissingArrowBlockAfterColon(after_paren_idx + 1);
             if (!self.scanForArrowAfterColon(after_paren_idx + 1) and
-                !self.scanForMissingArrowBlockAfterColon(after_paren_idx + 1) and
+                !recover_missing_arrow_block and
                 !recover_missing_arrow_before_semicolon)
             {
                 return null;
@@ -37765,5 +37770,30 @@ test "parser: compound assignments in typed arrow defaults remain valid" {
         defer destroyTestSetup(s);
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    }
+}
+
+test "parser: conditional arms do not borrow a later statement block" {
+    const cases = .{
+        .{ "object.key", hir_mod.NodeKind.member_access },
+        .{ "compute()", hir_mod.NodeKind.call_expr },
+        .{ "Array.isArray(value) ? value : [value]", hir_mod.NodeKind.conditional },
+        .{ "object.key + 1", hir_mod.NodeKind.binary_op },
+        .{ "list[0]", hir_mod.NodeKind.element_access },
+        .{ "[...list]", hir_mod.NodeKind.array_literal },
+    };
+    inline for (cases) |case| {
+        const source = try std.fmt.allocPrint(T.allocator, "const selected = flag ? ({s}) : undefined\nif (selected) {{ use(selected); }}", .{case[0]});
+        defer T.allocator.free(source);
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const statements = hir_mod.blockStmts(&s.hir, root);
+        try T.expectEqual(@as(usize, 2), statements.len);
+        const initializer = hir_mod.varDeclOf(&s.hir, statements[0]).init;
+        try T.expectEqual(hir_mod.NodeKind.conditional, s.hir.kindOf(initializer));
+        try T.expectEqual(case[1], s.hir.kindOf(hir_mod.conditionalOf(&s.hir, initializer).then_branch));
+        try T.expectEqual(hir_mod.NodeKind.if_stmt, s.hir.kindOf(statements[1]));
     }
 }

@@ -1727,6 +1727,12 @@ pub fn build(b: *std.Build) void {
         arrow_heads_fixture.expectStdOutEqual("ARROW OBJECT HEAD 20 CHECKS OK\nTYPED ARROW OBJECT HEAD 4 CHECKS OK\n");
         home_tool_smoke_step.dependOn(&arrow_heads_fixture.step);
         b.step("home-tool-arrow-head-smoke", "Execute object-leading arrow bodies after JS and TypeScript emission").dependOn(&arrow_heads_fixture.step);
+        const conditional_arms_fixture = b.addRunArtifact(home_tool_exe);
+        conditional_arms_fixture.addArg("run");
+        conditional_arms_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/conditional_arms.mts"));
+        conditional_arms_fixture.expectStdOutEqual("CONDITIONAL ARM 18 CHECKS OK\nTYPED CONDITIONAL ARROW 4 CHECKS OK\n");
+        home_tool_smoke_step.dependOn(&conditional_arms_fixture.step);
+        b.step("home-tool-conditional-arms-smoke", "Execute ternary expressions and typed arrows without borrowing later blocks").dependOn(&conditional_arms_fixture.step);
         const net_fixture = b.addSystemCommand(&.{"python3"});
         net_fixture.addFileArg(b.path("packages/runtime/test/tool_net_fixture.py"));
         net_fixture.addArtifactArg(home_tool_exe);
