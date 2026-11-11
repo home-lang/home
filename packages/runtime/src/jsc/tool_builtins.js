@@ -1054,7 +1054,9 @@
   };
   const execFactory = globalThis.__home_tool_exec_factory;
   delete globalThis.__home_tool_exec_factory;
-  childProcess.execFileSync = execFactory(globalThis.__home_tool_child, bufferApi.Buffer, childProcess.execFileSync);
+  const execApi = execFactory(globalThis.__home_tool_child, bufferApi.Buffer, childProcess.execFileSync);
+  childProcess.execFileSync = execApi.execFileSync;
+  childProcess.execSync = execApi.execSync;
   const accountHomedir = globalThis.__home_tool_account_homedir;
   delete globalThis.__home_tool_account_homedir;
   const nativeParallelism = globalThis.__home_tool_available_parallelism;

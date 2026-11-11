@@ -19,7 +19,7 @@ globalThis.__home_tool_exec_factory = function(native, Buffer, inherited) {
     return value;
   }
   function bytes(...args) { return apply(from, Buffer, args); }
-  return function execFileSync(file, args, options) {
+  function execFileSync(file, args, options) {
     if (args === undefined || args === null) args = [];
     else if (!Array.isArray(args)) { options = args; args = []; }
     if (options === undefined || options === null) options = {};
@@ -80,5 +80,22 @@ globalThis.__home_tool_exec_factory = function(native, Buffer, inherited) {
     }
     if (stdout === null || stderr === null) throw new Error('Native captured output was not returned');
     return decode(stdout);
-  };
+  }
+  function execSync(command, options) {
+    command = string(command, 'Command');
+    if (options == null) options = {};
+    if (typeof options !== 'object' || Array.isArray(options)) invalid('Options must be an object');
+    const forwarded = {};
+    for (const key of Object.keys(options)) {
+      if (key !== 'shell') forwarded[key] = options[key];
+    }
+    const selected = options.shell;
+    if (selected != null && typeof selected !== 'string' && typeof selected !== 'boolean') unsupported('Home execSync shell must be a POSIX executable path or boolean');
+    // Node execSync always invokes a shell, including when shell is false.
+    // Pass the command intact so quoting, redirections and expansion belong
+    // to the real shell; execFileSync remains the literal argv API.
+    const shell = typeof selected === 'string' ? selected : '/bin/sh';
+    return execFileSync(shell, ['-c', command], forwarded);
+  }
+  return { execFileSync, execSync };
 };

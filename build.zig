@@ -1023,6 +1023,12 @@ pub fn build(b: *std.Build) void {
         exec_capture_fixture.addFileArg(b.path("packages/runtime/test/tool_exec_child.py"));
         home_tool_smoke_step.dependOn(&exec_capture_fixture.step);
         b.step("home-tool-exec-capture-smoke", "Verify genuine binary child input/output and explicit unsupported modes").dependOn(&exec_capture_fixture.step);
+        const exec_shell_fixture = b.addSystemCommand(&.{"python3"});
+        exec_shell_fixture.addFileArg(b.path("packages/runtime/test/tool_exec_shell_fixture.py"));
+        exec_shell_fixture.addArtifactArg(home_tool_exe);
+        exec_shell_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_exec_shell.mjs"));
+        home_tool_smoke_step.dependOn(&exec_shell_fixture.step);
+        b.step("home-tool-exec-shell-smoke", "Verify real shell command execution, IO and inherited descriptors").dependOn(&exec_shell_fixture.step);
 
         const sqlite_test_step = b.step("home-tool-sqlite-test", "Run real native SQLite ownership and data tests");
         sqlite_test_step.dependOn(&b.addRunArtifact(tool_sqlite_tests).step);
