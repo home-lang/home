@@ -1,0 +1,835 @@
+{
+  "node": "v26.10.0",
+  "cases": [
+    {
+      "text": "",
+      "base64": "",
+      "base64url": "",
+      "size": 0,
+      "urlSize": 0
+    },
+    {
+      "text": "Zg==",
+      "base64": "66",
+      "base64url": "66",
+      "size": 1,
+      "urlSize": 1
+    },
+    {
+      "text": "Zm8=",
+      "base64": "666f",
+      "base64url": "666f",
+      "size": 2,
+      "urlSize": 2
+    },
+    {
+      "text": "Zm9v",
+      "base64": "666f6f",
+      "base64url": "666f6f",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "_w",
+      "base64": "ff",
+      "base64url": "ff",
+      "size": 1,
+      "urlSize": 1
+    },
+    {
+      "text": "/w",
+      "base64": "ff",
+      "base64url": "ff",
+      "size": 1,
+      "urlSize": 1
+    },
+    {
+      "text": "-___",
+      "base64": "fbffff",
+      "base64url": "fbffff",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "+///",
+      "base64": "fbffff",
+      "base64url": "fbffff",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y Q\n==",
+      "base64": "61",
+      "base64url": "61",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y!Q==",
+      "base64": "61",
+      "base64url": "61",
+      "size": 2,
+      "urlSize": 2
+    },
+    {
+      "text": "YQ=ignored",
+      "base64": "61",
+      "base64url": "61",
+      "size": 7,
+      "urlSize": 7
+    },
+    {
+      "text": "Y",
+      "base64": "",
+      "base64url": "",
+      "size": 0,
+      "urlSize": 0
+    },
+    {
+      "text": "YQ",
+      "base64": "61",
+      "base64url": "61",
+      "size": 1,
+      "urlSize": 1
+    },
+    {
+      "text": "YQ===",
+      "base64": "61",
+      "base64url": "61",
+      "size": 2,
+      "urlSize": 2
+    },
+    {
+      "text": "====",
+      "base64": "",
+      "base64url": "",
+      "size": 1,
+      "urlSize": 1
+    },
+    {
+      "text": "YW\ud83d\ude03Jj",
+      "base64": "61",
+      "base64url": "61",
+      "size": 4,
+      "urlSize": 4
+    },
+    {
+      "text": "\u0000YWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\u0000WJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\u0000Jj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\u0000j",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\u0001YWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\u0001WJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\u0001Jj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\u0001j",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\tYWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\tWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\tJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\tj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\nYWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\nWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\nJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\nj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": " YWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y WJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW Jj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ j",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "=YWJj",
+      "base64": "",
+      "base64url": "",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y=WJj",
+      "base64": "",
+      "base64url": "",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW=Jj",
+      "base64": "61",
+      "base64url": "61",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ=j",
+      "base64": "6162",
+      "base64url": "6162",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "AYWJj",
+      "base64": "018589",
+      "base64url": "018589",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YAWJj",
+      "base64": "600589",
+      "base64url": "600589",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWAJj",
+      "base64": "616009",
+      "base64url": "616009",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJAj",
+      "base64": "616240",
+      "base64url": "616240",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\u007fYWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\u007fWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\u007fJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\u007fj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\u0080YWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\u0080WJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\u0080Jj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\u0080j",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\u00ffYWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\u00ffWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\u00ffJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\u00ffj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\u0100YWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\u0100WJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\u0100Jj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\u0100j",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\u0141YWJj",
+      "base64": "018589",
+      "base64url": "018589",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\u0141WJj",
+      "base64": "600589",
+      "base64url": "600589",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\u0141Jj",
+      "base64": "616009",
+      "base64url": "616009",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\u0141j",
+      "base64": "616240",
+      "base64url": "616240",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\u013dYWJj",
+      "base64": "",
+      "base64url": "",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\u013dWJj",
+      "base64": "",
+      "base64url": "",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\u013dJj",
+      "base64": "61",
+      "base64url": "61",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\u013dj",
+      "base64": "6162",
+      "base64url": "6162",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\u03ffYWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\u03ffWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\u03ffJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\u03ffj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\ud800YWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\ud800WJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\ud800Jj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\ud800j",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\udc00YWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\udc00WJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\udc00Jj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\udc00j",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "\uffffYWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "Y\uffffWJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YW\uffffJj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    },
+    {
+      "text": "YWJ\uffffj",
+      "base64": "616263",
+      "base64url": "616263",
+      "size": 3,
+      "urlSize": 3
+    }
+  ],
+  "writes": [
+    {
+      "args": [
+        "foobar"
+      ],
+      "written": 6,
+      "hex": "666f6f626172cccc"
+    },
+    {
+      "args": [
+        "foobar",
+        2
+      ],
+      "written": 6,
+      "hex": "cccc666f6f626172"
+    },
+    {
+      "args": [
+        "foobar",
+        2,
+        3
+      ],
+      "written": 3,
+      "hex": "cccc666f6fcccccc"
+    },
+    {
+      "args": [
+        "Zg==",
+        "base64"
+      ],
+      "written": 1,
+      "hex": "66cccccccccccccc"
+    },
+    {
+      "args": [
+        "Zg==",
+        1,
+        "base64"
+      ],
+      "written": 1,
+      "hex": "cc66cccccccccccc"
+    },
+    {
+      "args": [
+        "Zm9v",
+        1,
+        2,
+        "base64"
+      ],
+      "written": 2,
+      "hex": "cc666fcccccccccc"
+    },
+    {
+      "args": [
+        "aabb",
+        "hex"
+      ],
+      "written": 2,
+      "hex": "aabbcccccccccccc"
+    },
+    {
+      "args": [
+        "\u96ea",
+        0,
+        1
+      ],
+      "written": 0,
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "\u96ea",
+        0,
+        2
+      ],
+      "written": 0,
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "\u96ea",
+        0,
+        3
+      ],
+      "written": 3,
+      "hex": "e99baacccccccccc"
+    },
+    {
+      "args": [
+        "\ud83d\ude42",
+        0,
+        3
+      ],
+      "written": 0,
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "\ud83d\ude42",
+        0,
+        4
+      ],
+      "written": 4,
+      "hex": "f09f9982cccccccc"
+    },
+    {
+      "args": [
+        "f",
+        8
+      ],
+      "written": 0,
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "f",
+        9
+      ],
+      "error": "ERR_OUT_OF_RANGE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "",
+        9
+      ],
+      "error": "ERR_OUT_OF_RANGE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "f",
+        -1
+      ],
+      "error": "ERR_OUT_OF_RANGE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "f",
+        1.5
+      ],
+      "error": "ERR_OUT_OF_RANGE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "f",
+        0,
+        -1
+      ],
+      "error": "ERR_OUT_OF_RANGE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "f",
+        0,
+        2.5
+      ],
+      "error": "ERR_OUT_OF_RANGE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "f",
+        null
+      ],
+      "error": "ERR_INVALID_ARG_TYPE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "f",
+        true
+      ],
+      "error": "ERR_INVALID_ARG_TYPE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "f",
+        {}
+      ],
+      "error": "ERR_INVALID_ARG_TYPE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        123
+      ],
+      "error": "ERR_INVALID_ARG_TYPE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "ab",
+        "hex",
+        1
+      ],
+      "error": "ERR_INVALID_ARG_TYPE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "f",
+        0,
+        99
+      ],
+      "error": "ERR_OUT_OF_RANGE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "f",
+        0,
+        null
+      ],
+      "error": "ERR_INVALID_ARG_TYPE",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "a",
+        0,
+        0,
+        "BOGUS"
+      ],
+      "error": "ERR_UNKNOWN_ENCODING",
+      "hex": "cccccccccccccccc"
+    },
+    {
+      "args": [
+        "",
+        0,
+        0,
+        "BOGUS"
+      ],
+      "error": "ERR_UNKNOWN_ENCODING",
+      "hex": "cccccccccccccccc"
+    }
+  ]
+}

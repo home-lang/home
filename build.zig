@@ -1681,6 +1681,12 @@ pub fn build(b: *std.Build) void {
         v8_fixture.addArg(if (std.mem.eql(u8, tool_js_engine, "zig-js")) "zig-js" else "jsc");
         home_tool_smoke_step.dependOn(&v8_fixture.step);
         b.step("home-tool-v8-smoke", "Verify real binary serialization and explicit provider limits").dependOn(&v8_fixture.step);
+        const base64_fixture = b.addSystemCommand(&.{"python3"});
+        base64_fixture.addFileArg(b.path("packages/runtime/test/tool_buffer_base64_fixture.py"));
+        base64_fixture.addArtifactArg(home_tool_exe);
+        base64_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_base64.mjs"));
+        home_tool_smoke_step.dependOn(&base64_fixture.step);
+        b.step("home-tool-buffer-base64-smoke", "Verify actual base64 bytes and Node decoding oracles").dependOn(&base64_fixture.step);
         const run_home_tool_assertion_failure = b.addRunArtifact(home_tool_exe);
         run_home_tool_assertion_failure.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_assertion_failure.addArgs(&.{ "run", "assert_failure.cjs" });

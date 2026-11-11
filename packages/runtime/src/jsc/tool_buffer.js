@@ -70,7 +70,8 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
     const name = value.toLowerCase();
     if (name === 'utf8' || name === 'utf-8') return 'utf8';
     if (name === 'hex') return 'hex';
-    if (['ascii', 'latin1', 'binary', 'base64', 'base64url', 'ucs2', 'ucs-2', 'utf16le', 'utf-16le'].includes(name)) unsupported(`Home Buffer encoding ${name} is not implemented`);
+    if (name === 'base64' || name === 'base64url') return name;
+    if (['ascii', 'latin1', 'binary', 'ucs2', 'ucs-2', 'utf16le', 'utf-16le'].includes(name)) unsupported(`Home Buffer encoding ${name} is not implemented`);
     fail('ERR_UNKNOWN_ENCODING', `Unknown Buffer encoding: ${value}`, TypeError);
   }
   function hexDigit(code) {
@@ -82,7 +83,22 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
   }
   function encode(text, name) {
     const bytes = [];
-    if (name === 'hex') {
+    if (name === 'base64' || name === 'base64url') {
+      let pending = 0, bits = 0;
+      for (let index = 0; index < text.length; ++index) {
+        // Node's Buffer decoder consumes the low byte of UTF-16 code units,
+        // accepts either alphabet, ignores non-digits, and stops at padding.
+        const c = text.charCodeAt(index) & 255;
+        if (c === 61) break;
+        const digit = c >= 65 && c <= 90 ? c - 65 : c >= 97 && c <= 122 ? c - 71
+          : c >= 48 && c <= 57 ? c + 4 : c === 43 || c === 45 ? 62 : c === 47 || c === 95 ? 63 : -1;
+        if (digit < 0) continue;
+        pending = (pending << 6) | digit;
+        bits += 6;
+        if (bits >= 8) { bits -= 8; bytes.push((pending >>> bits) & 255); }
+      }
+    }
+    else if (name === 'hex') {
       for (let index = 0; index + 1 < text.length; index += 2) {
         const high = hexDigit(text.charCodeAt(index));
         const low = hexDigit(text.charCodeAt(index + 1));
@@ -109,6 +125,18 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
       }
     }
     return wrap(new Bytes(bytes));
+  }
+  function base64String(buffer, start, end, url) {
+    const alphabet = url ? 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_' : 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const parts = [];
+    for (let index = start; index < end; index += 3) {
+      const a = buffer[index], second = index + 1 < end, third = index + 2 < end;
+      const b = second ? buffer[index + 1] : 0, c = third ? buffer[index + 2] : 0;
+      parts.push(alphabet[a >>> 2] + alphabet[((a & 3) << 4) | (b >>> 4)]
+        + (second ? alphabet[((b & 15) << 2) | (c >>> 6)] : url ? '' : '=')
+        + (third ? alphabet[c & 63] : url ? '' : '='));
+    }
+    return parts.join('');
   }
   function allocationSize(size) {
     if (typeof size !== 'number') fail('ERR_INVALID_ARG_TYPE', 'Buffer size must be a number', TypeError);
@@ -166,6 +194,14 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
       if (error.code !== 'ERR_UNKNOWN_ENCODING') throw error;
       selected = 'utf8';
     }
+    if (selected === 'base64' || selected === 'base64url') {
+      // byteLength is an estimate for valid input, not the permissive decoder's
+      // output length. Whitespace/invalid digits still contribute to the size.
+      let size = value.length;
+      if (size && value.charCodeAt(size - 1) === 61) --size;
+      if (size && value.charCodeAt(size - 1) === 61) --size;
+      return Math.floor(size * 3 / 4);
+    }
     return encode(value, selected).length;
   };
   Buffer.concat = function(list, length) {
@@ -196,11 +232,39 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
     end = end === undefined ? this.length : Math.max(0, Math.min(this.length, Math.trunc(Number(end)) || 0));
     if (end <= start) return '';
     const selected = encoding(name, false);
+    if (selected === 'base64' || selected === 'base64url') return base64String(this, start, end, selected === 'base64url');
     let hex = '';
     for (let index = start; index < end; index++) hex += digits[this[index] >> 4] + digits[this[index] & 15];
     return selected === 'hex' ? hex : decodeUtf8Hex(hex);
   };
   Buffer.prototype.toLocaleString = Buffer.prototype.toString;
+  Buffer.prototype.write = function(string, offset, length, name) {
+    if (typeof string !== 'string') fail('ERR_INVALID_ARG_TYPE', 'Buffer.write requires a string', TypeError);
+    if (!byteView(this)) fail('ERR_INVALID_ARG_TYPE', 'Buffer.write requires byte storage', TypeError);
+    const size = viewLength.call(this);
+    if (offset === undefined) { offset = 0; length = size; name = 'utf8'; }
+    else if (typeof offset === 'string') {
+      if (length !== undefined) fail('ERR_INVALID_ARG_TYPE', 'Buffer.write encoding must be the last argument', TypeError);
+      name = offset; offset = 0; length = size;
+    }
+    else {
+      offset = rangeIndex(offset);
+      if (offset > size) fail('ERR_OUT_OF_RANGE', 'Buffer write offset is outside the buffer', RangeError);
+      if (typeof length === 'string') { name = length; length = size - offset; }
+      else if (length === undefined) length = size - offset;
+      else {
+        length = rangeIndex(length);
+        if (length > size) fail('ERR_OUT_OF_RANGE', 'Buffer write length is outside the buffer', RangeError);
+        length = Math.min(length, size - offset);
+      }
+    }
+    const selected = encoding(name || 'utf8', false), bytes = encode(string, selected);
+    let count = Math.min(length, bytes.length);
+    // Node never writes a partial UTF-8 scalar when the destination is short.
+    if (selected === 'utf8' && count < bytes.length) while (count > 0 && (bytes[count] & 0xc0) === 0x80) --count;
+    setBytes.call(this, subarray.call(bytes, 0, count), offset);
+    return count;
+  };
   // Fixed-width reads use the visible byte window, including subarrays. Keep
   // offset validation before the short-buffer check, as Node does for invalid
   // types/fractions, without coercing strings or boxed numbers into offsets.
