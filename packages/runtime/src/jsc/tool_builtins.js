@@ -1232,6 +1232,11 @@
       return nativeIsProxy(value);
     },
   };
+  const v8Factory = globalThis.__home_tool_v8_factory;
+  delete globalThis.__home_tool_v8_factory;
+  const v8Api = v8Factory(bufferApi.Buffer, nativeIsProxy, nativeIsPromise);
+  builtins.v8 = v8Api;
+  builtins['node:v8'] = v8Api;
   const utilPromise = Promise;
   const utilApply = Reflect.apply;
   const utilPush = Array.prototype.push;

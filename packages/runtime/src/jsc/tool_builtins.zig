@@ -43,6 +43,9 @@ pub fn install(allocator: std.mem.Allocator, ctx: *opaques.JSContextRef) void {
     const sqlite = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_sqlite.js"), "home:tool-sqlite-factory-install", 1) catch return;
     defer sqlite.deinit(allocator);
     if (sqlite.exception != null) return;
+    const v8 = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_v8.js"), "home:tool-v8-factory-install", 1) catch return;
+    defer v8.deinit(allocator);
+    if (v8.exception != null) return;
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_builtins.js"), "home:tool-builtins-install", 1) catch return;
     result.deinit(allocator);
 }

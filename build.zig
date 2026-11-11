@@ -1674,6 +1674,13 @@ pub fn build(b: *std.Build) void {
         strict_assert_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/assert_strict.mjs"));
         home_tool_smoke_step.dependOn(&strict_assert_fixture.step);
         b.step("home-tool-assert-strict-smoke", "Verify real strict callable namespaces and negative assertions").dependOn(&strict_assert_fixture.step);
+        const v8_fixture = b.addSystemCommand(&.{"python3"});
+        v8_fixture.addFileArg(b.path("packages/runtime/test/tool_v8_fixture.py"));
+        v8_fixture.addArtifactArg(home_tool_exe);
+        v8_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
+        v8_fixture.addArg(if (std.mem.eql(u8, tool_js_engine, "zig-js")) "zig-js" else "jsc");
+        home_tool_smoke_step.dependOn(&v8_fixture.step);
+        b.step("home-tool-v8-smoke", "Verify real binary serialization and explicit provider limits").dependOn(&v8_fixture.step);
         const run_home_tool_assertion_failure = b.addRunArtifact(home_tool_exe);
         run_home_tool_assertion_failure.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_assertion_failure.addArgs(&.{ "run", "assert_failure.cjs" });
