@@ -1,0 +1,7 @@
+{
+  "source": "Executed Node path/win32; normalizer and absolute predicate",
+  "node_version": "v26.10.0",
+  "cases": 4040,
+  "input_sha256": "7614cd97fdc12c94ae5aea1451a32328df15e364b5adab9edb694583eda684e5",
+  "result_sha256": "562ef5f35c5079100b54a6a5155afc1c701facc5811b09bf74a04f8e97e34b0d"
+}

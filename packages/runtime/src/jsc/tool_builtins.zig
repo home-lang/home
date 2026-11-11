@@ -52,6 +52,9 @@ pub fn install(allocator: std.mem.Allocator, ctx: *opaques.JSContextRef) void {
     const dns = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_dns.js"), "home:tool-dns-factory-install", 1) catch return;
     defer dns.deinit(allocator);
     if (dns.exception != null) return;
+    const win32_path = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_path_win32.js"), "home:tool-win32-path-factory-install", 1) catch return;
+    defer win32_path.deinit(allocator);
+    if (win32_path.exception != null) return;
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_builtins.js"), "home:tool-builtins-install", 1) catch return;
     result.deinit(allocator);
 }

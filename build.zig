@@ -1709,6 +1709,12 @@ pub fn build(b: *std.Build) void {
         callback_reads_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
         home_tool_smoke_step.dependOn(&callback_reads_fixture.step);
         b.step("home-tool-fs-callback-reads-smoke", "Verify native callback reads, physical bytes and fatal policy").dependOn(&callback_reads_fixture.step);
+        const win32_path_fixture = b.addSystemCommand(&.{"python3"});
+        win32_path_fixture.addFileArg(b.path("packages/runtime/test/tool_win32_path_fixture.py"));
+        win32_path_fixture.addArtifactArg(home_tool_exe);
+        win32_path_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
+        home_tool_smoke_step.dependOn(&win32_path_fixture.step);
+        b.step("home-tool-path-win32-smoke", "Verify lexical Windows normalization against the pinned Node oracle").dependOn(&win32_path_fixture.step);
         const net_fixture = b.addSystemCommand(&.{"python3"});
         net_fixture.addFileArg(b.path("packages/runtime/test/tool_net_fixture.py"));
         net_fixture.addArtifactArg(home_tool_exe);

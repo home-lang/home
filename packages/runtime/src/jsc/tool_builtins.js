@@ -989,6 +989,10 @@
     },
   };
   posixPath.posix = posixPath;
+  const win32PathFactory = globalThis.__home_tool_path_win32_factory;
+  delete globalThis.__home_tool_path_win32_factory;
+  const win32Path = win32PathFactory(posixPath);
+  posixPath.win32 = win32Path;
   const ProviderURL = globalThis.URL;
   const intrinsicApply = Reflect.apply;
   const nativeURLHref = typeof ProviderURL === 'function' && Object.getOwnPropertyDescriptor(ProviderURL.prototype, 'href')?.get;
@@ -1461,6 +1465,8 @@
   }
   builtins['path/posix'] = posixPath;
   builtins['node:path/posix'] = posixPath;
+  builtins['path/win32'] = win32Path;
+  builtins['node:path/win32'] = win32Path;
   builtins.url = urlApi;
   builtins['node:url'] = urlApi;
   builtins.child_process = childProcess;
