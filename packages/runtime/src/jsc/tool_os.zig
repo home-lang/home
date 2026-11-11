@@ -84,7 +84,30 @@ fn cpuInformation(
     return api.JSValueMakeString(c, string);
 }
 
+fn endianness(
+    ctx: ?*types.JSContextRef,
+    function: ?*types.JSObject,
+    this: ?*types.JSObject,
+    count: usize,
+    args: [*c]const ?*types.JSValue,
+    exception: api.ExceptionRef,
+) callconv(.c) ?*types.JSValue {
+    _ = function;
+    _ = this;
+    _ = count;
+    _ = args;
+    _ = exception;
+    const c = ctx orelse return null;
+    // Node reports the ABI of the compiled executable, including an explicit
+    // big-endian target; do not infer it from replaceable JS constructors.
+    const name: [:0]const u8 = if (builtin.cpu.arch.endian() == .little) "LE" else "BE";
+    const string = api.JSStringCreateWithUTF8CString(name.ptr) orelse return api.JSValueMakeNull(c);
+    defer api.JSStringRelease(string);
+    return api.JSValueMakeString(c, string);
+}
+
 pub fn install(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
+    callback.registerCallback(ctx, global, "__home_tool_endianness", endianness);
     callback.registerCallback(ctx, global, "__home_tool_account_homedir", homedir);
     callback.registerCallback(ctx, global, "__home_tool_available_parallelism", availableParallelism);
     callback.registerCallback(ctx, global, "__home_tool_cpu_information", cpuInformation);

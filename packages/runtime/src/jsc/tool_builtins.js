@@ -1056,12 +1056,24 @@
   delete globalThis.__home_tool_account_homedir;
   const nativeParallelism = globalThis.__home_tool_available_parallelism;
   delete globalThis.__home_tool_available_parallelism;
+  const nativeEndianness = globalThis.__home_tool_endianness;
+  delete globalThis.__home_tool_endianness;
   const nativeCpuInformation = globalThis.__home_tool_cpu_information;
   delete globalThis.__home_tool_cpu_information;
   const parseCpuInformation = JSON.parse;
   const osProcess = process;
   const osNativePlatform = osProcess.platform;
   const osApi = {
+    // https://nodejs.org/api/os.html#osarch — initial process.arch comes from
+    // native build metadata; Node continues to read that process object's field.
+    arch: function() {
+      return osProcess.arch;
+    },
+    endianness: function() {
+      const value = nativeEndianness();
+      if (value === null) throw new Error('Cannot query compiled CPU endianness');
+      return value;
+    },
     cpus: function() {
       const information = nativeCpuInformation();
       if (information === null) throw new Error('Cannot query native CPU information');

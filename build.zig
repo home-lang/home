@@ -1433,6 +1433,12 @@ pub fn build(b: *std.Build) void {
         chdir_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_process_chdir_profile.mjs"));
         home_tool_smoke_step.dependOn(&chdir_fixture.step);
         b.step("home-tool-chdir-smoke", "Verify real process cwd, child inheritance and anchored modules").dependOn(&chdir_fixture.step);
+        const os_abi_fixture = b.addSystemCommand(&.{"python3"});
+        os_abi_fixture.addFileArg(b.path("packages/runtime/test/tool_os_abi_fixture.py"));
+        os_abi_fixture.addArtifactArg(home_tool_exe);
+        os_abi_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_os_abi.mjs"));
+        home_tool_smoke_step.dependOn(&os_abi_fixture.step);
+        b.step("home-tool-os-abi-smoke", "Verify real compiled architecture and endianness against the executable header").dependOn(&os_abi_fixture.step);
         const run_home_tool_os = b.addRunArtifact(home_tool_exe);
         run_home_tool_os.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_os.addArgs(&.{ "run", "node_os_entry.mjs" });
