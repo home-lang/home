@@ -1546,6 +1546,22 @@ pub fn build(b: *std.Build) void {
         buffer_writes_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_writes.mjs"));
         home_tool_smoke_step.dependOn(&buffer_writes_fixture.step);
         b.step("home-tool-buffer-writes-smoke", "Verify real fixed-width integer byte writes and native file encodings").dependOn(&buffer_writes_fixture.step);
+        const buffer_copy_fixture = b.addSystemCommand(&.{"python3"});
+        buffer_copy_fixture.addFileArg(b.path("packages/runtime/test/tool_buffer_copy_fixture.py"));
+        buffer_copy_fixture.addArtifactArg(home_tool_exe);
+        buffer_copy_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_copy.mjs"));
+        home_tool_smoke_step.dependOn(&buffer_copy_fixture.step);
+        b.step("home-tool-buffer-copy-smoke", "Verify real overlapping byte copies and independent physical output").dependOn(&buffer_copy_fixture.step);
+        const shared_copy_fixture = b.addSystemCommand(&.{"python3"});
+        shared_copy_fixture.addFileArg(b.path("packages/runtime/test/tool_buffer_copy_fixture.py"));
+        shared_copy_fixture.addArtifactArg(home_tool_exe);
+        shared_copy_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_copy.mjs"));
+        shared_copy_fixture.addArg("--shared");
+        const shared_copy_step = b.step("home-tool-buffer-copy-shared-smoke", "Require actual SharedArrayBuffer alias-copy capability");
+        shared_copy_step.dependOn(&shared_copy_fixture.step);
+        // The selected zig-js profile supports shared buffers. Requesting this
+        // explicit capability on JSC still fails, rather than inventing it.
+        if (tool_use_zig_js) home_tool_smoke_step.dependOn(shared_copy_step);
         const immediate_fixture = b.addSystemCommand(&.{"python3"});
         immediate_fixture.addFileArg(b.path("packages/runtime/test/tool_immediates_fixture.py"));
         immediate_fixture.addArtifactArg(home_tool_exe);

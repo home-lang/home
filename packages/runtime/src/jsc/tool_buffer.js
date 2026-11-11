@@ -8,6 +8,12 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
   const maxLength = 1 << 30;
   const viewLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Bytes.prototype), 'byteLength').get;
   const viewTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Bytes.prototype), Symbol.toStringTag).get;
+  const viewBuffer = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Bytes.prototype), 'buffer').get;
+  const viewOffset = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Bytes.prototype), 'byteOffset').get;
+  const dataBuffer = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get;
+  const dataLength = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength').get;
+  const dataOffset = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset').get;
+  const bufferApply = Reflect.apply;
   const constants = {};
   Object.defineProperty(constants, 'MAX_LENGTH', { value: maxLength, enumerable: true });
   const subarray = Bytes.prototype.subarray;
@@ -313,6 +319,42 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
   };
   Buffer.prototype.toJSON = function() {
     return { type: 'Buffer', data: Array.from(this) };
+  };
+  function copyWindow(value, label) {
+    try {
+      return { buffer: bufferApply(viewBuffer, value, []), offset: bufferApply(viewOffset, value, []), length: bufferApply(viewLength, value, []) };
+    } catch { /* DataView has separate native accessors, not a prototype tag. */ }
+    try {
+      return { buffer: bufferApply(dataBuffer, value, []), offset: bufferApply(dataOffset, value, []), length: bufferApply(dataLength, value, []) };
+    } catch { /* Refuse ordinary objects and proxies before index coercion. */ }
+    fail('ERR_INVALID_ARG_TYPE', `Buffer copy ${label} must be a genuine ArrayBuffer view`, TypeError);
+  }
+  function copyIndex(value) {
+    // Node's Buffer copy uses floor, with non-finite explicit values mapping
+    // to zero (including an explicit sourceEnd, unlike omitted sourceEnd).
+    value = +value;
+    return Number.isFinite(value) ? Math.floor(value) : 0;
+  }
+  Buffer.prototype.copy = function(target, targetStart, sourceStart, sourceEnd) {
+    copyWindow(this, 'source');
+    copyWindow(target, 'target');
+    targetStart = targetStart === undefined ? 0 : copyIndex(targetStart);
+    if (targetStart < 0) fail('ERR_OUT_OF_RANGE', 'Buffer copy targetStart is negative', RangeError);
+    sourceStart = sourceStart === undefined ? 0 : copyIndex(sourceStart);
+    if (sourceStart < 0 || sourceStart > copyWindow(this, 'source').length) fail('ERR_OUT_OF_RANGE', 'Buffer copy sourceStart is outside the view', RangeError);
+    sourceEnd = sourceEnd === undefined ? copyWindow(this, 'source').length : copyIndex(sourceEnd);
+    if (sourceEnd < 0) fail('ERR_OUT_OF_RANGE', 'Buffer copy sourceEnd is negative', RangeError);
+    // Coercion can mutate or resize backing storage; sample the native extents
+    // after those hooks. Never use mutable public byteLength/buffer fields.
+    const source = copyWindow(this, 'source'), destination = copyWindow(target, 'target');
+    const count = Math.min(sourceEnd - sourceStart, source.length - sourceStart, destination.length - targetStart);
+    if (count <= 0) return 0;
+    // These intrinsic byte views bypass species/constructor/subarray hooks.
+    // The engine's TypedArray set provides real overlapping-buffer semantics.
+    const input = new Bytes(source.buffer, source.offset + sourceStart, count);
+    const output = new Bytes(destination.buffer, destination.offset, destination.length);
+    bufferApply(setBytes, output, [input, targetStart]);
+    return count;
   };
   Buffer.prototype.equals = function(other) {
     if (!byteView(other)) fail('ERR_INVALID_ARG_TYPE', 'Buffer.equals requires Uint8Array', TypeError);
