@@ -1265,8 +1265,24 @@
     return wrapped;
   }
   promisify.custom = customPromisify;
+  function inherits(ctor, parent) {
+    if (ctor == null) nodeArgumentError('ERR_INVALID_ARG_TYPE', 'inherits ctor is required');
+    if (parent == null) nodeArgumentError('ERR_INVALID_ARG_TYPE', 'inherits superCtor is required');
+    if (parent.prototype === undefined) {
+      // Node reads this accessor again while constructing its argument error.
+      // Do not cache away its observable side effects or thrown exception.
+      void parent.prototype;
+      nodeArgumentError('ERR_INVALID_ARG_TYPE', 'inherits superCtor.prototype is required');
+    }
+    // Publish super_ before changing the existing prototype object. A failed
+    // prototype mutation still leaves that property, as Node does. Constructor
+    // statics and existing own prototype members must retain their identity.
+    utilDefine(ctor, 'super_', { __proto__: null, value: parent, writable: true, configurable: true });
+    utilSetPrototype(ctor.prototype, parent.prototype);
+  }
   const utilApi = {
     promisify,
+    inherits,
     types: utilTypes,
     stripVTControlCharacters: function(text) {
       if (typeof text !== 'string') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'stripVTControlCharacters requires a string');

@@ -1548,6 +1548,12 @@ pub fn build(b: *std.Build) void {
         run_home_tool_util_esm.addArgs(&.{ "run", "node_util_esm.mjs" });
         run_home_tool_util_esm.expectStdOutEqual("OK home-tool ESM VT controls\n");
         home_tool_smoke_step.dependOn(&run_home_tool_util_esm.step);
+        const util_inherits_fixture = b.addSystemCommand(&.{"python3"});
+        util_inherits_fixture.addFileArg(b.path("packages/runtime/test/tool_util_inherits_fixture.py"));
+        util_inherits_fixture.addArtifactArg(home_tool_exe);
+        util_inherits_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_util_inherits.mjs"));
+        home_tool_smoke_step.dependOn(&util_inherits_fixture.step);
+        b.step("home-tool-util-inherits-smoke", "Verify genuine legacy prototype inheritance and descriptor ordering").dependOn(&util_inherits_fixture.step);
         const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
         run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });
