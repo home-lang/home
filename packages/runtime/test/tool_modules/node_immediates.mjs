@@ -68,9 +68,16 @@ if(mode==='unref'){
     immediate(()=>{events.push('first');process.nextTick(()=>events.push('tick'));Promise.resolve().then(()=>events.push('job'));});
     immediate(()=>{events.push('second');assert(events.join(',')==='first,tick,job,second','callback checkpoint');resolve();});
   }));
-  await check('timer-created immediate runs before its nested timeout',()=>new Promise(resolve=>{
+  await check('timer-created immediate runs before its nested timeout',()=>new Promise((resolve,reject)=>{
     const events=[];
-    setTimeout(()=>{events.push('timer');setTimeout(()=>events.push('timeout'),1);immediate(()=>events.push('check'));setTimeout(()=>{assert(events.join(',')==='timer,check,timeout','timer/check phases');resolve();},15);},2);
+    setTimeout(()=>{
+      try {
+        events.push('timer');
+        setTimeout(()=>events.push('timeout'),1);
+        immediate(()=>events.push('check'));
+        setTimeout(()=>{try{assert(events.join(',')==='timer,check,timeout','timer/check phases');resolve();}catch(error){reject(error);}},15);
+      } catch(error) { reject(error); }
+    },2);
   }));
   await check('promise jobs can cancel later callbacks in a batch',async()=>{
     let ran=false;let victim;
