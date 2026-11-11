@@ -35,6 +35,7 @@ const lib = @import("lib.zig");
 const unicode_case = @import("unicode_case.zig");
 const source_markers_mod = @import("source_markers.zig");
 const string_literal_text = @import("string_literal.zig");
+const number_literal_text = @import("number_literal.zig");
 const string_interner = @import("string_interner");
 const binder_mod = @import("binder");
 
@@ -49699,10 +49700,7 @@ pub const Checker = struct {
                 const v = hir_mod.literalNumberOf(self.hir, key);
                 if (std.math.isNan(v)) break :blk null;
                 var buf: [64]u8 = undefined;
-                const text = if (v == @floor(v) and v >= -9007199254740991 and v <= 9007199254740991)
-                    std.fmt.bufPrint(&buf, "{d}", .{@as(i64, @intFromFloat(v))}) catch break :blk null
-                else
-                    std.fmt.bufPrint(&buf, "{d}", .{v}) catch break :blk null;
+                const text = number_literal_text.format(&buf, v) catch break :blk null;
                 break :blk self.string_interner.intern(text) catch return error.OutOfMemory;
             },
             else => null,
@@ -52802,10 +52800,9 @@ pub const Checker = struct {
                 const v = hir_mod.literalNumberOf(self.hir, key);
                 // Render the numeric key canonically so distinct
                 // spellings of the same value share an effective name.
-                if (@floor(v) == v and std.math.isFinite(v) and @abs(v) < 1e21) {
-                    break :blk try std.fmt.allocPrint(self.gpa, "{d}", .{@as(i64, @intFromFloat(v))});
-                }
-                break :blk try std.fmt.allocPrint(self.gpa, "{d}", .{v});
+                var nbuf: [64]u8 = undefined;
+                const text = number_literal_text.format(&nbuf, v) catch return error.OutOfMemory;
+                break :blk try self.gpa.dupe(u8, text);
             },
             else => null,
         };
@@ -74183,37 +74180,15 @@ pub const Checker = struct {
 
     fn enumNumberToStringId(self: *Checker, value: f64) CheckError!hir_mod.StringId {
         var buf: [128]u8 = undefined;
-        const text = formatCanonicalNumber(&buf, value) catch return error.OutOfMemory;
+        const text = number_literal_text.format(&buf, value) catch return error.OutOfMemory;
         return self.string_interner.intern(text) catch return error.OutOfMemory;
     }
 
-    fn formatCanonicalNumber(buf: []u8, value: f64) ![]const u8 {
-        if (std.math.isNan(value)) return "NaN";
-        if (std.math.isPositiveInf(value)) return "Infinity";
-        if (std.math.isNegativeInf(value)) return "-Infinity";
-        if (value == 0) return "0";
-
-        const magnitude = @abs(value);
-        if (magnitude >= 1e21 or magnitude < 1e-6) {
-            var scientific_buf: [128]u8 = undefined;
-            const scientific = try std.fmt.bufPrint(&scientific_buf, "{e}", .{value});
-            const exponent = std.mem.indexOfScalar(u8, scientific, 'e') orelse
-                return std.fmt.bufPrint(buf, "{s}", .{scientific});
-            if (exponent + 1 < scientific.len and scientific[exponent + 1] != '-') {
-                return std.fmt.bufPrint(buf, "{s}e+{s}", .{
-                    scientific[0..exponent],
-                    scientific[exponent + 1 ..],
-                });
-            }
-            return std.fmt.bufPrint(buf, "{s}", .{scientific});
-        }
-        if (@floor(value) == value and
-            value >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
-            value <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
-        {
-            return std.fmt.bufPrint(buf, "{d}", .{@as(i64, @intFromFloat(value))});
-        }
-        return std.fmt.bufPrint(buf, "{d}", .{value});
+    /// `value` as JavaScript prints it, in the diagnostic arena.
+    fn allocNumberLiteralText(self: *Checker, value: f64) CheckError![]const u8 {
+        var buf: [64]u8 = undefined;
+        const text = number_literal_text.format(&buf, value) catch return error.OutOfMemory;
+        return self.diag_arena.allocator().dupe(u8, text) catch return error.OutOfMemory;
     }
 
     /// Whether this reference names a member preceding the initializer in its
@@ -80561,7 +80536,7 @@ pub const Checker = struct {
         switch (lit) {
             .number_lit => |bits| {
                 var buf: [128]u8 = undefined;
-                const text = formatCanonicalNumber(&buf, @bitCast(bits)) catch return false;
+                const text = number_literal_text.format(&buf, @bitCast(bits)) catch return false;
                 try out.appendSlice(self.gpa, text);
             },
             .bigint_lit => |sid| try out.appendSlice(self.gpa, self.string_interner.get(sid)),
@@ -88876,10 +88851,10 @@ pub const Checker = struct {
                         try out.append(a, '"');
                     },
                     .literal_number => {
-                        var nbuf: [40]u8 = undefined;
+                        var nbuf: [64]u8 = undefined;
                         const v = hir_mod.literalNumberOf(self.hir, lt.literal);
-                        // 40 bytes holds any f64 decimal — overflow is unreachable.
-                        try out.appendSlice(a, std.fmt.bufPrint(&nbuf, "{d}", .{v}) catch unreachable);
+                        // 64 bytes holds any JavaScript number text.
+                        try out.appendSlice(a, number_literal_text.format(&nbuf, v) catch unreachable);
                     },
                     .literal_bigint => {
                         try out.appendSlice(a, self.string_interner.get(hir_mod.literalBigIntOf(self.hir, lt.literal).digits));
@@ -108065,7 +108040,7 @@ pub const Checker = struct {
 
     fn enumRelationKnownValueDisplay(self: *Checker, value: EnumRelationValue) CheckError!?[]const u8 {
         return switch (value) {
-            .numeric => |v| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{v}),
+            .numeric => |v| try self.allocNumberLiteralText(v),
             .string => |sid| try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "\"{s}\"",
@@ -109450,11 +109425,8 @@ pub const Checker = struct {
         while (it.next()) |entry| {
             if (entry.key_ptr.obj_name != enum_name) continue;
             const value = entry.value_ptr.*;
-            const key_text = if (value == @floor(value))
-                try std.fmt.allocPrint(self.gpa, "{d}", .{@as(i64, @intFromFloat(value))})
-            else
-                try std.fmt.allocPrint(self.gpa, "{d}", .{value});
-            defer self.gpa.free(key_text);
+            var key_buf: [64]u8 = undefined;
+            const key_text = number_literal_text.format(&key_buf, value) catch return error.OutOfMemory;
             const key_name = self.string_interner.intern(key_text) catch return error.OutOfMemory;
             try out.append(self.gpa, .{
                 .name = key_name,
@@ -124406,7 +124378,7 @@ pub const Checker = struct {
                             // for numeric property names. See
                             // `objectTypeWithNumericProperty.ts`.
                             var nbuf: [64]u8 = undefined;
-                            const k = std.fmt.bufPrint(&nbuf, "{d}", .{v}) catch null;
+                            const k = number_literal_text.format(&nbuf, v) catch null;
                             if (k) |key_str| {
                                 const key_id = self.string_interner.intern(key_str) catch 0;
                                 if (key_id != 0) {
@@ -124430,10 +124402,7 @@ pub const Checker = struct {
                             const v = if (u.op == .neg) -raw else raw;
                             if (std.math.isFinite(v)) {
                                 var nbuf: [64]u8 = undefined;
-                                const k = if (v == @floor(v) and @abs(v) <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
-                                    std.fmt.bufPrint(&nbuf, "{d}", .{@as(i64, @intFromFloat(v))}) catch null
-                                else
-                                    std.fmt.bufPrint(&nbuf, "{d}", .{v}) catch null;
+                                const k = number_literal_text.format(&nbuf, v) catch null;
                                 if (k) |key_str| {
                                     const key_id = self.string_interner.intern(key_str) catch 0;
                                     if (key_id != 0) {
@@ -164284,7 +164253,7 @@ pub const Checker = struct {
             .number_lit => |bits| {
                 // As JavaScript prints it: `1e+21`, `1e-7`, `0` for `-0`.
                 var number_buf: [128]u8 = undefined;
-                const text = formatCanonicalNumber(&number_buf, @bitCast(bits)) catch return false;
+                const text = number_literal_text.format(&number_buf, @bitCast(bits)) catch return false;
                 try out.appendSlice(self.gpa, text);
             },
             .boolean_lit => |b| try out.appendSlice(self.gpa, if (b) "true" else "false"),
@@ -164307,16 +164276,8 @@ pub const Checker = struct {
             },
             .literal_number => {
                 const v = hir_mod.literalNumberOf(self.hir, node);
-                if (@trunc(v) == v and v >= @as(f64, @floatFromInt(std.math.minInt(i64))) and v <= @as(f64, @floatFromInt(std.math.maxInt(i64)))) {
-                    const as_int: i64 = @intFromFloat(v);
-                    const text = try std.fmt.allocPrint(self.gpa, "{d}", .{as_int});
-                    defer self.gpa.free(text);
-                    try out.appendSlice(self.gpa, text);
-                } else {
-                    const text = try std.fmt.allocPrint(self.gpa, "{d}", .{v});
-                    defer self.gpa.free(text);
-                    try out.appendSlice(self.gpa, text);
-                }
+                var nbuf: [64]u8 = undefined;
+                try out.appendSlice(self.gpa, number_literal_text.format(&nbuf, v) catch return error.OutOfMemory);
                 return true;
             },
             .literal_bigint => {
@@ -164339,8 +164300,10 @@ pub const Checker = struct {
             .unary_op => {
                 const u = hir_mod.unaryOf(self.hir, node);
                 if (u.op == .neg and self.hir.kindOf(u.operand) == .literal_number) {
-                    try out.append(self.gpa, '-');
-                    return try self.appendTemplateSubstitutionString(u.operand, out);
+                    var nbuf: [64]u8 = undefined;
+                    const v = -hir_mod.literalNumberOf(self.hir, u.operand);
+                    try out.appendSlice(self.gpa, number_literal_text.format(&nbuf, v) catch return error.OutOfMemory);
+                    return true;
                 }
                 return false;
             },
@@ -164357,10 +164320,8 @@ pub const Checker = struct {
                 switch (self.interner.literalOf(lit_t)) {
                     .string_lit => |sid| try self.appendCookedStringText(self.string_interner.get(sid), out),
                     .number_lit => |bits| {
-                        const v = @as(f64, @bitCast(bits));
-                        const text = try std.fmt.allocPrint(self.gpa, "{d}", .{v});
-                        defer self.gpa.free(text);
-                        try out.appendSlice(self.gpa, text);
+                        var nbuf: [64]u8 = undefined;
+                        try out.appendSlice(self.gpa, number_literal_text.format(&nbuf, @as(f64, @bitCast(bits))) catch return error.OutOfMemory);
                     },
                     .boolean_lit => |b| try out.appendSlice(self.gpa, if (b) "true" else "false"),
                     .bigint_lit => return false,
@@ -181735,7 +181696,7 @@ pub const Checker = struct {
                 const literal = self.interner.pool.literal_payloads.items[payload_idx];
                 break :blk switch (literal) {
                     .string_lit => |sid| try self.allocStringLiteralDisplay(sid),
-                    .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
+                    .number_lit => |bits| try self.allocNumberLiteralText(@as(f64, @bitCast(bits))),
                     .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}n", .{self.string_interner.get(sid)}),
                     .boolean_lit => |b| if (b) "true" else "false",
                     .symbol_lit => "unique symbol",
@@ -185233,8 +185194,8 @@ pub const Checker = struct {
             switch (self.interner.literalOfOrNull(t) orelse return false) {
                 .number_lit => |bits| {
                     const value: f64 = @bitCast(bits);
-                    var nbuf: [40]u8 = undefined;
-                    const text = std.fmt.bufPrint(&nbuf, "{d}", .{value}) catch return false;
+                    var nbuf: [64]u8 = undefined;
+                    const text = number_literal_text.format(&nbuf, value) catch return false;
                     const sid = self.string_interner.intern(text) catch return false;
                     out.append(self.gpa, sid) catch return false;
                     return true;
@@ -198267,7 +198228,7 @@ pub const Checker = struct {
     fn isCanonicalNumericPropertyName(name: []const u8) bool {
         const value = std.fmt.parseFloat(f64, name) catch return false;
         var buf: [128]u8 = undefined;
-        const canonical = formatCanonicalNumber(&buf, value) catch return false;
+        const canonical = number_literal_text.format(&buf, value) catch return false;
         return std.mem.eql(u8, name, canonical);
     }
 
@@ -201271,7 +201232,7 @@ pub const Checker = struct {
         const literal = self.interner.pool.literal_payloads.items[payload_idx];
         return switch (literal) {
             .string_lit => |sid| try self.allocStringLiteralDisplay(sid),
-            .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
+            .number_lit => |bits| try self.allocNumberLiteralText(@as(f64, @bitCast(bits))),
             .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}n", .{self.string_interner.get(sid)}),
             .boolean_lit => |b| if (b) "true" else "false",
             .symbol_lit => "unique symbol",
@@ -203207,7 +203168,7 @@ pub const Checker = struct {
                 const literal = self.interner.pool.literal_payloads.items[payload_idx];
                 break :blk switch (literal) {
                     .string_lit => |sid| try self.allocStringLiteralDisplay(sid),
-                    .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
+                    .number_lit => |bits| try self.allocNumberLiteralText(@as(f64, @bitCast(bits))),
                     .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}n", .{self.string_interner.get(sid)}),
                     .boolean_lit => |b| if (b) "true" else "false",
                     .symbol_lit => "unique symbol",
@@ -303212,4 +303173,27 @@ test "checker: a signed numeric literal keeps its literal type in a const (#1012
     // A parenthesized or doubly signed operand, and a `let`, stay `number`.
     try T.expectEqual(@as(usize, 3), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '1'."));
     try T.expectEqual(@as(usize, 9), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: a number literal type prints as JavaScript formats the number (#1014)" {
+    const s = try newSetup(
+        \\const a: 1 = 1e21;
+        \\const b: 1e21 = 2;
+        \\const c = 1e21;
+        \\const c2: 1 = c;
+        \\const d: 1 = 1.5e-7;
+        \\const e = -1e-7;
+        \\const e2: 1 = e;
+        \\const f: 1 = 123456789012345680000;
+        \\const g: 1 = 1152921504606846976;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1e+21' is not assignable to type '1'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '2' is not assignable to type '1e+21'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1.5e-7' is not assignable to type '1'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '-1e-7' is not assignable to type '1'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '123456789012345680000' is not assignable to type '1'."));
+    // Above 2^53 a whole number prints its shortest digits, not its exact value.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1152921504606847000' is not assignable to type '1'."));
 }

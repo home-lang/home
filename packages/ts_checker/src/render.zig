@@ -15,6 +15,7 @@ const std = @import("std");
 const string_interner = @import("string_interner");
 const types = @import("types.zig");
 const interner_mod = @import("interner.zig");
+const number_literal = @import("number_literal.zig");
 
 pub const RenderError = error{ OutOfMemory, CyclicStructure };
 
@@ -152,8 +153,8 @@ fn renderTypeIntoCtx(
             },
             .number_lit => |bits| {
                 const v: f64 = @bitCast(bits);
-                var nbuf: [32]u8 = undefined;
-                const formatted = std.fmt.bufPrint(&nbuf, "{d}", .{v}) catch "NaN";
+                var nbuf: [64]u8 = undefined;
+                const formatted = number_literal.format(&nbuf, v) catch "NaN";
                 try buf.appendSlice(gpa, formatted);
             },
             .boolean_lit => |b| try buf.appendSlice(gpa, if (b) "true" else "false"),

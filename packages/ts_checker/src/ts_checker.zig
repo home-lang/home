@@ -18,6 +18,7 @@
 //! Phase 4's emitter) a stable surface to compile against.
 
 pub const string_literal = @import("string_literal.zig");
+pub const number_literal = @import("number_literal.zig");
 pub const types = @import("types.zig");
 pub const interface_merge = @import("interface_merge.zig");
 pub const interner = @import("interner.zig");
@@ -82,6 +83,7 @@ test {
     _ = checked_transfer;
     _ = @import("lib.zig");
     _ = @import("source_markers.zig");
+    _ = number_literal;
 }
 
 test "ts_checker: end-to-end smoke" {
