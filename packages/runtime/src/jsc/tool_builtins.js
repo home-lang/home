@@ -1426,6 +1426,9 @@
   delete globalThis.__home_tool_sqlite_factory;
   delete globalThis.__home_tool_sqlite;
   builtins['bun:sqlite'] = sqliteFactory(sqliteNative, bufferApi.Buffer);
+  const functionMocksFactory = globalThis.__home_tool_function_mocks_factory;
+  delete globalThis.__home_tool_function_mocks_factory;
+  builtins['bun:test'] = functionMocksFactory();
   builtins.assert = assert;
   builtins['node:assert'] = assert;
   builtins.constants = legacyConstants;

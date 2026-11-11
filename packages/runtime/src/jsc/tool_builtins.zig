@@ -55,6 +55,9 @@ pub fn install(allocator: std.mem.Allocator, ctx: *opaques.JSContextRef) void {
     const win32_path = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_path_win32.js"), "home:tool-win32-path-factory-install", 1) catch return;
     defer win32_path.deinit(allocator);
     if (win32_path.exception != null) return;
+    const function_mocks = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_function_mocks.js"), "home:tool-function-mocks-factory-install", 1) catch return;
+    defer function_mocks.deinit(allocator);
+    if (function_mocks.exception != null) return;
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_builtins.js"), "home:tool-builtins-install", 1) catch return;
     result.deinit(allocator);
 }

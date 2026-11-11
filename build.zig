@@ -1715,6 +1715,12 @@ pub fn build(b: *std.Build) void {
         win32_path_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
         home_tool_smoke_step.dependOn(&win32_path_fixture.step);
         b.step("home-tool-path-win32-smoke", "Verify lexical Windows normalization against the pinned Node oracle").dependOn(&win32_path_fixture.step);
+        const function_mocks_fixture = b.addSystemCommand(&.{"python3"});
+        function_mocks_fixture.addFileArg(b.path("packages/runtime/test/tool_function_mocks_fixture.py"));
+        function_mocks_fixture.addArtifactArg(home_tool_exe);
+        function_mocks_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
+        home_tool_smoke_step.dependOn(&function_mocks_fixture.step);
+        b.step("home-tool-function-mocks-smoke", "Verify real function call traces and method spy restoration").dependOn(&function_mocks_fixture.step);
         const net_fixture = b.addSystemCommand(&.{"python3"});
         net_fixture.addFileArg(b.path("packages/runtime/test/tool_net_fixture.py"));
         net_fixture.addArtifactArg(home_tool_exe);
