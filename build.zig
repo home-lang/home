@@ -1524,6 +1524,12 @@ pub fn build(b: *std.Build) void {
         buffer_unsafe_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_unsafe.mjs"));
         home_tool_smoke_step.dependOn(&buffer_unsafe_fixture.step);
         b.step("home-tool-buffer-unsafe-smoke", "Verify genuine managed Buffer allocations and physical binary bytes").dependOn(&buffer_unsafe_fixture.step);
+        const buffer_writes_fixture = b.addSystemCommand(&.{"python3"});
+        buffer_writes_fixture.addFileArg(b.path("packages/runtime/test/tool_buffer_writes_fixture.py"));
+        buffer_writes_fixture.addArtifactArg(home_tool_exe);
+        buffer_writes_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_writes.mjs"));
+        home_tool_smoke_step.dependOn(&buffer_writes_fixture.step);
+        b.step("home-tool-buffer-writes-smoke", "Verify real fixed-width integer byte writes and native file encodings").dependOn(&buffer_writes_fixture.step);
         const run_home_tool_crypto = b.addRunArtifact(home_tool_exe);
         run_home_tool_crypto.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_crypto.addArgs(&.{ "run", "node_crypto_entry.cjs" });

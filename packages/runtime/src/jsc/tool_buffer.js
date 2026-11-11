@@ -7,6 +7,7 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
   // bound, not a promise that the host can satisfy an allocation of that size.
   const maxLength = 1 << 30;
   const viewLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Bytes.prototype), 'byteLength').get;
+  const viewTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Bytes.prototype), Symbol.toStringTag).get;
   const constants = {};
   Object.defineProperty(constants, 'MAX_LENGTH', { value: maxLength, enumerable: true });
   const subarray = Bytes.prototype.subarray;
@@ -223,6 +224,50 @@ globalThis.__home_tool_buffer_factory = function(decodeUtf8Hex) {
     readInt32BE(offset = 0) { return readInteger(this, offset, 4, false, true); },
   });
   for (const name of ['readUInt8', 'readUInt16LE', 'readUInt16BE', 'readUInt32LE', 'readUInt32BE']) {
+    Buffer.prototype[name.replace('UInt', 'Uint')] = Buffer.prototype[name];
+  }
+  function writeInteger(buffer, value, offset, width, littleEndian, signed) {
+    // Node coerces the value once before checking offsets. Its one-byte
+    // writers check offset type before value range; wider writers reverse
+    // those two checks. Keep all checks before the first byte mutation.
+    value = +value;
+    if (width === 1 && typeof offset !== 'number') fail('ERR_INVALID_ARG_TYPE', 'Buffer offset must be a number', TypeError);
+    const limit = 2 ** (width * 8);
+    const minimum = signed ? -limit / 2 : 0;
+    const maximum = signed ? limit / 2 - 1 : limit - 1;
+    if (value < minimum || value > maximum) fail('ERR_OUT_OF_RANGE', 'Value is outside the integer range', RangeError);
+    if (typeof offset !== 'number') fail('ERR_INVALID_ARG_TYPE', 'Buffer offset must be a number', TypeError);
+    if (Math.floor(offset) !== offset) fail('ERR_OUT_OF_RANGE', 'Buffer offset must be an integer', RangeError);
+    // Inspect native view kind and extent, not public length/byteLength or
+    // prototype tags. A forged Uint16Array prototype is not byte storage.
+    if (viewTag.call(buffer) !== 'Uint8Array') unsupported('Home Buffer integer writes require genuine Uint8Array storage');
+    const length = viewLength.call(buffer);
+    if (offset < 0 || offset > length - width) {
+      // Node consults public length only while reporting a genuine bounds
+      // failure. Never let a shadowed length authorize an out-of-view write.
+      if (buffer.length - width < 0) fail('ERR_BUFFER_OUT_OF_BOUNDS', 'Attempt to access memory outside buffer bounds', RangeError);
+      fail('ERR_OUT_OF_RANGE', 'Buffer offset is outside the buffer', RangeError);
+    }
+    let word = value >>> 0;
+    for (let index = 0; index < width; index++) {
+      buffer[offset + (littleEndian ? index : width - index - 1)] = word & 255;
+      word >>>= 8;
+    }
+    return offset + width;
+  }
+  Object.assign(Buffer.prototype, {
+    writeUInt8(value, offset = 0) { return writeInteger(this, value, offset, 1, false, false); },
+    writeInt8(value, offset = 0) { return writeInteger(this, value, offset, 1, false, true); },
+    writeUInt16LE(value, offset = 0) { return writeInteger(this, value, offset, 2, true, false); },
+    writeUInt16BE(value, offset = 0) { return writeInteger(this, value, offset, 2, false, false); },
+    writeInt16LE(value, offset = 0) { return writeInteger(this, value, offset, 2, true, true); },
+    writeInt16BE(value, offset = 0) { return writeInteger(this, value, offset, 2, false, true); },
+    writeUInt32LE(value, offset = 0) { return writeInteger(this, value, offset, 4, true, false); },
+    writeUInt32BE(value, offset = 0) { return writeInteger(this, value, offset, 4, false, false); },
+    writeInt32LE(value, offset = 0) { return writeInteger(this, value, offset, 4, true, true); },
+    writeInt32BE(value, offset = 0) { return writeInteger(this, value, offset, 4, false, true); },
+  });
+  for (const name of ['writeUInt8', 'writeUInt16LE', 'writeUInt16BE', 'writeUInt32LE', 'writeUInt32BE']) {
     Buffer.prototype[name.replace('UInt', 'Uint')] = Buffer.prototype[name];
   }
   function search(buffer, value, offset, name, reverse) {
