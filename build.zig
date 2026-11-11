@@ -1426,6 +1426,13 @@ pub fn build(b: *std.Build) void {
         run_home_tool_process_module.addArgs(&.{ "run", "node_process_entry.mjs" });
         run_home_tool_process_module.expectStdOutEqual("OK home-tool process module identity\n");
         home_tool_smoke_step.dependOn(&run_home_tool_process_module.step);
+        const chdir_fixture = b.addSystemCommand(&.{"python3"});
+        chdir_fixture.addFileArg(b.path("packages/runtime/test/tool_chdir_fixture.py"));
+        chdir_fixture.addArtifactArg(home_tool_exe);
+        chdir_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_process_chdir.mjs"));
+        chdir_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_process_chdir_profile.mjs"));
+        home_tool_smoke_step.dependOn(&chdir_fixture.step);
+        b.step("home-tool-chdir-smoke", "Verify real process cwd, child inheritance and anchored modules").dependOn(&chdir_fixture.step);
         const run_home_tool_os = b.addRunArtifact(home_tool_exe);
         run_home_tool_os.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_os.addArgs(&.{ "run", "node_os_entry.mjs" });

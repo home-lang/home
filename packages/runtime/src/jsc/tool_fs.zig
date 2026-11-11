@@ -406,7 +406,22 @@ fn operation(
         if (!std.math.isFinite(mode) or mode < 0 or mode > 0o7777 or @trunc(mode) != mode) return failure(c, object, error.Unsupported);
         permissions = .fromMode(@intFromFloat(mode));
     }
-    if (std.mem.eql(u8, op, "realpath")) {
+    if (std.mem.eql(u8, op, "chdir")) {
+        if (comptime builtin.os.tag != .macos and builtin.os.tag != .linux) return failure(c, object, error.Unsupported);
+        const host = active orelse return failure(c, object, error.Unsupported);
+        if (host.ctx != c) return failure(c, object, error.Unsupported);
+        // The repository-tool owner thread changes the real process directory.
+        // Kernel path walking preserves symlinks/.. and child inheritance;
+        // no JS cwd cache or lexical path normalization can replace it.
+        const terminated = bun.dupeZ(allocator, u8, path) catch return failure(c, object, error.OutOfMemory);
+        const result = std.c.chdir(terminated.ptr);
+        const err = if (result == 0) null else std.posix.errno(result);
+        allocator.free(terminated);
+        if (err) |code| {
+            set(c, object, "errno", api.JSValueMakeNumber(c, -@as(f64, @floatFromInt(@backingInt(code)))));
+            return nativeFailure(c, object, code, "chdir");
+        }
+    } else if (std.mem.eql(u8, op, "realpath")) {
         const canonical = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| return failure(c, object, err);
         defer allocator.free(canonical);
         if (!std.unicode.utf8ValidateSlice(canonical)) return failure(c, object, error.Unsupported);

@@ -251,6 +251,27 @@
     }
     return result;
   }
+  // https://nodejs.org/api/process.html#processchdirdirectory
+  // Available only in this owner-thread repository tool, with real OS state.
+  const originalProcessCwd = process.cwd;
+  process.chdir = function(directory) {
+    if (typeof directory !== 'string') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'The directory argument must be a string');
+    // Preserve the tool's existing refusal of NUL paths; never silently visit
+    // the truncated C-string prefix (Node/Bun differ on this edge case).
+    if (directory.includes('\0')) nodeArgumentError('ERR_INVALID_ARG_VALUE', 'Directory paths cannot contain NUL bytes');
+    const previous = originalProcessCwd();
+    const result = nativeFs('chdir', directory);
+    if (result === null) throw new Error('Native chdir failed');
+    if (result.error) {
+      const error = new Error(`${result.error}: chdir '${previous}' -> '${directory}'`);
+      error.code = result.error;
+      error.errno = result.errno;
+      error.syscall = 'chdir';
+      error.path = previous;
+      error.dest = directory;
+      throw error;
+    }
+  };
   // Share the real native operations across sync/promise entry points. Keep
   // first-created mkdir paths and rm's nonrecursive directory guard intact.
   function makeDirectory(path, options) {
