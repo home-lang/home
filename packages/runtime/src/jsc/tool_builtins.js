@@ -1035,9 +1035,17 @@
   delete globalThis.__home_tool_account_homedir;
   const nativeParallelism = globalThis.__home_tool_available_parallelism;
   delete globalThis.__home_tool_available_parallelism;
+  const nativeCpuInformation = globalThis.__home_tool_cpu_information;
+  delete globalThis.__home_tool_cpu_information;
+  const parseCpuInformation = JSON.parse;
   const osProcess = process;
   const osNativePlatform = osProcess.platform;
   const osApi = {
+    cpus: function() {
+      const information = nativeCpuInformation();
+      if (information === null) throw new Error('Cannot query native CPU information');
+      return parseCpuInformation(information);
+    },
     availableParallelism: function() {
       const count = nativeParallelism();
       if (count === null) throw new Error('Cannot query native CPU availability');

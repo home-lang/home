@@ -990,6 +990,22 @@ pub fn build(b: *std.Build) void {
             }),
         });
         home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_cpu_tests).step);
+        const tool_cpu_info_tests = b.addTest(.{
+            .name = "home-tool-cpu-information-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_cpu_info.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        home_tool_smoke_step.dependOn(&b.addRunArtifact(tool_cpu_info_tests).step);
+        const run_cpu_information = b.addSystemCommand(&.{"python3"});
+        run_cpu_information.addFileArg(b.path("packages/runtime/test/tool_cpu_info_fixture.py"));
+        run_cpu_information.addArtifactArg(home_tool_exe);
+        run_cpu_information.addFileArg(b.path("packages/runtime/test/tool_modules/node_cpu_information.mjs"));
+        run_cpu_information.expectStdOutEqual("NODE CPU INFORMATION 14 CHECKS OK\nNATIVE CPU SNAPSHOT MATCHES HOST\n");
+        home_tool_smoke_step.dependOn(&run_cpu_information.step);
         const tool_child_tests = b.addTest(.{
             .name = "home-tool-child-lifecycle-tests",
             .root_module = b.createModule(.{

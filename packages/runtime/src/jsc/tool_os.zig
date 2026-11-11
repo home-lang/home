@@ -58,7 +58,34 @@ fn availableParallelism(
     return api.JSValueMakeNumber(c, @floatFromInt(cpus));
 }
 
+fn cpuInformation(
+    ctx: ?*types.JSContextRef,
+    function: ?*types.JSObject,
+    this: ?*types.JSObject,
+    count: usize,
+    args: [*c]const ?*types.JSValue,
+    exception: api.ExceptionRef,
+) callconv(.c) ?*types.JSValue {
+    _ = function;
+    _ = this;
+    _ = count;
+    _ = args;
+    _ = exception;
+    const c = ctx orelse return null;
+    const allocator = std.heap.smp_allocator;
+    var snapshot = @import("tool_cpu_info.zig").snapshot(allocator) catch return api.JSValueMakeNull(c);
+    defer snapshot.deinit();
+    const json = std.json.Stringify.valueAlloc(allocator, snapshot.records, .{}) catch return api.JSValueMakeNull(c);
+    defer allocator.free(json);
+    const encoded = @import("bun").dupeZ(allocator, u8, json) catch return api.JSValueMakeNull(c);
+    defer allocator.free(encoded);
+    const string = api.JSStringCreateWithUTF8CString(encoded.ptr) orelse return api.JSValueMakeNull(c);
+    defer api.JSStringRelease(string);
+    return api.JSValueMakeString(c, string);
+}
+
 pub fn install(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
     callback.registerCallback(ctx, global, "__home_tool_account_homedir", homedir);
     callback.registerCallback(ctx, global, "__home_tool_available_parallelism", availableParallelism);
+    callback.registerCallback(ctx, global, "__home_tool_cpu_information", cpuInformation);
 }
