@@ -87,6 +87,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1011-template-placeholder/') ||
   path.includes('/issue1012-signed-numeric-literal/') ||
   path.includes('/issue1014-number-literal-display/') ||
+  path.includes('/issue1015-numeric-property-names/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
@@ -146,6 +147,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue1011-template-placeholder/tsconfig.json',
   'packages/ts_cli/testdata/issue1012-signed-numeric-literal/tsconfig.json',
   'packages/ts_cli/testdata/issue1014-number-literal-display/tsconfig.json',
+  'packages/ts_cli/testdata/issue1015-numeric-property-names/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
