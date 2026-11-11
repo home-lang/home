@@ -1733,6 +1733,12 @@ pub fn build(b: *std.Build) void {
         conditional_arms_fixture.expectStdOutEqual("CONDITIONAL ARM 18 CHECKS OK\nTYPED CONDITIONAL ARROW 4 CHECKS OK\n");
         home_tool_smoke_step.dependOn(&conditional_arms_fixture.step);
         b.step("home-tool-conditional-arms-smoke", "Execute ternary expressions and typed arrows without borrowing later blocks").dependOn(&conditional_arms_fixture.step);
+        const compact_types_fixture = b.addRunArtifact(home_tool_exe);
+        compact_types_fixture.addArg("run");
+        compact_types_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/compact_type_closers.mts"));
+        compact_types_fixture.expectStdOutEqual("COMPACT TYPE CLOSER 12 CHECKS OK\n");
+        home_tool_smoke_step.dependOn(&compact_types_fixture.step);
+        b.step("home-tool-compact-types-smoke", "Execute compact generic return arrows and preserve assignments and shifts").dependOn(&compact_types_fixture.step);
         const net_fixture = b.addSystemCommand(&.{"python3"});
         net_fixture.addFileArg(b.path("packages/runtime/test/tool_net_fixture.py"));
         net_fixture.addArtifactArg(home_tool_exe);

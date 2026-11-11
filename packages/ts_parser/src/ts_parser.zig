@@ -561,13 +561,15 @@ pub const Parser = struct {
             if (offset < self.pending_type_angle) return self.pendingTypeAngleToken(offset);
             if (self.pending_type_eq and offset == self.pending_type_angle) return self.pendingTypeEqualToken();
             const eq_offset: u32 = if (self.pending_type_eq) 1 else 0;
-            const p_after_pending = self.cursor + (offset - self.pending_type_angle - eq_offset);
+            const arrow_tail: u32 = @intFromBool(self.pendingTypeEqualIsArrow());
+            const p_after_pending = self.cursor + (offset - self.pending_type_angle - eq_offset) + arrow_tail;
             if (p_after_pending >= self.tokens.len) return self.tokens[self.tokens.len - 1];
             return self.tokens[p_after_pending];
         }
         if (self.pending_type_eq) {
             if (offset == 0) return self.pendingTypeEqualToken();
-            const p_after_pending = self.cursor + (offset - 1);
+            const arrow_tail: u32 = @intFromBool(self.pendingTypeEqualIsArrow());
+            const p_after_pending = self.cursor + (offset - 1) + arrow_tail;
             if (p_after_pending >= self.tokens.len) return self.tokens[self.tokens.len - 1];
             return self.tokens[p_after_pending];
         }
@@ -619,6 +621,7 @@ pub const Parser = struct {
         }
         if (self.pending_type_eq) {
             const tok = self.pendingTypeEqualToken();
+            if (tok.kind == .arrow) self.cursor += 1;
             self.pending_type_eq = false;
             return tok;
         }
@@ -650,11 +653,23 @@ pub const Parser = struct {
         };
     }
 
+    fn pendingTypeEqualIsArrow(self: *const Parser) bool {
+        if (!self.pending_type_eq) return false;
+        const next = self.tokens[self.cursor];
+        return next.kind == .greater_than and next.span.start == self.pending_type_eq_pos + 1;
+    }
+
     fn pendingTypeEqualToken(self: *const Parser) Token {
+        // After a type closer, `>=>` is `>` followed by `=>`, although
+        // context-free lexing produced `>=` and `>`. Join only adjacent
+        // suffix bytes; ordinary generic assignments keep their `=` token.
+        const arrow = self.pendingTypeEqualIsArrow();
+        var flags = self.pending_type_eq_flags;
+        if (arrow) flags.preceded_by_newline = false;
         return .{
-            .span = .{ .start = self.pending_type_eq_pos, .end = self.pending_type_eq_pos + 1 },
-            .kind = .equal,
-            .flags = self.pending_type_eq_flags,
+            .span = .{ .start = self.pending_type_eq_pos, .end = self.pending_type_eq_pos + @as(u32, if (arrow) 2 else 1) },
+            .kind = if (arrow) .arrow else .equal,
+            .flags = flags,
             .line = self.pending_type_eq_line,
         };
     }
@@ -18582,6 +18597,7 @@ pub const Parser = struct {
         var i: u32 = idx;
         while (i < self.tokens.len) : (i += 1) {
             const tk = self.tokens[i].kind;
+            if (self.typeCloserEndsInArrow(i, depth)) return true;
             if (depth == 0) {
                 if (tk == .arrow) return true;
                 if (self.arrowReturnTypeHasStatementBoundary(i) or tk == .semicolon or tk == .comma or tk == .close_paren or
@@ -18597,12 +18613,25 @@ pub const Parser = struct {
                 },
                 // The lexer packs nested generic closers into shift tokens.
                 // Count every closer here without changing expression tokens.
-                .greater_greater => depth = @max(0, depth - 2),
-                .greater_greater_greater => depth = @max(0, depth - 3),
+                .greater_than_equal => depth = @max(0, depth - 1),
+                .greater_greater, .greater_greater_equal => depth = @max(0, depth - 2),
+                .greater_greater_greater, .greater_greater_greater_equal => depth = @max(0, depth - 3),
                 else => {},
             }
         }
         return false;
+    }
+
+    fn typeCloserEndsInArrow(self: *const Parser, index: u32, depth: i32) bool {
+        const closers: i32 = switch (self.tokens[index].kind) {
+            .greater_than_equal => 1,
+            .greater_greater_equal => 2,
+            .greater_greater_greater_equal => 3,
+            else => return false,
+        };
+        return depth == closers and index + 1 < self.tokens.len and
+            self.tokens[index + 1].kind == .greater_than and
+            self.tokens[index + 1].span.start == self.tokens[index].span.end;
     }
 
     fn scanForMissingArrowBlockAfterColon(self: *Parser, idx: u32) bool {
@@ -18611,6 +18640,7 @@ pub const Parser = struct {
         var i: u32 = idx;
         while (i < self.tokens.len) : (i += 1) {
             const tk = self.tokens[i].kind;
+            if (self.typeCloserEndsInArrow(i, depth)) return false;
             if (depth == 0) {
                 if (tk == .open_brace) return saw_type_token;
                 if (self.arrowReturnTypeHasStatementBoundary(i) or tk == .semicolon or tk == .comma or tk == .close_paren or
@@ -18625,8 +18655,9 @@ pub const Parser = struct {
                 .greater_than, .close_paren, .close_bracket => {
                     if (depth > 0) depth -= 1;
                 },
-                .greater_greater => depth = @max(0, depth - 2),
-                .greater_greater_greater => depth = @max(0, depth - 3),
+                .greater_than_equal => depth = @max(0, depth - 1),
+                .greater_greater, .greater_greater_equal => depth = @max(0, depth - 2),
+                .greater_greater_greater, .greater_greater_greater_equal => depth = @max(0, depth - 3),
                 else => {},
             }
         }
@@ -18639,6 +18670,7 @@ pub const Parser = struct {
         var i: u32 = idx;
         while (i < self.tokens.len) : (i += 1) {
             const kind = self.tokens[i].kind;
+            if (self.typeCloserEndsInArrow(i, depth)) return false;
             if (depth == 0) {
                 if (kind == .semicolon) return saw_type_token;
                 if (self.arrowReturnTypeHasStatementBoundary(i) or kind == .arrow or kind == .comma or kind == .close_paren or
@@ -18653,8 +18685,9 @@ pub const Parser = struct {
                 .greater_than, .close_paren, .close_brace, .close_bracket => {
                     if (depth > 0) depth -= 1;
                 },
-                .greater_greater => depth = @max(0, depth - 2),
-                .greater_greater_greater => depth = @max(0, depth - 3),
+                .greater_than_equal => depth = @max(0, depth - 1),
+                .greater_greater, .greater_greater_equal => depth = @max(0, depth - 2),
+                .greater_greater_greater, .greater_greater_greater_equal => depth = @max(0, depth - 3),
                 else => {},
             }
         }
@@ -31036,6 +31069,45 @@ test "parser: typed arrows retain compound generic return closers" {
         const init = hir_mod.varDeclOf(&s.hir, stmts[0]).init;
         try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(init));
         try T.expect(hir_mod.fnDeclOf(&s.hir, init).return_type != hir_mod.none_node_id);
+    }
+}
+
+test "parser: compact generic closers retain the following arrow" {
+    for ([_][]const u8{
+        "const f=():Array<number>=>[1];",
+        "const f=():Array<Array<number>>=>[[1]];",
+        "const f=():Array<Array<Array<number>>>=>[[[1]]];",
+        "const f=():Array<Array<Array<Array<number>>>>=>[[[[1]]]];",
+        "const f=async():Promise<number>=>1;",
+        "const f=():Array<\nnumber\n>=>[1];",
+        "const f=flag?(n:number):Array<number>=>[n]:null;",
+    }) |source| {
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const statements = hir_mod.blockStmts(&s.hir, root);
+        try T.expectEqual(@as(usize, 1), statements.len);
+        const init = hir_mod.varDeclOf(&s.hir, statements[0]).init;
+        try T.expect(s.hir.kindOf(init) == .arrow_fn or s.hir.kindOf(init) == .conditional);
+    }
+}
+
+test "parser: pending type angles project a compact arrow once" {
+    for ([_][]const u8{ ">=>value", ">>=>value", ">>>=>value" }, 0..) |source, remaining| {
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        _ = try s.parser.consumeTypeGreater("type close");
+        const offset: u32 = @intCast(remaining);
+        try T.expectEqual(TokenKind.arrow, s.parser.peekAt(offset).kind);
+        try T.expectEqual(TokenKind.identifier, s.parser.peekAt(offset + 1).kind);
+        for (0..remaining) |_| try T.expectEqual(TokenKind.greater_than, s.parser.advance().kind);
+        const arrow = s.parser.advance();
+        try T.expectEqual(TokenKind.arrow, arrow.kind);
+        const equal_pos: u32 = @intCast(std.mem.indexOfScalar(u8, source, '=').?);
+        try T.expectEqual(equal_pos, arrow.span.start);
+        try T.expectEqual(equal_pos + 2, arrow.span.end);
+        try T.expectEqual(TokenKind.identifier, s.parser.peek().kind);
     }
 }
 
