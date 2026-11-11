@@ -81734,7 +81734,7 @@ pub const Checker = struct {
                             }
                             var literal_keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
                             defer literal_keys.deinit(self.gpa);
-                            if (self.collectStringLiteralKeys(key_t, &literal_keys) and literal_keys.items.len > 0) {
+                            if ((try self.collectPropertyLiteralKeys(key_t, &literal_keys)) and literal_keys.items.len > 0) {
                                 var record_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
                                 defer record_members.deinit(self.gpa);
                                 for (literal_keys.items) |key_name| {
@@ -89214,10 +89214,13 @@ pub const Checker = struct {
         };
         try self.reportInvalidMappedValueIndexedAccess(m);
 
-        // Materialize when the constraint is a string-literal union or
-        // a single string-literal type.
+        // Materialize when the constraint is a finite union of string and
+        // number literals; `literal_key_types[i]` is what `K` is bound to
+        // for `literal_keys[i]`.
         var literal_keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer literal_keys.deinit(self.gpa);
+        var literal_key_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer literal_key_types.deinit(self.gpa);
         const homomorphic_source: ?TypeId = blk: {
             if (self.hir.kindOf(m.constraint) != .keyof_type) break :blk null;
             const k = hir_mod.keyofTypeOf(self.hir, m.constraint);
@@ -89229,13 +89232,16 @@ pub const Checker = struct {
             }
             break :blk null;
         };
-        var can_materialize = self.collectStringLiteralKeys(constraint_t, &literal_keys);
+        var can_materialize = try self.collectMappedLiteralKeys(constraint_t, &literal_keys, &literal_key_types);
         if (homomorphic_source) |source_t| {
             if (self.isActualTupleType(source_t)) {
                 literal_keys.clearRetainingCapacity();
+                literal_key_types.clearRetainingCapacity();
                 for (self.interner.objectMembers(source_t)) |member| {
                     if (!self.isNumericStringId(member.name)) continue;
-                    try self.appendUniqueKeyofName(&literal_keys, member.name);
+                    if (std.mem.indexOfScalar(hir_mod.StringId, literal_keys.items, member.name) != null) continue;
+                    try literal_keys.append(self.gpa, member.name);
+                    try literal_key_types.append(self.gpa, self.interner.internStringLiteral(member.name) catch return error.OutOfMemory);
                 }
                 can_materialize = literal_keys.items.len > 0;
             }
@@ -89365,8 +89371,7 @@ pub const Checker = struct {
         // 1 = add, 2 = remove. The homomorphic case
         // (`{ [K in keyof T]: ... }`) inherits the source object's
         // is_optional / is_readonly when the modifier is unspecified.
-        for (literal_keys.items) |key_name| {
-            const key_lit = self.interner.internStringLiteral(key_name) catch continue;
+        for (literal_keys.items, literal_key_types.items) |key_name, key_lit| {
             // Lower the property value with the mapped key bound to
             // the current literal. This is more faithful than lowering
             // once and substituting afterward because recursive alias
@@ -89409,12 +89414,8 @@ pub const Checker = struct {
                     break :blk2 remap_t;
                 };
                 const nf = self.interner.pool.flagsOf(named);
-                if (!(nf.is_literal and nf.is_string)) continue;
-                const lit = self.interner.literalOf(named);
-                switch (lit) {
-                    .string_lit => |sid| effective_name = sid,
-                    else => continue,
-                }
+                if (!(nf.is_literal and (nf.is_string or nf.is_number))) continue;
+                effective_name = (try self.propertyNameFromLiteralType(named)) orelse continue;
             }
             // Inherit source flags when homomorphic + modifier
             // unspecified; apply +/- modifiers otherwise.
@@ -89854,7 +89855,7 @@ pub const Checker = struct {
             const key = if (member.key_type != types.Primitive.none)
                 member.key_type
             else
-                self.interner.internStringLiteral(member.name) catch return error.OutOfMemory;
+                try self.memberNameKeyType(member);
             try self.appendUniqueTypeId(out, key);
         }
         if (self.isActualTupleType(t) or self.typeIsArrayLikeObject(t)) {
@@ -89870,6 +89871,21 @@ pub const Checker = struct {
             }
         }
         return true;
+    }
+
+    /// The literal type of a member's name, as TypeScript's
+    /// `getLiteralTypeFromPropertyName` gives it: a name written as a numeric
+    /// literal (`1`, `1e21`, `0x10`) is that number, and any other name is a
+    /// string literal. A quoted `"1"` stays the string `"1"`.
+    fn memberNameKeyType(self: *Checker, member: types.ObjectMember) CheckError!TypeId {
+        if (self.objectMemberDeclaredNameText(member)) |declared| {
+            if (declared.len > 0 and (std.ascii.isDigit(declared[0]) or declared[0] == '.')) {
+                if (numericNameTokenValue(declared)) |value| {
+                    return self.interner.internNumberLiteral(value) catch return error.OutOfMemory;
+                }
+            }
+        }
+        return self.interner.internStringLiteral(member.name) catch return error.OutOfMemory;
     }
 
     fn keyofTypeFromOperand(self: *Checker, operand: TypeId) CheckError!TypeId {
@@ -90113,6 +90129,43 @@ pub const Checker = struct {
         if (!flags.is_literal or (!flags.is_string and !flags.is_number)) return false;
         const name = (try self.propertyNameFromLiteralType(t)) orelse return false;
         try self.appendUniqueKeyofName(out, name);
+        return true;
+    }
+
+    /// The keys of a mapped type's finite constraint: each property name
+    /// with the key type its template sees. A number literal names its
+    /// property by its JavaScript text and stays a number for `K`, as in
+    /// TypeScript's `resolveMappedTypeMembers`: `{ [K in 1 | 2]: K }` is
+    /// `{ 1: 1; 2: 2 }`. An intersection keeps its common string keys.
+    fn collectMappedLiteralKeys(
+        self: *Checker,
+        t: TypeId,
+        names: *std.ArrayListUnmanaged(hir_mod.StringId),
+        key_types: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!bool {
+        if (t == types.Primitive.never) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            const count = self.interner.unionMembers(t).len;
+            for (0..count) |index| {
+                if (!try self.collectMappedLiteralKeys(self.interner.unionMembers(t)[index], names, key_types)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            const start = names.items.len;
+            if (!self.collectStringLiteralKeys(t, names)) return false;
+            for (names.items[start..]) |name| {
+                try key_types.append(self.gpa, self.interner.internStringLiteral(name) catch return error.OutOfMemory);
+            }
+            return true;
+        }
+        if (!flags.is_literal or (!flags.is_string and !flags.is_number)) return false;
+        const name = (try self.propertyNameFromLiteralType(t)) orelse return false;
+        if (std.mem.indexOfScalar(hir_mod.StringId, names.items, name) != null) return true;
+        try names.append(self.gpa, name);
+        try key_types.append(self.gpa, t);
         return true;
     }
 
@@ -103532,7 +103585,7 @@ pub const Checker = struct {
             // isn't a finite set of string-literal keys (e.g. `keyof T`
             // where T is a type parameter); only concrete keys let us
             // materialize a faithful object shape.
-            if (!self.collectStringLiteralKeys(key_t, &keys)) {
+            if (!try self.collectPropertyLiteralKeys(key_t, &keys)) {
                 if (kind == .pick) {
                     const has_string = self.typeContainsBroadKey(key_t, types.Primitive.string_t);
                     const has_number = self.typeContainsBroadKey(key_t, types.Primitive.number_t);
@@ -118032,7 +118085,7 @@ pub const Checker = struct {
         if (keyed_utility) {
             var keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
             defer keys.deinit(self.gpa);
-            if (!self.collectStringLiteralKeys(key_t, &keys)) return error.UnsupportedProgramType;
+            if (!try self.collectPropertyLiteralKeys(key_t, &keys)) return error.UnsupportedProgramType;
             for (keys.items) |key| try selected_keys.put(self.gpa, key, {});
         }
 
@@ -196875,7 +196928,7 @@ pub const Checker = struct {
                     slice[0] = this_entry;
                     return slice;
                 }
-                const prop_str = self.string_interner.get(tm.name);
+                const prop_str = self.objectMemberDeclaredNameText(tm) orelse self.string_interner.get(tm.name);
                 const msg = try std.fmt.allocPrint(
                     arena,
                     "Types of property '{s}' are incompatible.",
@@ -197072,7 +197125,7 @@ pub const Checker = struct {
                 const generic_mismatch = try self.genericObjectTypeParameterMismatch(sm.type, tm.type, 0);
                 const ok = !generic_mismatch and (self.heritageAssignableDeep(sm.type, tm.type) catch true);
                 if (ok) break;
-                const prop_str = self.string_interner.get(tm.name);
+                const prop_str = self.objectMemberDeclaredNameText(tm) orelse self.string_interner.get(tm.name);
                 const msg = try std.fmt.allocPrint(
                     arena,
                     "Types of property '{s}' are incompatible.",
@@ -197957,8 +198010,8 @@ pub const Checker = struct {
                 break;
             }
         }
-        const declared_missing_name = if (first_missing_member) |member|
-            self.objectMemberDeclaredNameText(member)
+        const declared_missing_name = if (first_missing_member != null)
+            self.declaredMemberNameIn(target_members, first_missing_name)
         else
             null;
 
@@ -197967,10 +198020,7 @@ pub const Checker = struct {
             const prop_text = if (target_is_tuple)
                 self.string_interner.get(first_missing_name)
             else if (declared_missing_name) |declared|
-                if (declared.len > 0 and declared[0] >= '0' and declared[0] <= '9')
-                    declared
-                else
-                    self.formatMissingPropertyNameForDiagnostic(self.string_interner.get(first_missing_name), target_name)
+                declared
             else
                 self.formatMissingPropertyNameForDiagnostic(self.string_interner.get(first_missing_name), target_name);
             const msg = try std.fmt.allocPrint(
@@ -197992,7 +198042,11 @@ pub const Checker = struct {
         while (i < list_count and i < missing_listed) : (i += 1) {
             if (i > 0) try names_buf.appendSlice(self.gpa, ", ");
             const raw = self.string_interner.get(missing_names[i]);
-            const formatted = if (target_is_tuple) raw else self.formatPropertyNameForDiagnostic(raw);
+            const formatted = if (target_is_tuple)
+                raw
+            else
+                self.declaredMemberNameIn(target_members, missing_names[i]) orelse
+                    self.formatPropertyNameForDiagnostic(raw);
             try names_buf.appendSlice(self.gpa, formatted);
         }
         if (missing_total > 5) {
@@ -198232,25 +198286,167 @@ pub const Checker = struct {
         return std.mem.eql(u8, name, canonical);
     }
 
+    /// How TypeScript names the member called `name` in `members` in a
+    /// missing-property diagnostic. A declared member is named as written
+    /// (see `objectMemberDeclaredNameText`). A member that no declaration
+    /// names, such as a mapped type's, follows `getNameOfSymbolFromNameType`:
+    /// a numeric name is bare, and a negative one is in brackets. Null leaves
+    /// the caller's own formatting.
+    fn declaredMemberNameIn(self: *Checker, members: []const types.ObjectMember, name: hir_mod.StringId) ?[]const u8 {
+        for (members) |member| {
+            if (member.name != name) continue;
+            if (self.objectMemberDeclaredNameText(member)) |declared| return declared;
+            if (member.decl_node != hir_mod.none_node_id) return null;
+            const text = self.string_interner.getOptional(name) orelse return null;
+            if (!isCanonicalNumericPropertyName(text)) return null;
+            if (text[0] == '-') return std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{text}) catch null;
+            return text;
+        }
+        return null;
+    }
+
+    /// A member's name as its declaration writes it. TypeScript names a
+    /// declared property this way in a diagnostic (`symbolToString` →
+    /// `getNameOfSymbolAsWritten` → `declarationNameToString`), so `1e21`,
+    /// `0x10`, `1.50`, `"a-b"` and `'c'` keep their spelling and quotes.
+    /// Null when the member has no declaration in this file, or when the
+    /// token found there does not name `member`.
     fn objectMemberDeclaredNameText(self: *Checker, member: types.ObjectMember) ?[]const u8 {
         if (!self.nodeBelongsToCurrentHir(member.decl_node)) return null;
         const src = self.source orelse return null;
         const span = self.hir.spanOf(member.decl_node);
         if (span.start >= span.end or span.end > src.len) return null;
-        const text = std.mem.trim(u8, src[span.start..span.end], " \t\r\n");
-        if (text.len == 0) return null;
-        if (text[0] == '\'' or text[0] == '"') {
-            const quote = text[0];
-            const end = std.mem.indexOfScalarPos(u8, text, 1, quote) orelse return null;
-            return text[0 .. end + 1];
+        const token = memberNameToken(src[span.start..span.end]) orelse return null;
+        const name = self.string_interner.getOptional(member.name) orelse return null;
+        if (!memberNameTokenDenotes(token, name)) return null;
+        return token;
+    }
+
+    /// The property-name token of a member declaration's source text: a
+    /// string literal with its quotes, a numeric literal as written, an
+    /// identifier or a `#private` name. Leading modifiers are skipped; a
+    /// modifier word followed by `:`, `?`, `(` or the like is the name.
+    fn memberNameToken(text: []const u8) ?[]const u8 {
+        var i: usize = 0;
+        while (true) {
+            while (i < text.len and std.ascii.isWhitespace(text[i])) i += 1;
+            if (i >= text.len) return null;
+            const c = text[i];
+            if (c == '"' or c == '\'') {
+                var j = i + 1;
+                while (j < text.len) : (j += 1) {
+                    if (text[j] == '\\') {
+                        j += 1;
+                        continue;
+                    }
+                    if (text[j] == c) return text[i .. j + 1];
+                    if (text[j] == '\n') return null;
+                }
+                return null;
+            }
+            if (std.ascii.isDigit(c) or (c == '.' and i + 1 < text.len and std.ascii.isDigit(text[i + 1]))) {
+                var j = i;
+                while (j < text.len) : (j += 1) {
+                    const d = text[j];
+                    if (std.ascii.isAlphanumeric(d) or d == '_' or d == '.') continue;
+                    // An exponent sign: `1e+21`, `1.5e-7`.
+                    if ((d == '+' or d == '-') and j > i and (text[j - 1] == 'e' or text[j - 1] == 'E') and
+                        !(text.len > i + 1 and text[i] == '0' and (text[i + 1] == 'x' or text[i + 1] == 'X'))) continue;
+                    break;
+                }
+                return text[i..j];
+            }
+            if (c == '*') {
+                i += 1;
+                continue;
+            }
+            if (c == '#' or c == '_' or c == '$' or std.ascii.isAlphabetic(c)) {
+                var j = i + 1;
+                while (j < text.len and (std.ascii.isAlphanumeric(text[j]) or text[j] == '_' or text[j] == '$')) j += 1;
+                const word = text[i..j];
+                if (c != '#' and isMemberNameModifier(word)) {
+                    var k = j;
+                    while (k < text.len and std.ascii.isWhitespace(text[k])) k += 1;
+                    if (k < text.len) {
+                        const next = text[k];
+                        if (next == '"' or next == '\'' or next == '#' or next == '[' or next == '*' or next == '_' or
+                            next == '$' or std.ascii.isAlphanumeric(next) or next == '.')
+                        {
+                            i = j;
+                            continue;
+                        }
+                    }
+                }
+                return word;
+            }
+            return null;
         }
-        if (text[0] < '0' or text[0] > '9') return null;
-        var end: usize = 1;
-        while (end < text.len) : (end += 1) {
-            const c = text[end];
-            if ((c < '0' or c > '9') and c != '.') break;
+    }
+
+    fn isMemberNameModifier(word: []const u8) bool {
+        const modifiers = [_][]const u8{
+            "readonly", "public",   "private", "protected", "static", "abstract",
+            "declare",  "override", "accessor", "async",    "get",    "set",
+        };
+        for (modifiers) |modifier| {
+            if (std.mem.eql(u8, word, modifier)) return true;
         }
-        return text[0..end];
+        return false;
+    }
+
+    /// Whether a name token read from source denotes the canonical member
+    /// name `name`: the same identifier, the same string contents, or a
+    /// number whose JavaScript text is `name`.
+    fn memberNameTokenDenotes(token: []const u8, name: []const u8) bool {
+        if (token.len == 0) return false;
+        if (token[0] == '"' or token[0] == '\'') {
+            if (token.len < 2) return false;
+            const inner = token[1 .. token.len - 1];
+            if (std.mem.indexOfScalar(u8, inner, '\\') != null) return false;
+            return std.mem.eql(u8, inner, name);
+        }
+        if (std.ascii.isDigit(token[0]) or token[0] == '.') {
+            const value = numericNameTokenValue(token) orelse return false;
+            var buf: [64]u8 = undefined;
+            const canonical = number_literal_text.format(&buf, value) catch return false;
+            return std.mem.eql(u8, canonical, name);
+        }
+        return std.mem.eql(u8, token, name);
+    }
+
+    /// The value of a numeric literal token: decimal with an optional
+    /// fraction and exponent, or `0x`, `0o` and `0b` integers, with `_`
+    /// separators. Null for anything else, a bigint included.
+    fn numericNameTokenValue(token: []const u8) ?f64 {
+        var buf: [128]u8 = undefined;
+        var len: usize = 0;
+        for (token) |c| {
+            if (c == '_') continue;
+            if (len == buf.len) return null;
+            buf[len] = c;
+            len += 1;
+        }
+        const digits = buf[0..len];
+        if (digits.len > 2 and digits[0] == '0') {
+            const radix: ?u8 = switch (digits[1]) {
+                'x', 'X' => 16,
+                'o', 'O' => 8,
+                'b', 'B' => 2,
+                else => null,
+            };
+            if (radix) |r| {
+                var value: f64 = 0;
+                for (digits[2..]) |d| {
+                    const digit = std.fmt.charToDigit(d, r) catch return null;
+                    value = value * @as(f64, @floatFromInt(r)) + @as(f64, @floatFromInt(digit));
+                }
+                return value;
+            }
+        }
+        for (digits) |d| {
+            if (!(std.ascii.isDigit(d) or d == '.' or d == 'e' or d == 'E' or d == '+' or d == '-')) return null;
+        }
+        return std.fmt.parseFloat(f64, digits) catch null;
     }
 
     fn appendObjectShapeMember(self: *Checker, buf: *std.ArrayListUnmanaged(u8), arena: std.mem.Allocator, member: types.ObjectMember) !bool {
@@ -303196,4 +303392,55 @@ test "checker: a number literal type prints as JavaScript formats the number (#1
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '123456789012345680000' is not assignable to type '1'."));
     // Above 2^53 a whole number prints its shortest digits, not its exact value.
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1152921504606847000' is not assignable to type '1'."));
+}
+
+test "checker: a missing member is named as its declaration writes it (#1015)" {
+    const s = try newSetup(
+        \\interface I { 1e21: string; 0x10: string; 1.50: string; 2: string }
+        \\const i: I = {};
+        \\interface J { 1e21: string }
+        \\const j: J = {};
+        \\interface S { 0b11: string }
+        \\const s: S = {};
+        \\interface Q { "a-b": string; 'c': string; d: string }
+        \\const q: Q = {};
+        \\class C { 1e21 = "x"; 0x10 = "y" }
+        \\const c: C = {};
+        \\type M = { [P in 1 | 2]: string };
+        \\const m: M = { 1: "a" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_missing_properties, "Type '{}' is missing the following properties from type 'I': 1e21, 0x10, 1.50, 2"));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_missing_required, "Property '1e21' is missing in type '{}' but required in type 'J'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_missing_required, "Property '0b11' is missing in type '{}' but required in type 'S'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_missing_properties, "Type '{}' is missing the following properties from type 'Q': \"a-b\", 'c', d"));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_missing_properties, "Type '{}' is missing the following properties from type 'C': 1e21, 0x10"));
+    // A mapped member has no declaration, so its numeric name is bare.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_missing_required, "Property '2' is missing in type '{ 1: string; }' but required in type 'M'."));
+}
+
+test "checker: keyof gives a numeric property name its number literal type (#1015)" {
+    const s = try newSetup(
+        \\const k1: keyof { 1: string } = "1";
+        \\const k2: keyof { "1": string } = 1;
+        \\const k4: keyof { 0x10: string } = 17;
+        \\interface I { 1: string; a: number }
+        \\type M = { [P in 1 | 2]: P };
+        \\const m: M = { 1: 1, 2: 3 };
+        \\type Pk = Pick<I, 1>;
+        \\const pk: Pk = { 1: 5 };
+        \\type R = Record<1 | 2, string>;
+        \\const r: R = { 1: "a", 2: 2 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"1\"' is not assignable to type '1'."));
+    // A quoted name stays a string.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1' is not assignable to type '\"1\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '17' is not assignable to type '16'."));
+    // A mapped type over number keys binds `P` to the number.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '3' is not assignable to type '2'."));
+    // `Pick` and `Record` accept a number key.
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
 }
