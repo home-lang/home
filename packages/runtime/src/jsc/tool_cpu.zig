@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 const io = std.Io.Threaded.global_single_threaded.io();
 
 fn readSmall(allocator: std.mem.Allocator, directory: std.Io.Dir, path: []const u8) ?[]u8 {
-    return directory.readFileAlloc(io, path, allocator, .limited(65537)) catch null;
+    return @import("tool_cpu_files.zig").read(allocator, directory, path, .limited(65537)) catch null;
 }
 
 fn parseNumber(text: []const u8) ?i64 {

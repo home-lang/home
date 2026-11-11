@@ -2,6 +2,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const io = std.Io.Threaded.global_single_threaded.io();
+const files = @import("tool_cpu_files.zig");
 
 pub const Times = struct { user: u64, nice: u64, sys: u64, idle: u64, irq: u64 };
 pub const Cpu = struct { model: []const u8, speed: u32, times: Times };
@@ -89,9 +90,9 @@ fn applyModels(records: []LinuxCpu, text: []const u8) void {
 }
 
 fn linuxSnapshot(allocator: std.mem.Allocator, proc: std.Io.Dir, sys: ?std.Io.Dir, hz: u64) ![]Cpu {
-    const stat = try proc.readFileAlloc(io, "stat", allocator, .limited(16 * 1024 * 1024));
+    const stat = try files.read(allocator, proc, "stat", .limited(16 * 1024 * 1024));
     const records = try parseStat(allocator, stat, hz);
-    if (proc.readFileAlloc(io, "cpuinfo", allocator, .limited(16 * 1024 * 1024))) |text| {
+    if (files.read(allocator, proc, "cpuinfo", .limited(16 * 1024 * 1024))) |text| {
         applyModels(records, text);
     } else |_| {}
     const output = try allocator.alloc(Cpu, records.len);
@@ -99,7 +100,7 @@ fn linuxSnapshot(allocator: std.mem.Allocator, proc: std.Io.Dir, sys: ?std.Io.Di
         cpu.* = record.cpu;
         if (sys) |directory| {
             const path = try std.fmt.allocPrint(allocator, "cpu{d}/cpufreq/scaling_cur_freq", .{record.id});
-            const text = directory.readFileAlloc(io, path, allocator, .limited(1024)) catch continue;
+            const text = files.read(allocator, directory, path, .limited(1024)) catch continue;
             const khz = std.fmt.parseInt(u64, std.mem.trim(u8, text, " \t\r\n"), 10) catch continue;
             cpu.speed = std.math.cast(u32, khz / 1000) orelse return error.CpuSpeedOverflow;
         }

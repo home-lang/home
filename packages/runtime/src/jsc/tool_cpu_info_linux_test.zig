@@ -26,3 +26,17 @@ test "processor information retains all online CPUs when Linux affinity changes"
     try std.testing.expectEqual(before.records.len, after.records.len);
     for (before.records, after.records) |one, two| try std.testing.expectEqualStrings(one.model, two.model);
 }
+
+test "native CPU proc files expose live data despite zero stat length" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var file = try std.Io.Dir.cwd().openFile(io, "/proc/stat", .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
+    try std.testing.expectEqual(@as(u64, 0), stat.size);
+    const empty = try std.Io.Dir.cwd().readFileAlloc(io, "/proc/stat", std.testing.allocator, .limited(16 * 1024 * 1024));
+    defer std.testing.allocator.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+    const streamed = try @import("tool_cpu_files.zig").read(std.testing.allocator, .cwd(), "/proc/stat", .limited(16 * 1024 * 1024));
+    defer std.testing.allocator.free(streamed);
+    try std.testing.expect(std.mem.startsWith(u8, streamed, "cpu "));
+}
