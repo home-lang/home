@@ -75679,7 +75679,8 @@ pub const Checker = struct {
     }
 
     /// Whether an alias's result is a type TypeScript shares instead of
-    /// naming: a single literal, or whatever a `keyof` evaluates to. Such a
+    /// naming: a single literal, or whatever a `keyof` or a template literal
+    /// type evaluates to. Such a
     /// type has one identity for every place that produces it, so an alias
     /// name recorded on it labels unrelated code — `type L = "x"` made every
     /// `"x"` in the program display as `L`, and `type KB = keyof boolean`
@@ -75687,6 +75688,10 @@ pub const Checker = struct {
     /// TypeScript never shows either alias name.
     fn aliasResultIsSharedType(self: *Checker, aliased_node: NodeId, aliased_t: TypeId) bool {
         if (aliased_node != hir_mod.none_node_id and self.hir.kindOf(aliased_node) == .keyof_type) return true;
+        // A template literal type takes no alias either
+        // (`getTemplateLiteralType`), including the union it spreads into:
+        // `type U = \`${1 | 2}\`` displays as `"1" | "2"` (#1011).
+        if (aliased_node != hir_mod.none_node_id and self.hir.kindOf(aliased_node) == .template_literal_type) return true;
         if (aliased_t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(aliased_t);
         if (flags.is_union or flags.is_intersection or flags.is_object_type) return false;
@@ -80425,7 +80430,131 @@ pub const Checker = struct {
             const sid = self.string_interner.intern(canonical.items) catch return error.OutOfMemory;
             return self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
         }
-        return self.interner.internTemplateLiteral(text_ids.items, lowered_parts.items) catch return error.OutOfMemory;
+        return try self.buildTemplateLiteralType(text_ids.items, lowered_parts.items);
+    }
+
+    /// A template literal type from its text spans and placeholder types, as
+    /// TypeScript's `getTemplateLiteralType` builds one. A literal placeholder
+    /// becomes text — `${1}` is `"1"`, `${1n}` is `"1"`, `${null}` is
+    /// `"null"` — and a placeholder that is a union of such literals, or
+    /// `boolean`, is spread into a union of results: `${1 | 2}` is
+    /// `"1" | "2"`. Home used to fold string literals only, and kept any other
+    /// literal as a placeholder that accepted every string of its kind, so
+    /// `const n: \`${1}\` = "2"` passed (#1011).
+    fn buildTemplateLiteralType(self: *Checker, texts: []const hir_mod.StringId, parts: []const TypeId) CheckError!TypeId {
+        if (texts.len != parts.len + 1) return self.interner.internTemplateLiteral(texts, parts) catch return error.OutOfMemory;
+        for (parts) |part| {
+            if (part == types.Primitive.never) return types.Primitive.never;
+        }
+        for (parts, 0..) |part, index| {
+            var members: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer members.deinit(self.gpa);
+            if (!try self.templateSpreadableLiteralUnion(part, &members)) continue;
+            const spread_parts = try self.gpa.dupe(TypeId, parts);
+            defer self.gpa.free(spread_parts);
+            var results: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer results.deinit(self.gpa);
+            for (members.items) |member| {
+                spread_parts[index] = member;
+                try results.append(self.gpa, try self.buildTemplateLiteralType(texts, spread_parts));
+            }
+            if (results.items.len == 1) return results.items[0];
+            return self.interner.internUnion(results.items) catch return error.OutOfMemory;
+        }
+        var current: std.ArrayListUnmanaged(u8) = .empty;
+        defer current.deinit(self.gpa);
+        var new_texts: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer new_texts.deinit(self.gpa);
+        var new_parts: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer new_parts.deinit(self.gpa);
+        try current.appendSlice(self.gpa, self.string_interner.get(texts[0]));
+        for (parts, 0..) |part, index| {
+            if (!try self.appendTemplatePlaceholderLiteralText(part, &current)) {
+                try new_texts.append(self.gpa, self.string_interner.intern(current.items) catch return error.OutOfMemory);
+                current.clearRetainingCapacity();
+                try new_parts.append(self.gpa, part);
+            }
+            try current.appendSlice(self.gpa, self.string_interner.get(texts[index + 1]));
+        }
+        if (new_parts.items.len == 0) {
+            var canonical: std.ArrayListUnmanaged(u8) = .empty;
+            defer canonical.deinit(self.gpa);
+            try self.appendCanonicalJsStringBytes(current.items, &canonical);
+            const sid = self.string_interner.intern(canonical.items) catch return error.OutOfMemory;
+            return self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
+        }
+        try new_texts.append(self.gpa, self.string_interner.intern(current.items) catch return error.OutOfMemory);
+        return self.interner.internTemplateLiteral(new_texts.items, new_parts.items) catch return error.OutOfMemory;
+    }
+
+    /// The members a template placeholder is spread over: `boolean` as
+    /// `false | true`, or a union whose members are all literals, `null` or
+    /// `undefined`. Spreading only some unions would make equal types
+    /// unequal: `\`a${"x" | "y"}${boolean}\`` spread over `boolean` and
+    /// `\`a${"x" | "y"}${"false" | "true"}\`` kept whole did not relate.
+    /// `false` for anything else, including a union that also holds
+    /// `string` or a type parameter, which stays a placeholder.
+    fn templateSpreadableLiteralUnion(self: *Checker, part: TypeId, out: *std.ArrayListUnmanaged(TypeId)) CheckError!bool {
+        if (part == types.Primitive.boolean_t) {
+            try out.appendSlice(self.gpa, &.{ types.Primitive.false_lit, types.Primitive.true_lit });
+            return true;
+        }
+        if (part >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(part).is_union) return false;
+        for (self.interner.unionMembers(part)) |member| {
+            if (member == types.Primitive.boolean_t) {
+                try out.appendSlice(self.gpa, &.{ types.Primitive.false_lit, types.Primitive.true_lit });
+                continue;
+            }
+            if (member == types.Primitive.null_t or member == types.Primitive.undefined_t or
+                member == types.Primitive.true_lit or member == types.Primitive.false_lit)
+            {
+                try out.append(self.gpa, member);
+                continue;
+            }
+            if (member >= self.interner.pool.typeCount()) return false;
+            const flags = self.interner.pool.flagsOf(member);
+            if (!flags.is_literal or flags.is_union or flags.is_intersection or flags.is_unique_symbol) return false;
+            try out.append(self.gpa, member);
+        }
+        return true;
+    }
+
+    /// Append the text a literal placeholder contributes to a template
+    /// literal type (`getTemplateStringForType`): a string as itself, a
+    /// number as JavaScript prints it (`1e+21`, `-1`, `0.5`), a bigint without
+    /// its `n`, `true`, `false`, `null` and `undefined`, and an enum member by
+    /// its value. `false`, appending nothing, for any other type.
+    fn appendTemplatePlaceholderLiteralText(self: *Checker, part: TypeId, out: *std.ArrayListUnmanaged(u8)) CheckError!bool {
+        if (self.stringLiteralValueFromType(part)) |sid| {
+            try out.appendSlice(self.gpa, self.string_interner.get(sid));
+            return true;
+        }
+        const fixed: ?[]const u8 = switch (part) {
+            types.Primitive.true_lit => "true",
+            types.Primitive.false_lit => "false",
+            types.Primitive.null_t => "null",
+            types.Primitive.undefined_t => "undefined",
+            else => null,
+        };
+        if (fixed) |text| {
+            try out.appendSlice(self.gpa, text);
+            return true;
+        }
+        if (part >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(part);
+        if (!flags.is_literal or flags.is_union or flags.is_intersection) return false;
+        const lit = self.interner.literalOfOrNull(part) orelse return false;
+        switch (lit) {
+            .number_lit => |bits| {
+                var buf: [128]u8 = undefined;
+                const text = formatCanonicalNumber(&buf, @bitCast(bits)) catch return false;
+                try out.appendSlice(self.gpa, text);
+            },
+            .bigint_lit => |sid| try out.appendSlice(self.gpa, self.string_interner.get(sid)),
+            .boolean_lit => |b| try out.appendSlice(self.gpa, if (b) "true" else "false"),
+            .string_lit, .symbol_lit => return false,
+        }
+        return true;
     }
 
     /// Lower a type annotation while consulting the current
@@ -82071,7 +82200,13 @@ pub const Checker = struct {
                                 self.instantiation_defer_events +%= 1;
                                 break :blk_e info.body;
                             };
-                            if (allow_alias_display and eval_t != info.body) {
+                            // A template literal body never carries the
+                            // alias: TypeScript builds its result with
+                            // `getTemplateLiteralType`, which takes no alias,
+                            // so `F<1>` for `F<T> = \`${T}\`` is `"1"`.
+                            if (allow_alias_display and eval_t != info.body and
+                                self.hir.kindOf(info.body_node) != .template_literal_type)
+                            {
                                 const body_kind = self.hir.kindOf(info.body_node);
                                 if ((body_kind != .conditional_type and body_kind != .type_ref) or
                                     !self.alias_display_names.contains(eval_t))
@@ -97565,6 +97700,31 @@ pub const Checker = struct {
         return false;
     }
 
+    /// `A & B` is assignable to `A`, and so to any union that already holds
+    /// every member of `A`. tsgo's `unionOrIntersectionRelatedTo` keeps the
+    /// same fast path over a normalized intersection's origin. Without it, a
+    /// spread template literal such as `${D}${D}${D}${D}` turns `T & U`
+    /// against `T | null` into a cross product of thousands of members.
+    fn intersectionHasConstituentWithinTarget(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source_t).is_intersection) return false;
+        for (self.interner.intersectionMembers(source_t)) |constituent| {
+            if (constituent == target_t) return true;
+            if (self.unionMembersWithinUnion(constituent, target_t)) return true;
+        }
+        return false;
+    }
+
+    fn unionMembersWithinUnion(self: *Checker, sub_t: TypeId, super_t: TypeId) bool {
+        if (sub_t >= self.interner.pool.typeCount() or super_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(sub_t).is_union or !self.interner.pool.flagsOf(super_t).is_union) return false;
+        const super_members = self.interner.unionMembers(super_t);
+        for (self.interner.unionMembers(sub_t)) |member| {
+            if (std.mem.indexOfScalar(TypeId, super_members, member) == null) return false;
+        }
+        return true;
+    }
+
     fn checkerAssignableTo(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         // Identical types are reflexively assignable. In particular, walking
         // a recursive callback member before this check re-enters the same
@@ -97599,6 +97759,7 @@ pub const Checker = struct {
                 if (source_t == member) return true;
             }
         }
+        if (self.intersectionHasConstituentWithinTarget(source_t, target_t)) return true;
         const normalized_source_t = try self.normalizeKeyofAlgebra(source_t);
         if (normalized_source_t != source_t) return self.checkerAssignableTo(normalized_source_t, target_t);
         const normalized_target_t = try self.normalizeKeyofAlgebra(target_t);
@@ -164106,17 +164267,10 @@ pub const Checker = struct {
         switch (lit) {
             .string_lit => |sid| try self.appendCookedStringText(self.string_interner.get(sid), out),
             .number_lit => |bits| {
-                const v = @as(f64, @bitCast(bits));
-                if (@trunc(v) == v and v >= @as(f64, @floatFromInt(std.math.minInt(i64))) and v <= @as(f64, @floatFromInt(std.math.maxInt(i64)))) {
-                    const as_int: i64 = @intFromFloat(v);
-                    const text = try std.fmt.allocPrint(self.gpa, "{d}", .{as_int});
-                    defer self.gpa.free(text);
-                    try out.appendSlice(self.gpa, text);
-                } else {
-                    const text = try std.fmt.allocPrint(self.gpa, "{d}", .{v});
-                    defer self.gpa.free(text);
-                    try out.appendSlice(self.gpa, text);
-                }
+                // As JavaScript prints it: `1e+21`, `1e-7`, `0` for `-0`.
+                var number_buf: [128]u8 = undefined;
+                const text = formatCanonicalNumber(&number_buf, @bitCast(bits)) catch return false;
+                try out.appendSlice(self.gpa, text);
             },
             .boolean_lit => |b| try out.appendSlice(self.gpa, if (b) "true" else "false"),
             .bigint_lit => |sid| try out.appendSlice(self.gpa, self.string_interner.get(sid)),
@@ -174758,7 +174912,9 @@ pub const Checker = struct {
                 const sid = self.string_interner.intern(buf.items) catch return error.OutOfMemory;
                 return self.interner.internStringLiteral(sid) catch return t;
             }
-            return self.interner.internTemplateLiteral(texts_snapshot, new_parts.items) catch return t;
+            // `Template<1 | 2>` spreads over the union, as at a written
+            // template literal type.
+            return try self.buildTemplateLiteralType(texts_snapshot, new_parts.items);
         }
         if (flags.is_string_mapping) {
             const sm = self.interner.stringMappingPayload(t);
@@ -195018,16 +195174,7 @@ pub const Checker = struct {
         const tf = self.interner.pool.flagsOf(target);
         if (!sf.is_intersection or !tf.is_union) return false;
         if (!self.unionContainsExactType(target, types.Primitive.null_t)) return false;
-
-        var has_complex_target = false;
-        for (self.interner.unionMembers(target)) |target_member| {
-            if (target_member == types.Primitive.null_t or target_member == types.Primitive.undefined_t) continue;
-            if (self.typeHasComplexTemplateLiteral(target_member)) {
-                has_complex_target = true;
-                break;
-            }
-        }
-        if (!has_complex_target) return false;
+        if (!self.excessiveComplexityTargetIsComplex(source, target)) return false;
 
         for (self.interner.intersectionMembers(source)) |source_member| {
             if (self.typeHasComplexTemplateLiteral(source_member)) return true;
@@ -195059,16 +195206,31 @@ pub const Checker = struct {
         if (!target_flags.is_union or !self.unionContainsExactType(target, types.Primitive.null_t)) return null;
 
         const alias_name = try self.excessiveComplexityAliasMemberName(source) orelse return null;
-        var has_complex_target = false;
+        if (!self.excessiveComplexityTargetIsComplex(source, target)) return null;
+        return try std.fmt.allocPrint(self.diag_arena.allocator(), "{s} | null", .{alias_name});
+    }
+
+    /// tsgo gives one relation `(16_000_000 - relation.size) / 8` steps
+    /// before it overflows into TS2859.
+    const relation_complexity_budget: usize = 16_000_000 / 8;
+
+    /// Whether relating the intersection `source` to the union `target`
+    /// would exhaust tsgo's relation budget. Either a target member is a
+    /// template literal whose placeholder product is large, or the source
+    /// distributes into a union that, paired with every target member,
+    /// costs more steps than the budget. The second case is what a spread
+    /// template literal of literal placeholders produces (#1011).
+    fn excessiveComplexityTargetIsComplex(self: *Checker, source: TypeId, target: TypeId) bool {
         for (self.interner.unionMembers(target)) |target_member| {
             if (target_member == types.Primitive.null_t or target_member == types.Primitive.undefined_t) continue;
-            if (self.typeHasComplexTemplateLiteral(target_member)) {
-                has_complex_target = true;
-                break;
-            }
+            if (self.typeHasComplexTemplateLiteral(target_member)) return true;
         }
-        if (!has_complex_target) return null;
-        return try std.fmt.allocPrint(self.diag_arena.allocator(), "{s} | null", .{alias_name});
+        var source_width: usize = 1;
+        for (self.interner.intersectionMembers(source)) |source_member| {
+            source_width = std.math.mul(usize, source_width, self.typeUnionWidth(source_member)) catch return true;
+        }
+        const cost = std.math.mul(usize, source_width, self.typeUnionWidth(target)) catch return true;
+        return cost >= relation_complexity_budget;
     }
 
     fn excessiveComplexityAliasMemberName(self: *Checker, source: TypeId) CheckError!?[]const u8 {
@@ -202042,6 +202204,15 @@ pub const Checker = struct {
                 &finite,
                 max_union_representation_constituents,
             )) {
+                // The expansion is a union of string literals, which native
+                // TypeScript 7 prints by value (#975): `${"b" | "a"}x` is
+                // `"ax" | "bx"`. The cross product comes out in the order the
+                // placeholder members were written.
+                std.mem.sort(hir_mod.StringId, finite.items, self, struct {
+                    fn lessThan(checker: *Checker, a: hir_mod.StringId, b: hir_mod.StringId) bool {
+                        return std.mem.order(u8, checker.string_interner.get(a), checker.string_interner.get(b)) == .lt;
+                    }
+                }.lessThan);
                 if (finite.items.len > 0) return try self.allocFiniteStringLiteralDisplayUnion(finite.items);
             }
         }
@@ -202710,8 +202881,18 @@ pub const Checker = struct {
                             all_string_literal_members = false;
                             continue;
                         }
+                        const work_before_member = self.type_name_work;
                         const member_name = (try self.allocSimpleTypeName(member)) orelse break :blk null;
                         const member_flags = self.interner.pool.flagsOf(member);
+                        // A literal is a leaf, so naming one costs a single
+                        // step however wide the union is. Leave the work
+                        // budget for nested shapes: a spread template
+                        // literal (#1011) has thousands of literals, and
+                        // charging each one turned the 2,049th onwards
+                        // into `...`.
+                        if (member_flags.is_literal and !member_flags.is_union and !member_flags.is_intersection) {
+                            self.type_name_work = work_before_member;
+                        }
                         all_template_display_members = all_template_display_members and self.typeIsTemplateUnionDisplayMember(member);
                         const is_string_literal = member_flags.is_literal and member_flags.is_string and
                             !member_flags.is_union and !member_flags.is_intersection;
@@ -203444,6 +203625,10 @@ pub const Checker = struct {
         if (t < types.Primitive.first_dynamic) return;
         if (t >= self.interner.pool.typeCount()) return;
         if (args.len == 0) return;
+        // A literal is one type for every place that produces it, so an alias
+        // name on it would label every other use of that literal (#1002).
+        const result_flags = self.interner.pool.flagsOf(t);
+        if (result_flags.is_literal and !result_flags.is_union and !result_flags.is_intersection) return;
         // Skip display-name registration for deeply-nested intermediate
         // instantiations. Only the outermost result of a recursive
         // alias expansion is ever surfaced in diagnostic prose; the
@@ -302902,4 +303087,82 @@ test "checker: a bigint literal value keeps its literal type where a number does
     // `-` and `~` of a bigint is a bigint, never a number.
     try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'bigint' is not assignable to type 'string'."));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number | bigint' is not assignable to type 'string'."));
+}
+
+test "checker: a literal placeholder is folded into a template literal type (#1011)" {
+    const s = try newSetup(
+        \\enum E { A = 1, B = "b" }
+        \\const n1: `${1}` = "2";
+        \\const n2: `a${2}b` = "a3b";
+        \\const n3: `${-1}` = "1";
+        \\const n5: `${1e21}` = "1";
+        \\const b1: `${1n}` = "2";
+        \\const z1: `${null}` = "x";
+        \\const e1: `${E.A}` = "x";
+        \\const ok1: `${1}` = "1";
+        \\const ok3: `a${2}b` = "a2b";
+        \\const ok5: `${1n}` = "1";
+        \\const ok7: `${0x10n}` = "16";
+        \\const ok8: `${1e21}` = "1e+21";
+        \\const p3: `a${1}${number}` = "a12";
+        \\const p4: `a${1}${number}` = "b12";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"2\"' is not assignable to type '\"1\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"a3b\"' is not assignable to type '\"a2b\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"1\"' is not assignable to type '\"-1\"'."));
+    // A number is written as JavaScript writes it.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"1\"' is not assignable to type '\"1e+21\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"x\"' is not assignable to type '\"null\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"x\"' is not assignable to type '\"1\"'."));
+    // A literal beside a placeholder joins the text around it.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"b12\"' is not assignable to type '`a1${number}`'."));
+    // `n1` and `b1` fail on the same text; the accepted rows do not fail.
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"2\"' is not assignable to type '\"1\"'."));
+    try T.expectEqual(@as(usize, 8), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+}
+
+test "checker: a template literal type spreads over a union of literals (#1011)" {
+    const s = try newSetup(
+        \\type F<T extends string | number | bigint | boolean> = `${T}`;
+        \\type U = `${1 | 2}`;
+        \\const u1: `${1 | 2}` = "3";
+        \\const u2: U = "3";
+        \\const g1: F<1> = "2";
+        \\const g3: F<1 | 2> = "3";
+        \\const g4: F<true> = "x";
+        \\const ok2: `${1 | 2}` = "2";
+        \\const ok9: F<2> = "2";
+        \\const lit: "1" = "2";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"3\"' is not assignable to type '\"1\" | \"2\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"x\"' is not assignable to type '\"true\"'."));
+    // Neither alias names its result, and the instantiation does not label
+    // the literal it shares with every other `"1"` in the program.
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"2\"' is not assignable to type '\"1\"'."));
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "'U'") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "F<") == null);
+    }
+    try T.expectEqual(@as(usize, 6), checkerCountDistinctStarts(s, TsCodes.type_not_assignable));
+}
+
+test "checker: spreading every literal union keeps equal template types equal (#1011)" {
+    const s = try newSetup(
+        \\type C = `a${"x" | "y"}${boolean}`;
+        \\type D = `a${"x" | "y"}${"false" | "true"}`;
+        \\declare let c: C;
+        \\declare let d: D;
+        \\c = d;
+        \\d = c;
+        \\const shown: `${"b" | "a"}${"d" | "c"}` = "z";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // Only the last line fails, and its union prints by value.
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"z\"' is not assignable to type '\"ac\" | \"ad\" | \"bc\" | \"bd\"'."));
 }
