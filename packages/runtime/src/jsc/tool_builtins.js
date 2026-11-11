@@ -216,6 +216,32 @@
       }
     },
   };
+  const readBufferFrom = bufferApi.Buffer.from;
+  function readFileData(path, utf8) {
+    const hex = fsOperation('readFile', path, false, false).hex;
+    return utf8 ? decodeUtf8(hex) : readBufferFrom(hex, 'hex');
+  }
+  function completeFilesystemRead(callback, operation) {
+    // Like the existing access/realpath adapters, actual kernel I/O runs on
+    // the owning task queue. This is not a libuv worker-pool implementation.
+    scheduleFilesystemTask(function() {
+      let failed = false, error, value;
+      try { value = operation(); }
+      catch (caught) { failed = true; error = caught; }
+      // A user's callback exception is never an I/O error or a second call.
+      if (failed) callback(error);
+      else callback(null, value);
+    }, 0);
+  }
+  fs.readFile = function(path, options, callback) {
+    if (typeof options === 'function') { callback = options; options = undefined; }
+    if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'readFile callback must be a function');
+    if (typeof path === 'number') unsupported('Home callback readFile does not support file descriptors');
+    path = filePath(path);
+    if (options && typeof options === 'object' && !Array.isArray(options)) options = { ...options };
+    const utf8 = readFileOptions(options);
+    completeFilesystemRead(callback, function() { return readFileData(path, utf8); });
+  };
   const nativeFs = globalThis.__home_tool_fs_operation;
   delete globalThis.__home_tool_fs_operation;
   const nativeFd = globalThis.__home_tool_fd_operation;
@@ -334,8 +360,7 @@
     }
   }
   const directoryKinds = new WeakMap();
-  function readDirectory(path, options) {
-    path = filePath(path);
+  function directoryReadOptions(options) {
     options = typeof options === 'string' ? { encoding: options } : fsOptions(options === null ? undefined : options, ['encoding', 'withFileTypes', 'recursive']);
     const encoding = options.encoding;
     const withTypes = options.withFileTypes;
@@ -344,12 +369,27 @@
     if (withTypes !== undefined && typeof withTypes !== 'boolean') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'readdir withFileTypes must be a boolean');
     if (recursive !== undefined && typeof recursive !== 'boolean') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'readdir recursive must be a boolean');
     if (recursive === true) unsupported('Home readdir recursive enumeration is not implemented');
-    const encoded = fsOperation('readdir', path, withTypes === true, false).entriesJSON;
+    return withTypes === true;
+  }
+  function readDirectoryData(path, withTypes) {
+    const encoded = fsOperation('readdir', path, withTypes, false).entriesJSON;
     if (typeof encoded !== 'string') throw new Error('Native directory enumeration returned no entries');
     return JSON.parse(encoded).map(entry => withTypes ? new DirectoryEntry(entry.name, entry.kind, path) : entry.name);
   }
+  function readDirectory(path, options) {
+    path = filePath(path);
+    return readDirectoryData(path, directoryReadOptions(options));
+  }
   fs.readdirSync = function(path, options) {
     return readDirectory(path, options);
+  };
+  fs.readdir = function(path, options, callback) {
+    if (typeof options === 'function') { callback = options; options = undefined; }
+    if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'readdir callback must be a function');
+    path = filePath(path);
+    if (options && typeof options === 'object' && !Array.isArray(options)) options = { ...options };
+    const withTypes = directoryReadOptions(options);
+    completeFilesystemRead(callback, function() { return readDirectoryData(path, withTypes); });
   };
   const fsConstants = {};
   const legacyConstants = {};

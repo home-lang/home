@@ -1687,6 +1687,12 @@ pub fn build(b: *std.Build) void {
         base64_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_base64.mjs"));
         home_tool_smoke_step.dependOn(&base64_fixture.step);
         b.step("home-tool-buffer-base64-smoke", "Verify actual base64 bytes and Node decoding oracles").dependOn(&base64_fixture.step);
+        const callback_reads_fixture = b.addSystemCommand(&.{"python3"});
+        callback_reads_fixture.addFileArg(b.path("packages/runtime/test/tool_fs_callback_reads_fixture.py"));
+        callback_reads_fixture.addArtifactArg(home_tool_exe);
+        callback_reads_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
+        home_tool_smoke_step.dependOn(&callback_reads_fixture.step);
+        b.step("home-tool-fs-callback-reads-smoke", "Verify native callback reads, physical bytes and fatal policy").dependOn(&callback_reads_fixture.step);
         const run_home_tool_assertion_failure = b.addRunArtifact(home_tool_exe);
         run_home_tool_assertion_failure.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_assertion_failure.addArgs(&.{ "run", "assert_failure.cjs" });
