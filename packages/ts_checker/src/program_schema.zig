@@ -145,6 +145,8 @@ pub const Expression = union(enum) {
     parameter: *const Parameter,
     string: []const u8,
     number: f64,
+    /// A bigint literal type, as its canonical base-ten digits (`-5`, `16`).
+    bigint: []const u8,
     boolean: bool,
     /// Canonical source-qualified identity of a unique symbol. This is
     /// interned by contents in the receiving checker, never displayed.
@@ -159,6 +161,8 @@ pub const Expression = union(enum) {
     record: Record,
     utility: Utility,
     tuple: []const Element,
+    /// `readonly [A, B]`, such as the type of an `as const` array literal.
+    readonly_tuple: []const Element,
     union_type: []const *const Expression,
     intersection: []const *const Expression,
     function: Function,
@@ -336,7 +340,7 @@ pub const Schema = struct {
             switch (expr.*) {
                 .unsupported => if (!allow_opaque) return false,
                 .opaque_leaf => if (!allow_opaque) return false,
-                .primitive, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol, .polymorphic_this => {},
+                .primitive, .builtin_object, .parameter, .string, .number, .bigint, .boolean, .unique_symbol, .polymorphic_this => {},
                 .builtin_reference => |reference| try pending.appendSlice(gpa, reference.arguments),
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
@@ -373,7 +377,7 @@ pub const Schema = struct {
                     try pending.append(gpa, utility.source);
                     if (utility.keys) |keys| try pending.append(gpa, keys);
                 },
-                .tuple => |elements| for (elements) |element| {
+                .tuple, .readonly_tuple => |elements| for (elements) |element| {
                     try pending.append(gpa, element.type);
                 },
                 .union_type, .intersection => |members| try pending.appendSlice(gpa, members),

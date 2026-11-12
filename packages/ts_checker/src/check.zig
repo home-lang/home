@@ -116188,6 +116188,7 @@ pub const Checker = struct {
             .parameter => |parameter| self.programDeferredParameterType(parameter, context, active, depth + 1),
             .string => |value| self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory) catch return error.OutOfMemory,
             .number => |value| self.interner.internNumberLiteral(value) catch return error.OutOfMemory,
+            .bigint => |digits| self.interner.internBigIntLiteral(self.string_interner.intern(digits) catch return error.OutOfMemory) catch return error.OutOfMemory,
             .boolean => |value| self.interner.internBooleanLiteral(value),
             .unique_symbol => |identity| self.interner.internUniqueSymbol(.{ .name = self.string_interner.intern(identity) catch return error.OutOfMemory }) catch return error.OutOfMemory,
             .array => |element| self.internMutableArrayType(try self.programDeferredLowerExpression(element, context, active, depth + 1)),
@@ -117730,7 +117731,7 @@ pub const Checker = struct {
         return switch (expression.*) {
             .reference, .unsupported, .typeof_class => true,
             .array, .readonly_array, .keyof, .this_type => |element| programExpressionHasDeclarationLeaf(element),
-            .tuple => |elements| blk: {
+            .tuple, .readonly_tuple => |elements| blk: {
                 for (elements) |element| if (programExpressionHasDeclarationLeaf(element.type)) break :blk true;
                 break :blk false;
             },
@@ -117942,6 +117943,7 @@ pub const Checker = struct {
             .primitive => |type_id| type_id,
             .string => |value| @as(?TypeId, self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory) catch return error.OutOfMemory),
             .number => |value| @as(?TypeId, self.interner.internNumberLiteral(value) catch return error.OutOfMemory),
+            .bigint => |digits| @as(?TypeId, self.interner.internBigIntLiteral(self.string_interner.intern(digits) catch return error.OutOfMemory) catch return error.OutOfMemory),
             .boolean => |value| @as(?TypeId, self.interner.internBooleanLiteral(value)),
             .unique_symbol => |identity| @as(?TypeId, self.interner.internUniqueSymbol(.{ .name = self.string_interner.intern(identity) catch return error.OutOfMemory }) catch return error.OutOfMemory),
             .parameter => |parameter| switch (bindings.get(parameter) orelse return null) {
@@ -118226,6 +118228,7 @@ pub const Checker = struct {
             },
             .string => |value| return self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory),
             .number => |value| return self.interner.internNumberLiteral(value),
+            .bigint => |digits| return self.interner.internBigIntLiteral(self.string_interner.intern(digits) catch return error.OutOfMemory),
             .boolean => |value| return self.interner.internBooleanLiteral(value),
             .unique_symbol => |identity| return self.interner.internUniqueSymbol(.{ .name = self.string_interner.intern(identity) catch return error.OutOfMemory }),
             .array => |element| {
@@ -118326,8 +118329,11 @@ pub const Checker = struct {
                     return self.lowerProgramMappedUtility(utility.kind, source_t, key_t);
                 },
             },
-            .tuple => |elements| {
+            .tuple, .readonly_tuple => |elements| {
+                // A readonly tuple is published only without rest elements.
+                const readonly = expression.* == .readonly_tuple;
                 for (elements) |element| if (element.rest) {
+                    if (readonly) return error.UnsupportedProgramType;
                     const result = try self.gpa.alloc(types.TupleElement, elements.len);
                     defer self.gpa.free(result);
                     for (elements, result) |item, *out| out.* = .{
@@ -118349,7 +118355,7 @@ pub const Checker = struct {
                     }
                     try element_types.append(self.gpa, element_t);
                 }
-                const tuple_t = try self.internTupleFromTypesWithMinRequired(element_types.items, min_required, false);
+                const tuple_t = try self.internTupleFromTypesWithMinRequired(element_types.items, min_required, readonly);
                 try self.program_schema_tuple_types.put(self.gpa, tuple_t, {});
                 return tuple_t;
             },

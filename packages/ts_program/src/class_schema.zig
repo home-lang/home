@@ -294,7 +294,7 @@ pub const Builder = struct {
 
     fn transferable(self: *Builder, value: *const schema.Expression) !*const schema.Expression {
         switch (value.*) {
-            .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol => return value,
+            .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .bigint, .boolean, .unique_symbol => return value,
             .unsupported => return self.expression(.opaque_leaf),
             else => {},
         }
@@ -586,10 +586,10 @@ pub const Builder = struct {
             const entry = try visited.getOrPut(self.gpa, expr);
             if (entry.found_existing) continue;
             switch (expr.*) {
-                .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol, .object, .class_value, .indexed_object => {},
+                .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .bigint, .boolean, .unique_symbol, .object, .class_value, .indexed_object => {},
                 .builtin_reference => |builtin| try pending.appendSlice(self.gpa, builtin.arguments),
                 .array, .readonly_array => |element| try pending.append(self.gpa, element),
-                .tuple => |elements| for (elements) |element| try pending.append(self.gpa, element.type),
+                .tuple, .readonly_tuple => |elements| for (elements) |element| try pending.append(self.gpa, element.type),
                 .union_type, .intersection => |members| try pending.appendSlice(self.gpa, members),
                 .reference => |nested| {
                     if (nested.arguments.len > nested.declaration.parameters.len or nested.declaration.body == null) return false;
@@ -621,7 +621,7 @@ pub const Builder = struct {
             const entry = try visited.getOrPut(self.gpa, expr);
             if (entry.found_existing) continue;
             switch (expr.*) {
-                .primitive, .builtin_object, .parameter, .string, .number, .boolean, .unique_symbol, .polymorphic_this => {},
+                .primitive, .builtin_object, .parameter, .string, .number, .bigint, .boolean, .unique_symbol, .polymorphic_this => {},
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(self.gpa, element),
                 .object => |members| for (members) |member| {
                     if (member.key) |key| try pending.append(self.gpa, key);
@@ -654,7 +654,7 @@ pub const Builder = struct {
                     try pending.append(self.gpa, utility.source);
                     if (utility.keys) |keys| try pending.append(self.gpa, keys);
                 },
-                .tuple => |elements| for (elements) |element| try pending.append(self.gpa, element.type),
+                .tuple, .readonly_tuple => |elements| for (elements) |element| try pending.append(self.gpa, element.type),
                 .union_type, .intersection => |members| try pending.appendSlice(self.gpa, members),
                 .function => |function| {
                     for (function.type_parameters) |parameter| {

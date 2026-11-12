@@ -2948,19 +2948,51 @@ pub const Program = struct {
                 continue;
             }
             if (!is_javascript) {
-                // Only a variable whose syntactic projection failed; an exact
+                // Only a route whose syntactic projection failed; an exact
                 // syntactic schema stays as it is.
-                if (route.kind != .variable or !route.projection_only) continue;
-                switch (compilation.hir.kindOf(owner_node)) {
-                    .var_decl, .let_decl, .const_decl => {},
-                    else => continue,
-                }
-                const body = checked_schema.lowerTypeInArena(
-                    declarations.arena.allocator(),
-                    file.path,
-                    compilation,
-                    checked_type,
-                ) catch return error.OutOfMemory;
+                if (!route.projection_only) continue;
+                const body = switch (route.kind) {
+                    .variable => blk: {
+                        switch (compilation.hir.kindOf(owner_node)) {
+                            .var_decl, .let_decl, .const_decl => {},
+                            else => continue,
+                        }
+                        break :blk checked_schema.lowerTypeInArena(
+                            declarations.arena.allocator(),
+                            file.path,
+                            compilation,
+                            checked_type,
+                        ) catch return error.OutOfMemory;
+                    },
+                    // A function with an inferred return type (#1016). An
+                    // overloaded name is skipped: its checked type is the
+                    // implementation signature, which callers never see.
+                    .function => blk: {
+                        if (compilation.hir.kindOf(owner_node) != .fn_decl) continue;
+                        const function = hir_mod_ns.fnDeclOf(&compilation.hir, owner_node);
+                        if (function.name == hir_mod_ns.none_node_id or compilation.hir.kindOf(function.name) != .identifier) continue;
+                        const name = hir_mod_ns.identifierOf(&compilation.hir, function.name).name;
+                        if (compilation.checked_types.overloads.get(name)) |overloads| {
+                            if (overloads.items.len > 1) continue;
+                        }
+                        break :blk (if (declaration.parameters.len > 0 and
+                            compilation.checked_types.generic_signature_params.contains(checked_type))
+                            checked_schema.lowerGenericSignatureInArena(
+                                declarations.arena.allocator(),
+                                file.path,
+                                compilation,
+                                checked_type,
+                                declaration,
+                            )
+                        else
+                            checked_schema.lowerTypeInArena(
+                                declarations.arena.allocator(),
+                                file.path,
+                                compilation,
+                                checked_type,
+                            )) catch return error.OutOfMemory;
+                    },
+                };
                 if (!(ts_driver.ProgramClassSchema.Schema.expressionSupported(body, self.gpa) catch return error.OutOfMemory)) continue;
                 @constCast(declaration).body = body;
                 route.projection_only = false;
@@ -7451,6 +7483,67 @@ test "Program: an importer sees the checked type of a const the schema cannot pr
         if (diagnostic.code == 2322) count += 1;
     }
     try T.expectEqual(@as(usize, 6), count);
+}
+
+test "Program: an importer sees inferred functions, library values, bigints and tuples (#1016)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const owner =
+        \\export function add(a: number, b: number) { return a + b; }
+        \\export function identity<T>(x: T) { return x; }
+        \\export const date = new Date();
+        \\export const big = 5n;
+        \\export const tuple = [1, "a"] as const;
+    ;
+    const app =
+        \\import { add, identity, date, big, tuple } from './owner';
+        \\const a: string = add(1, 2);
+        \\const b: string = identity(5);
+        \\const c: symbol = date;
+        \\const d: 6n = big;
+        \\const e: readonly [2, "a"] = tuple;
+        \\void [a, b, c, d, e];
+    ;
+    try vfs.addFile("/owner.ts", owner);
+    try vfs.addFile("/app.ts", app);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var source_exports = SourceExportResolver{
+        .resolver = &resolver,
+        .program = &program,
+        .arena = std.heap.ArenaAllocator.init(T.allocator),
+    };
+    defer source_exports.arena.deinit();
+    const app_id = try program.add("/app.ts", app);
+    _ = try program.add("/owner.ts", owner);
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable },
+    });
+    const compilation = program.fileById(app_id).compilation.?;
+    const expected = [_][]const u8{
+        "Type 'number' is not assignable to type 'string'.",
+        "Type 'Date' is not assignable to type 'symbol'.",
+        "Type '5n' is not assignable to type '6n'.",
+        "Type 'readonly [1, \"a\"]' is not assignable to type 'readonly [2, \"a\"]'.",
+    };
+    for (expected) |message| {
+        var found = false;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == 2322 and std.mem.eql(u8, diagnostic.message, message)) found = true;
+        }
+        if (!found) std.debug.print("missing: {s}\n", .{message});
+        try T.expect(found);
+    }
+    var count: usize = 0;
+    for (compilation.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2322) count += 1;
+    }
+    // `add` and `identity` both return a number.
+    try T.expectEqual(@as(usize, 5), count);
 }
 
 test "Program: imported class heritage retains base nominal identity" {

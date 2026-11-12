@@ -10,6 +10,11 @@ const driver = @import("ts_driver");
 const jsdoc_types = @import("jsdoc_types.zig");
 
 const schema = driver.ProgramClassSchema;
+const builtin_object_type_name_set = blk: {
+    var entries: [schema.builtin_object_type_names.len]struct { []const u8 } = undefined;
+    for (schema.builtin_object_type_names, 0..) |name, i| entries[i] = .{name};
+    break :blk std.StaticStringMap(void).initComptime(entries);
+};
 const TypeId = driver.TypeId;
 const Primitive = driver.Primitive;
 
@@ -489,6 +494,16 @@ const Builder = struct {
             for (source, arguments) |argument, *out| out.* = try self.lower(argument);
             return self.expression(.{ .builtin_reference = .{ .name = kind.name(), .arguments = arguments } });
         }
+        // A standard-library object type (`Date`, `RegExp`, `Error`) crosses by
+        // name; the consumer owns its shape, as for a syntactic reference.
+        // A memberless type may share a TypeId with an unrelated `{}`.
+        if (flags.is_object_type and !flags.is_union and !flags.is_intersection and
+            interner.objectMembers(typ).len != 0)
+        {
+            if (self.compilation.checked_types.builtin_object_names.get(typ)) |name| {
+                if (builtin_object_type_name_set.has(name)) return self.expression(.{ .builtin_object = name });
+            }
+        }
         if (flags.is_union) return self.typeList(interner.unionMembers(typ), true);
         if (flags.is_intersection) return self.typeList(interner.intersectionMembers(typ), false);
         if (flags.is_literal) {
@@ -498,7 +513,7 @@ const Builder = struct {
                 .number_lit => |bits| self.expression(.{ .number = @bitCast(bits) }),
                 .boolean_lit => |value| self.expression(.{ .boolean = value }),
                 .symbol_lit => |identity| self.expression(.{ .unique_symbol = try self.arena.dupe(u8, self.compilation.interner.get(identity.name)) }),
-                .bigint_lit => self.unsupported(),
+                .bigint_lit => |digits| self.expression(.{ .bigint = self.compilation.interner.get(digits) }),
             };
         }
         if (flags.is_type_parameter) {
@@ -523,6 +538,7 @@ const Builder = struct {
         }
         if (interner.isSignature(typ)) return self.signature(typ);
         if (flags.is_object_type) {
+            if (self.compilation.checked_types.tuple_origin_types.contains(typ)) return self.checkedTuple(typ);
             const payload = interner.pool.object_type_payloads.items[interner.pool.payloadOf(typ)];
             if (self.compilation.checked_types.array_origin_types.contains(typ) and
                 payload.number_index_type != Primitive.none)
@@ -539,6 +555,37 @@ const Builder = struct {
             return self.objectBody(typ, null);
         }
         return self.unsupported();
+    }
+
+    /// A tuple the checker built, as an object with positional members
+    /// `0`..`n-1` and a literal `length`. It is readonly when every element
+    /// is, as for an `as const` array literal (#1016). A rest or variadic tail
+    /// has no fixed length, so that tuple stays opaque.
+    fn checkedTuple(self: *Builder, typ: TypeId) error{OutOfMemory}!*const schema.Expression {
+        const checked = &self.compilation.checked_types;
+        if (checked.tuple_trailing_rest_types.contains(typ) or checked.tuple_trailing_variadic_types.contains(typ)) return self.unsupported();
+        const interner = &self.compilation.type_interner;
+        const length_name = self.compilation.interner.lookup("length") orelse return self.unsupported();
+        const length_t = interner.objectMember(typ, length_name) orelse return self.unsupported();
+        const count: usize = switch (interner.literalOfOrNull(length_t) orelse return self.unsupported()) {
+            .number_lit => |bits| blk: {
+                const value: f64 = @bitCast(bits);
+                if (value < 0 or value != @floor(value) or value > 4096) return self.unsupported();
+                break :blk @intFromFloat(value);
+            },
+            else => return self.unsupported(),
+        };
+        const elements = try self.arena.alloc(schema.Element, count);
+        var readonly = if (count == 0) checked.readonly_index_types.contains(typ) else true;
+        for (elements, 0..) |*element, index| {
+            var buf: [16]u8 = undefined;
+            const text = std.fmt.bufPrint(&buf, "{d}", .{index}) catch return self.unsupported();
+            const name = self.compilation.interner.lookup(text) orelse return self.unsupported();
+            const member = interner.objectMemberInfo(typ, name) orelse return self.unsupported();
+            readonly = readonly and member.is_readonly;
+            element.* = .{ .type = try self.lower(member.type), .optional = member.is_optional };
+        }
+        return self.expression(if (readonly) .{ .readonly_tuple = elements } else .{ .tuple = elements });
     }
 
     fn typeList(self: *Builder, source: []const TypeId, union_type: bool) error{OutOfMemory}!*const schema.Expression {
