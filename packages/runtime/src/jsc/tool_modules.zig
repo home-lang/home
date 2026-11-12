@@ -36,9 +36,7 @@ fn valueToOwnedUtf8(ctx: *JSContextRef, value: *JSValue, allocator: std.mem.Allo
 
 fn stringValue(ctx: *JSContextRef, text: []const u8) ?*JSValue {
     const allocator = std.heap.smp_allocator;
-    const text_z = bun.dupeZ(allocator, u8, text) catch return null;
-    defer allocator.free(text_z);
-    const string = extern_fns.JSStringCreateWithUTF8CString(text_z.ptr) orelse return null;
+    const string = evaluate.createUtf8String(allocator, text) catch return null;
     defer extern_fns.JSStringRelease(string);
     return extern_fns.JSValueMakeString(ctx, string);
 }

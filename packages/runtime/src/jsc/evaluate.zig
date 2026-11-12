@@ -31,6 +31,21 @@ pub const Evaluation = struct {
     }
 };
 
+/// C strings cannot carry embedded NULs. Preserve the full source/data length
+/// with the existing public UTF-16 API when needed; retain the ordinary UTF-8
+/// path for NUL-free text. JSChar values use native byte order.
+pub fn createUtf8String(allocator: std.mem.Allocator, text: []const u8) !*opaques.JSString {
+    if (std.mem.findScalar(u8, text, 0) != null) {
+        const chars = try std.unicode.utf8ToUtf16LeAlloc(allocator, text);
+        defer allocator.free(chars);
+        for (chars) |*char| char.* = std.mem.littleToNative(u16, char.*);
+        return extern_fns.JSStringCreateWithCharacters(chars.ptr, chars.len) orelse error.SourceStringInitFailed;
+    }
+    const text_z = try bun.dupeZ(allocator, u8, text);
+    defer allocator.free(text_z);
+    return extern_fns.JSStringCreateWithUTF8CString(text_z.ptr) orelse error.SourceStringInitFailed;
+}
+
 /// Evaluate UTF-8 JavaScript source in `ctx`.
 ///
 /// `source_url` is optional and only used for diagnostics/stack traces.
@@ -46,20 +61,15 @@ pub fn evaluateUtf8(
 ) !?*JSValue {
     if (!build_options.enable_jsc) return error.JSCDisabled;
 
-    const source_z = try bun.dupeZ(allocator, u8, source);
-    defer allocator.free(source_z);
-
-    const script = extern_fns.JSStringCreateWithUTF8CString(source_z.ptr) orelse
-        return error.SourceStringInitFailed;
+    const script = try createUtf8String(allocator, source);
     defer extern_fns.JSStringRelease(script);
 
     var source_url_string: ?*opaques.JSString = null;
     if (source_url) |url| {
-        const url_z = try bun.dupeZ(allocator, u8, url);
-        defer allocator.free(url_z);
-
-        source_url_string = extern_fns.JSStringCreateWithUTF8CString(url_z.ptr) orelse
-            return error.SourceUrlStringInitFailed;
+        source_url_string = createUtf8String(allocator, url) catch |err| switch (err) {
+            error.SourceStringInitFailed => return error.SourceUrlStringInitFailed,
+            else => return err,
+        };
     }
     defer if (source_url_string) |url_string| extern_fns.JSStringRelease(url_string);
 
@@ -240,6 +250,33 @@ test "valueToUtf8 renders a result value as its string form when JSC is enabled"
     const num_text = try valueToUtf8(std.testing.allocator, ctx, num_value);
     defer std.testing.allocator.free(num_text);
     try std.testing.expectEqualStrings("3", num_text);
+}
+
+test "evaluate embedded NUL literal preserves the suffix" {
+    try std.testing.expect(build_options.enable_jsc);
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const result = try evaluateUtf8Detailed(std.testing.allocator, engine.currentContext(), "`prefix\x00suffix Ω😀`", "home:nul-literal", 1);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.exception == null);
+    const text = try valueToUtf8(std.testing.allocator, engine.currentContext(), result.value orelse return error.MissingValue);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("prefix\x00suffix Ω😀", text);
+}
+
+test "evaluate embedded NUL invalid script never executes a prefix" {
+    try std.testing.expect(build_options.enable_jsc);
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const result = try evaluateUtf8Detailed(std.testing.allocator, engine.currentContext(), "globalThis.nulPrefixRan = true;\x00globalThis.nulSuffixRan = true;", "home:nul-invalid", 1);
+    defer result.deinit(std.testing.allocator);
+    const state = try evaluateUtf8Detailed(std.testing.allocator, engine.currentContext(), "typeof nulPrefixRan + ':' + typeof nulSuffixRan", "home:nul-state", 1);
+    defer state.deinit(std.testing.allocator);
+    try std.testing.expect(state.exception == null);
+    const text = try valueToUtf8(std.testing.allocator, engine.currentContext(), state.value orelse return error.MissingValue);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("undefined:undefined", text);
+    try std.testing.expect(result.exception != null);
 }
 
 comptime {

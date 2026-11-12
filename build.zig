@@ -830,6 +830,27 @@ pub fn build(b: *std.Build) void {
         run_home_tool_package_smoke.addArgs(&.{ "run", "main.ts" });
         const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
         home_tool_smoke_step.dependOn(&run_warning_tests.step);
+        const source_nul = b.step("home-tool-source-nul", "Verify length-preserving source strings at the public C host boundary");
+        const source_nul_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/evaluate.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "bun", .module = tool_compat_pkg },
+                    .{ .name = "build_options", .module = tool_build_options_module },
+                },
+            }),
+            .filters = &.{"evaluate embedded NUL"},
+        });
+        if (tool_use_zig_js) linkZigJs(b, source_nul_tests.root_module, configured_zig_js_root) else source_nul_tests.root_module.linkFramework("JavaScriptCore", .{});
+        source_nul.dependOn(&b.addRunArtifact(source_nul_tests).step);
+        const run_source_nul = b.addRunArtifact(home_tool_exe);
+        run_source_nul.addArgs(&.{ "run", "packages/runtime/test/tool_modules/source_nul.mjs", "--transpile" });
+        run_source_nul.expectStdOutEqual("SOURCE NUL RESULTS {\"checks\":16,\"passed\":16,\"failures\":[]}\nSOURCE NUL TRANSPILE RESULTS {\"checks\":5,\"passed\":5,\"failures\":[]}\nSOURCE NUL 16 EXECUTED CHECKS OK\n");
+        source_nul.dependOn(&run_source_nul.step);
+        home_tool_smoke_step.dependOn(source_nul);
         const deprecations_fixture = b.addSystemCommand(&.{"python3"});
         deprecations_fixture.addFileArg(b.path("packages/runtime/test/tool_deprecations_fixture.py"));
         deprecations_fixture.addArtifactArg(home_tool_exe);
