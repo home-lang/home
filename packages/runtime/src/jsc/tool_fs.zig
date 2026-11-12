@@ -59,6 +59,9 @@ fn constant(ctx: *types.JSContextRef, object: *types.JSObject, name: [:0]const u
 fn installConstants(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
     if (builtin.os.tag != .macos and builtin.os.tag != .linux) return;
     const object = api.JSObjectMake(ctx, null, null) orelse return;
+    constant(ctx, object, "COPYFILE_EXCL", @as(u32, 1));
+    constant(ctx, object, "COPYFILE_FICLONE", @as(u32, 2));
+    constant(ctx, object, "COPYFILE_FICLONE_FORCE", @as(u32, 4));
     constant(ctx, object, "F_OK", std.c.F_OK);
     constant(ctx, object, "R_OK", std.c.R_OK);
     constant(ctx, object, "W_OK", std.c.W_OK);
@@ -268,10 +271,11 @@ pub const Host = struct {
 
 fn nativeFailure(ctx: *types.JSContextRef, object: *types.JSObject, err: std.posix.E, syscall: []const u8) ?*types.JSValue {
     const allocator = std.heap.smp_allocator;
-    const code = std.fmt.allocPrint(allocator, "E{s}", .{@tagName(err)}) catch return failure(ctx, object, error.OutOfMemory);
+    const code = std.fmt.allocPrint(allocator, "E{s}", .{if (err == .OPNOTSUPP) "NOTSUP" else @tagName(err)}) catch return failure(ctx, object, error.OutOfMemory);
     defer allocator.free(code);
     set(ctx, object, "error", text(ctx, code));
     set(ctx, object, "syscall", text(ctx, syscall));
+    set(ctx, object, "errno", api.JSValueMakeNumber(ctx, -@as(f64, @floatFromInt(@backingInt(err)))));
     return @ptrCast(object);
 }
 
@@ -329,6 +333,61 @@ fn dataBytes(ctx: *types.JSContextRef, value: ?*types.JSValue, allocator: std.me
     const raw = api.JSObjectGetTypedArrayBytesPtr(ctx, view, exception) orelse return error.JavaScriptException;
     const bytes: [*]const u8 = @ptrCast(raw);
     return allocator.dupe(u8, bytes[offset..][0..length]);
+}
+
+const CopyResult = union(enum) { ok, err: std.posix.E, unsupported };
+
+fn descriptorStat(fd: c_int, result: *std.c.Stat) ?std.posix.E {
+    while (true) {
+        if (std.c.fstat(fd, result) == 0) return null;
+        const err = std.posix.errno(-1);
+        if (err != .INTR) return err;
+    }
+}
+
+// Node copyFile truncates the opened destination inode. Atomic replacement
+// (used by cp) would break existing hard links and destination symlinks.
+fn copyFileBytes(source: [:0]const u8, destination: [:0]const u8, exclusive: bool) CopyResult {
+    const input = switch (openNative(source, .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .NONBLOCK = true }, 0)) {
+        .fd => |fd| fd,
+        .err => |err| return .{ .err = err },
+    };
+    defer _ = std.c.close(input);
+    var source_info: std.c.Stat = undefined;
+    if (descriptorStat(input, &source_info)) |err| return .{ .err = err };
+    const source_kind = source_info.mode & std.c.S.IFMT;
+    if (source_kind == std.c.S.IFDIR) return .{ .err = if (builtin.os.tag == .macos) .OPNOTSUPP else .ISDIR };
+    if (source_kind != std.c.S.IFREG) return .unsupported;
+    const output = switch (openNative(destination, .{ .ACCMODE = .WRONLY, .CLOEXEC = true, .CREAT = true, .EXCL = exclusive, .NONBLOCK = true }, @intCast(source_info.mode & 0o7777))) {
+        .fd => |fd| fd,
+        .err => |err| return .{ .err = err },
+    };
+    defer _ = std.c.close(output);
+    var destination_info: std.c.Stat = undefined;
+    if (descriptorStat(output, &destination_info)) |err| return .{ .err = err };
+    if (destination_info.mode & std.c.S.IFMT != std.c.S.IFREG) return .unsupported;
+    // Compare the actual open handles before truncation, including devices:
+    // source and destination may be different names for the same inode.
+    if (source_info.dev == destination_info.dev and source_info.ino == destination_info.ino) return .ok;
+    var complete = false;
+    defer if (!complete) {
+        _ = std.c.unlink(destination.ptr);
+    };
+    if (std.c.ftruncate(output, 0) != 0) return .{ .err = std.posix.errno(-1) };
+    var buffer: [64 * 1024]u8 = undefined;
+    while (true) {
+        const count = std.c.read(input, &buffer, buffer.len);
+        if (count < 0) {
+            const err = std.posix.errno(count);
+            if (err == .INTR) continue;
+            return .{ .err = err };
+        }
+        if (count == 0) break;
+        if (writeNative(output, buffer[0..@intCast(count)])) |err| return .{ .err = err };
+    }
+    if (std.c.fchmod(output, @intCast(source_info.mode & 0o7777)) != 0) return .{ .err = std.posix.errno(-1) };
+    complete = true;
+    return .ok;
 }
 
 fn descriptorOperation(
@@ -463,6 +522,29 @@ fn operation(
             if (write_error) |err| return nativeFailure(c, object, err, "write");
             if (close_error) |err| return nativeFailure(c, object, err, "close");
             set(c, object, "bytesWritten", api.JSValueMakeNumber(c, @floatFromInt(contents.?.len)));
+        }
+    } else if (std.mem.eql(u8, op, "unlink")) {
+        const terminated = bun.dupeZ(allocator, u8, path) catch return failure(c, object, error.OutOfMemory);
+        defer allocator.free(terminated);
+        while (true) {
+            const result = std.c.unlink(terminated.ptr);
+            if (result == 0) break;
+            const err = std.posix.errno(result);
+            if (err != .INTR) return nativeFailure(c, object, err, "unlink");
+        }
+    } else if (std.mem.eql(u8, op, "copyFile")) {
+        if (count < 3 or args[2] == null) return failure(c, object, error.Unsupported);
+        const destination = string(c, args[2], allocator) orelse return failure(c, object, error.OutOfMemory);
+        defer allocator.free(destination);
+        if (std.mem.indexOfScalar(u8, destination, 0) != null) return failure(c, object, error.Unsupported);
+        const source_z = bun.dupeZ(allocator, u8, path) catch return failure(c, object, error.OutOfMemory);
+        defer allocator.free(source_z);
+        const destination_z = bun.dupeZ(allocator, u8, destination) catch return failure(c, object, error.OutOfMemory);
+        defer allocator.free(destination_z);
+        switch (copyFileBytes(source_z, destination_z, force)) {
+            .ok => {},
+            .err => |err| return nativeFailure(c, object, err, "copyfile"),
+            .unsupported => return failure(c, object, error.Unsupported),
         }
     } else if (std.mem.eql(u8, op, "copyFileAtomic")) {
         if (count < 3 or args[2] == null) return failure(c, object, error.Unsupported);

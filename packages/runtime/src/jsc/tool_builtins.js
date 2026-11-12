@@ -14,6 +14,8 @@
   }
 
   function filePath(path) {
+    // Reject invalid primitives before asking for a backend's native URL brand.
+    if (path === null || (typeof path !== 'string' && typeof path !== 'object')) nodeArgumentError('ERR_INVALID_ARG_TYPE', 'File path must be a string or file URL');
     if (typeof path !== 'string') path = fileURLObjectPath(path);
     if (path.indexOf('\0') !== -1) nodeArgumentError('ERR_INVALID_ARG_VALUE', 'File paths cannot contain NUL bytes');
     return path;
@@ -272,6 +274,7 @@
       const error = new Error(`${result.error}: ${operation} '${path}'${result.detail ? ` (${result.detail})` : ''}`);
       error.code = result.error;
       error.syscall = result.syscall || operation;
+      if (result.errno !== undefined) error.errno = result.errno;
       error.path = path;
       throw error;
     }
@@ -312,6 +315,15 @@
     fsOperation('rm', path, booleanFsOption(options, 'recursive'), booleanFsOption(options, 'force'));
   }
   fs.mkdirSync = makeDirectory;
+  fs.mkdir = function(path, options, callback) {
+    if (typeof options === 'function') { callback = options; options = undefined; }
+    if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'mkdir callback must be a function');
+    path = filePath(path);
+    options = options == null ? {} : typeof options === 'number' || typeof options === 'string' ? { mode: options } : fsOptions(options, ['recursive', 'mode']);
+    const recursive = booleanFsOption(options, 'recursive');
+    const mode = creationMode(options.mode, 0o777);
+    completeFilesystemMutation(callback, function() { return makeDirectory(path, { recursive, mode }); }, recursive);
+  };
   fs.rmSync = removePath;
   function removeEmptyDirectory(path, options) {
     // https://nodejs.org/api/fs.html#fspromisesrmdirpath-options
@@ -467,7 +479,7 @@
   fs.fsyncSync = function(fd) {
     fdOperation('fsync', fd);
   };
-  function writeFile(path, data, options) {
+  function writeArguments(path, data, options) {
     if (typeof path === 'number') fileDescriptor(path);
     else path = filePath(path);
     if (typeof data !== 'string' && !fsIsView(data)) {
@@ -479,11 +491,62 @@
     const flag = fileFlag(options.flag, 'w');
     const mode = creationMode(options.mode, 0o666);
     if (data instanceof fsDataView) data = new fsBytes(fsViewBuffer.call(data), fsViewOffset.call(data), fsViewLength.call(data));
-    // An existing descriptor retains its kernel offset and O_APPEND state;
-    // flag/mode options must never reopen or truncate that descriptor's file.
-    if (typeof path === 'number') fdOperation('write', path, data);
-    else fsOperation('writeFile', path, data, flag, mode);
+    return { path, data, flag, mode };
   }
+  function performWrite(plan) {
+    // An existing descriptor retains its kernel offset and open flags; never
+    // reopen, truncate or close a caller-owned descriptor.
+    if (typeof plan.path === 'number') fdOperation('write', plan.path, plan.data);
+    else fsOperation('writeFile', plan.path, plan.data, plan.flag, plan.mode);
+  }
+  function writeFile(path, data, options) { performWrite(writeArguments(path, data, options)); }
+  function completeFilesystemMutation(callback, operation, valueResult) {
+    scheduleFilesystemTask(function() {
+      let failed = false, error, value;
+      try { value = operation(); }
+      catch (caught) { failed = true; error = caught; }
+      if (failed) callback(error);
+      else if (valueResult && value !== undefined) callback(null, value);
+      else callback(null);
+    }, 0);
+  }
+  fs.writeFile = function(path, data, options, callback) {
+    if (typeof options === 'function') { callback = options; options = undefined; }
+    if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'writeFile callback must be a function');
+    const plan = writeArguments(path, data, options === null ? undefined : options);
+    completeFilesystemMutation(callback, function() { performWrite(plan); }, false);
+  };
+  function unlinkFile(path) { fsOperation('unlink', path, false, false); }
+  fs.unlinkSync = unlinkFile;
+  fs.unlink = function(path, callback) {
+    if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'unlink callback must be a function');
+    path = filePath(path);
+    completeFilesystemMutation(callback, function() { unlinkFile(path); }, false);
+  };
+  function copyFileMode(mode) {
+    if (mode === undefined) return 0;
+    if (typeof mode !== 'number') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'copyFile mode must be a number');
+    if (!Number.isFinite(mode) || mode < 0 || mode > 7) nodeArgumentError('ERR_OUT_OF_RANGE', 'copyFile mode must be between zero and seven', true);
+    mode = Math.trunc(mode);
+    if (mode !== 0 && mode !== 1) unsupported('Home copyFile supports default and COPYFILE_EXCL only; reflink/unknown flags are unsupported');
+    return mode;
+  }
+  function copyFile(source, destination, mode) {
+    source = filePath(source);
+    destination = filePath(destination);
+    mode = copyFileMode(mode);
+    try { fsOperation('copyFile', source, destination, mode === 1); }
+    catch (error) { error.dest = destination; throw error; }
+  }
+  fs.copyFileSync = copyFile;
+  fs.copyFile = function(source, destination, mode, callback) {
+    if (typeof mode === 'function') { callback = mode; mode = undefined; }
+    if (typeof callback !== 'function') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'copyFile callback must be a function');
+    source = filePath(source);
+    destination = filePath(destination);
+    mode = copyFileMode(mode);
+    completeFilesystemMutation(callback, function() { copyFile(source, destination, mode); }, false);
+  };
   function realPath(path, options, legacy) {
     path = filePath(path);
     options = options == null ? {} : typeof options === 'string' ? { encoding: options } : fsOptions(options, ['encoding']);
@@ -701,6 +764,8 @@
   fs.cpSync = copyTreeSync;
   const fsPromises = {
     constants: fsConstants,
+    unlink: async function(path) { unlinkFile(path); },
+    copyFile: async function(source, destination, mode) { copyFile(source, destination, mode); },
     cp: async function(source, destination, options) {
       await copyTree(source, destination, options);
     },

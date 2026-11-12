@@ -1804,6 +1804,13 @@ pub fn build(b: *std.Build) void {
         base64_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_base64.mjs"));
         home_tool_smoke_step.dependOn(&base64_fixture.step);
         b.step("home-tool-buffer-base64-smoke", "Verify actual base64 bytes and Node decoding oracles").dependOn(&base64_fixture.step);
+        const fs_mutations_fixture = b.addSystemCommand(&.{"python3"});
+        fs_mutations_fixture.addFileArg(b.path("packages/runtime/test/tool_fs_mutations_fixture.py"));
+        fs_mutations_fixture.addArtifactArg(home_tool_exe);
+        fs_mutations_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/fs_callback_mutations.mjs"));
+        fs_mutations_fixture.addArg("--home-profile");
+        home_tool_smoke_step.dependOn(&fs_mutations_fixture.step);
+        b.step("home-tool-fs-mutations-smoke", "Verify callback filesystem bytes, inode identity, errors and task liveness").dependOn(&fs_mutations_fixture.step);
         const tty_stream_fixture = b.addSystemCommand(&.{"python3"});
         tty_stream_fixture.addFileArg(b.path("packages/runtime/test/tool_tty_stream_fixture.py"));
         tty_stream_fixture.addArtifactArg(home_tool_exe);
