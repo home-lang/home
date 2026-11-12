@@ -10,6 +10,9 @@ pub fn install(allocator: std.mem.Allocator, ctx: *opaques.JSContextRef) void {
     const buffer = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_buffer.js"), "home:tool-buffer-factory-install", 1) catch return;
     defer buffer.deinit(allocator);
     if (buffer.exception != null) return;
+    const string_decoder = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_string_decoder.js"), "home:tool-string-decoder-factory-install", 1) catch return;
+    defer string_decoder.deinit(allocator);
+    if (string_decoder.exception != null) return;
     const streams = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_streams.js"), "home:tool-streams-factory-install", 1) catch return;
     defer streams.deinit(allocator);
     if (streams.exception != null) return;

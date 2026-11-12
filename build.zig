@@ -1804,6 +1804,12 @@ pub fn build(b: *std.Build) void {
         base64_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_base64.mjs"));
         home_tool_smoke_step.dependOn(&base64_fixture.step);
         b.step("home-tool-buffer-base64-smoke", "Verify actual base64 bytes and Node decoding oracles").dependOn(&base64_fixture.step);
+        const string_decoder_fixture = b.addSystemCommand(&.{"python3"});
+        string_decoder_fixture.addFileArg(b.path("packages/runtime/test/tool_string_decoder_fixture.py"));
+        string_decoder_fixture.addArtifactArg(home_tool_exe);
+        string_decoder_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_string_decoder.mjs"));
+        home_tool_smoke_step.dependOn(&string_decoder_fixture.step);
+        b.step("home-tool-string-decoder-smoke", "Verify incremental byte decoding against Node and physical UTF-8 oracles").dependOn(&string_decoder_fixture.step);
         const callback_reads_fixture = b.addSystemCommand(&.{"python3"});
         callback_reads_fixture.addFileArg(b.path("packages/runtime/test/tool_fs_callback_reads_fixture.py"));
         callback_reads_fixture.addArtifactArg(home_tool_exe);

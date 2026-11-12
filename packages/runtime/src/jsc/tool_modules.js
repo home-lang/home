@@ -63,6 +63,11 @@
     return load(moduleId(request), this, false);
   };
   Object.assign(Module, moduleApi);
+  // Report the Node namespaces actually registered in this host. Missing
+  // modules stay absent; Bun-only namespaces are not Node builtins.
+  Module.isBuiltin = function(request) {
+    return typeof request === 'string' && !request.startsWith('bun:') && isBuiltin(request);
+  };
   Module.Module = Module;
   Module._cache = Object.create(null);
   // Keep Node's hook signature; this host has no main-only symlink policy.

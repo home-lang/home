@@ -1485,6 +1485,11 @@
   builtins['node:readline'] = readlineApi;
   builtins.buffer = bufferApi;
   builtins['node:buffer'] = bufferApi;
+  const stringDecoderFactory = globalThis.__home_tool_string_decoder_factory;
+  delete globalThis.__home_tool_string_decoder_factory;
+  const stringDecoderApi = stringDecoderFactory(bufferApi.Buffer);
+  builtins.string_decoder = stringDecoderApi;
+  builtins['node:string_decoder'] = stringDecoderApi;
   builtins.crypto = cryptoApi;
   builtins['node:crypto'] = cryptoApi;
   builtins.tty = ttyApi;
