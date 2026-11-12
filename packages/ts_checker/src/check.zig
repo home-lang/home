@@ -4640,6 +4640,10 @@ pub const Checker = struct {
     /// flow scopes should be visible but outer flow narrows must not
     /// leak in.
     narrow_lookup_floor: usize,
+    /// Every write to each identifier name, summarized for assignment
+    /// narrowing (#1022). Built on first use by `identifierWriteSummary`.
+    identifier_writes: std.AutoHashMapUnmanaged(hir_mod.StringId, IdentifierWrites) = .empty,
+    identifier_writes_ready: bool = false,
     /// Memoized generic-type-alias instantiations, mirroring tsc's
     /// `getTypeAliasInstantiation` cache. Key: "<body_node>,<arg0>,<arg1>,…"
     /// (effective type arguments in declaration order, defaults filled).
@@ -6921,6 +6925,7 @@ pub const Checker = struct {
             s.deinit(self.gpa);
         }
         self.narrow_scopes.deinit(self.gpa);
+        self.identifier_writes.deinit(self.gpa);
         self.program_module_namespace_types.deinit(self.gpa);
         self.program_import_resolutions.deinit(self.gpa);
         self.clearProgramGenericInstances();
@@ -19882,12 +19887,28 @@ pub const Checker = struct {
 
     /// tsc types an array element or an object literal property with
     /// `checkExpressionForMutableLocation`, which widens a fresh literal.
-    /// Other literal nodes already arrive widened; `!x` arrives as its literal.
+    /// Other literal nodes already arrive widened; `!x` and a narrowed
+    /// boolean variable arrive as their fresh literal.
     fn widenLogicalNotLiteral(self: *Checker, node: NodeId, t: TypeId) TypeId {
         if (t != types.Primitive.true_lit and t != types.Primitive.false_lit) return t;
-        if (self.hir.kindOf(node) != .unary_op) return t;
-        if (hir_mod.unaryOf(self.hir, node).op != .not) return t;
-        return types.Primitive.boolean_t;
+        const fresh = switch (self.hir.kindOf(node)) {
+            .unary_op => hir_mod.unaryOf(self.hir, node).op == .not,
+            .identifier => self.identifierReadsAssignedBooleanLiteral(node, t),
+            else => false,
+        };
+        return if (fresh) types.Primitive.boolean_t else t;
+    }
+
+    /// `getAssignmentReducedType` keeps a fresh boolean literal fresh, so a
+    /// `let` or `var` narrowed to `true` or `false` by assignment reads as a
+    /// fresh literal (#1022). One declared as that literal does not.
+    fn identifierReadsAssignedBooleanLiteral(self: *Checker, node: NodeId, t: TypeId) bool {
+        if (t != types.Primitive.true_lit and t != types.Primitive.false_lit) return false;
+        const name = hir_mod.identifierOf(self.hir, node).name;
+        const decl = self.findLocalValueDeclBeforeExpression(node, name) orelse return false;
+        const kind = self.hir.kindOf(decl);
+        if (kind != .let_decl and kind != .var_decl) return false;
+        return self.hir.typeOf(decl) != t;
     }
 
     fn expressionNarrowLiteralType(self: *Checker, node: NodeId) CheckError!?TypeId {
@@ -21562,10 +21583,12 @@ pub const Checker = struct {
                 }
             }
             if (f.return_type == hir_mod.none_node_id and !self.current_function_return_from_jsdoc) {
+                // An inferred return type widens a fresh literal (#1022).
+                const return_t = self.widenLogicalNotLiteral(f.body, expr_t);
                 const inferred_t = if (f.flags.is_async) blk: {
                     try self.checkAsyncInferredPromiseAvailability(node);
-                    break :blk try self.buildStructuralPromise(self.evalAwaited(expr_t));
-                } else expr_t;
+                    break :blk try self.buildStructuralPromise(self.evalAwaited(return_t));
+                } else return_t;
                 try self.refineSignatureReturn(node, inferred_t);
                 try self.checkDeclarationInferredReturnCyclicStructure(node);
                 try self.reportImplicitAnyInferredReturn(node);
@@ -35508,7 +35531,9 @@ pub const Checker = struct {
             .return_stmt => {
                 const r = hir_mod.returnOf(self.hir, node);
                 if (r.value != hir_mod.none_node_id) {
-                    try out.append(self.gpa, self.hir.typeOf(r.value));
+                    // An inferred return type widens a fresh literal; other
+                    // literal nodes are already checked widened.
+                    try out.append(self.gpa, self.widenLogicalNotLiteral(r.value, self.hir.typeOf(r.value)));
                 }
             },
             // Don't descend into nested functions ÃÂ¢ÃÂÃÂ their returns
@@ -95536,11 +95561,22 @@ pub const Checker = struct {
             const id = hir_mod.identifierOf(self.hir, v.name);
             try self.recordNarrow(id.name, final_type);
         }
+        const top_level_decl = self.nodeIsDirectSourceFileStatement(node);
+        // `getTypeAtFlowAssignment`: a `let` or `var` reads as its declared
+        // type, reduced by the initializer when that type is a union (#1022).
+        // `let flag = true` declares `boolean` and reads as `true`, and
+        // `let x: string = "a"` reads as `string`. Home's flow scopes do not
+        // join narrows across branches and loops, so this applies only when
+        // every write to the variable is straight-line.
+        const straight_line_decl = v.name != hir_mod.none_node_id and
+            v.init != hir_mod.none_node_id and
+            self.hir.kindOf(v.name) == .identifier and
+            try self.variableWritesAreStraightLine(node, hir_mod.identifierOf(self.hir, v.name).name);
         if (v.name != hir_mod.none_node_id and
             v.init != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .identifier and
-            (!self.nodeIsDirectSourceFileStatement(node) or
-                (self.hir.kindOf(node) == .const_decl and !self.sourceHasVirtualFilenameSections())))
+            (!top_level_decl or
+                ((straight_line_decl or self.hir.kindOf(node) == .const_decl) and !self.sourceHasVirtualFilenameSections())))
         {
             const id = hir_mod.identifierOf(self.hir, v.name);
             const contextual_array_flow_t = if (self.hir.kindOf(node) == .const_decl and
@@ -95553,14 +95589,29 @@ pub const Checker = struct {
                 (self.engine.isAssignableTo(flow_t, final_type) catch true);
             const mutable_unannotated_decl = v.type_annotation == hir_mod.none_node_id and
                 self.hir.kindOf(node) != .const_decl;
-            const record_t = if (mutable_unannotated_decl) final_type else flow_t;
+            const record_t = if (straight_line_decl)
+                try self.assignmentReducedType(final_type, flow_t)
+            else if (mutable_unannotated_decl)
+                final_type
+            else
+                flow_t;
+            // A straight-line declaration records its reduction when it
+            // narrows. Inside a function it also records wherever the
+            // existing rule would, which ends a narrow of an outer binding
+            // of the same name; it records the reduction, not the literal.
+            const records = if (straight_line_decl)
+                record_t != final_type or (!top_level_decl and
+                    (mutable_unannotated_decl or
+                        try self.shouldRecordDeclaredVariableFlowNarrow(declared_type, flow_t, final_type)))
+            else
+                contextual_array_flow_t != null or
+                    try self.shouldRecordDeclaredVariableFlowNarrow(declared_type, record_t, final_type);
             if (record_t != types.Primitive.none and
                 record_t != types.Primitive.any and
                 record_t != types.Primitive.unknown and
                 final_type != types.Primitive.any and
                 final_type != types.Primitive.unknown and
-                (contextual_array_flow_t != null or
-                    try self.shouldRecordDeclaredVariableFlowNarrow(declared_type, record_t, final_type)) and
+                records and
                 flow_ok)
             {
                 try self.recordNarrow(id.name, record_t);
@@ -96120,6 +96171,171 @@ pub const Checker = struct {
         const call = self.hir.parentOf(parent);
         return call != hir_mod.none_node_id and self.hir.kindOf(call) == .call_expr and
             hir_mod.callOf(self.hir, call).callee == parent;
+    }
+
+    /// TypeScript's `getAssignmentReducedType` (#1022). Assigning `assigned`
+    /// to a variable of union type `declared` narrows the variable to the
+    /// members `assigned` may be assignable to, with `boolean` counted as
+    /// `true | false`. A declared type that is not a union is not narrowed,
+    /// so `let x: string = "a"` reads as `string`.
+    fn assignmentReducedType(self: *Checker, declared: TypeId, assigned: TypeId) CheckError!TypeId {
+        if (declared == assigned) return declared;
+        if (assigned == types.Primitive.never) return assigned;
+        const declared_is_union = declared == types.Primitive.boolean_t or
+            (declared >= types.Primitive.first_dynamic and declared < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(declared).is_union);
+        if (!declared_is_union) return declared;
+        // Relating members can intern types and move the pool, so iterate a
+        // copy rather than the interner's slice.
+        const members: []const TypeId = if (declared == types.Primitive.boolean_t)
+            try self.gpa.dupe(TypeId, &.{types.Primitive.boolean_t})
+        else
+            try self.gpa.dupe(TypeId, self.interner.unionMembers(declared));
+        defer self.gpa.free(members);
+        var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer kept.deinit(self.gpa);
+        var kept_true = false;
+        var kept_false = false;
+        for (members) |member| {
+            if (member == types.Primitive.boolean_t or member == types.Primitive.true_lit) {
+                if (!kept_true and try self.typeMaybeAssignableForReduction(assigned, types.Primitive.true_lit)) kept_true = true;
+            }
+            if (member == types.Primitive.boolean_t or member == types.Primitive.false_lit) {
+                if (!kept_false and try self.typeMaybeAssignableForReduction(assigned, types.Primitive.false_lit)) kept_false = true;
+            }
+            if (member == types.Primitive.boolean_t or member == types.Primitive.true_lit or member == types.Primitive.false_lit) continue;
+            if (try self.typeMaybeAssignableForReduction(assigned, member)) try kept.append(self.gpa, member);
+        }
+        // `internUnion` does not fold `true | false`, so rebuild `boolean`.
+        if (kept_true and kept_false) {
+            try kept.append(self.gpa, types.Primitive.boolean_t);
+        } else if (kept_true) {
+            try kept.append(self.gpa, types.Primitive.true_lit);
+        } else if (kept_false) {
+            try kept.append(self.gpa, types.Primitive.false_lit);
+        }
+        if (kept.items.len == 0) return declared;
+        const reduced = if (kept.items.len == 1)
+            kept.items[0]
+        else
+            self.interner.internUnion(kept.items) catch return error.OutOfMemory;
+        if (reduced == declared) return declared;
+        return if (try self.checkerAssignableTo(assigned, reduced)) reduced else declared;
+    }
+
+    const IdentifierWrites = struct {
+        /// The block holding every write, when each is straight-line.
+        block: NodeId,
+        /// A write is not a plain `name = value;` statement in `block`.
+        nested: bool,
+    };
+
+    /// The block a plain `name = value;` statement sits in, or null. The
+    /// parser puts an expression statement in its block directly.
+    fn straightLineAssignmentBlock(self: *Checker, assignment: NodeId) ?NodeId {
+        if (hir_mod.assignmentOf(self.hir, assignment).op != null) return null;
+        var parent = self.hir.parentOf(assignment);
+        if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .expression_stmt) parent = self.hir.parentOf(parent);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .block_stmt) return null;
+        return parent;
+    }
+
+    fn noteIdentifierWrite(self: *Checker, name: hir_mod.StringId, block: ?NodeId) CheckError!void {
+        const gop = try self.identifier_writes.getOrPut(self.gpa, name);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{ .block = block orelse hir_mod.none_node_id, .nested = block == null };
+        } else if (block == null or gop.value_ptr.block != block.?) {
+            gop.value_ptr.nested = true;
+        }
+    }
+
+    /// Every identifier write in the file, by name. Names are not resolved
+    /// to bindings, so a write to any binding of a name counts for all of
+    /// them; that only makes the straight-line test more conservative.
+    fn identifierWriteSummary(self: *Checker) CheckError!*const std.AutoHashMapUnmanaged(hir_mod.StringId, IdentifierWrites) {
+        if (self.identifier_writes_ready) return &self.identifier_writes;
+        self.identifier_writes_ready = true;
+        var pattern_spans: std.ArrayListUnmanaged(hir_mod.Span) = .empty;
+        defer pattern_spans.deinit(self.gpa);
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const target = switch (self.hir.kindOf(node)) {
+                .assignment => hir_mod.assignmentOf(self.hir, node).target,
+                .update_op => self.hir.update_payloads.items[self.hir.payloads.items[node]].operand,
+                .for_in_stmt, .for_of_stmt => hir_mod.forInOf(self.hir, node).target,
+                else => continue,
+            };
+            if (target == hir_mod.none_node_id) continue;
+            switch (self.hir.kindOf(target)) {
+                .identifier => {
+                    const block = if (self.hir.kindOf(node) == .assignment) self.straightLineAssignmentBlock(node) else null;
+                    try self.noteIdentifierWrite(hir_mod.identifierOf(self.hir, target).name, block);
+                },
+                .array_literal, .object_literal, .array_pattern, .object_pattern => try pattern_spans.append(self.gpa, self.hir.spanOf(target)),
+                else => {},
+            }
+        }
+        // A destructuring assignment writes every identifier it binds.
+        if (pattern_spans.items.len != 0) {
+            node = 0;
+            while (node < self.hir.nodeCount()) : (node += 1) {
+                if (self.hir.kindOf(node) != .identifier) continue;
+                const span = self.hir.spanOf(node);
+                for (pattern_spans.items) |pattern| {
+                    if (span.start >= pattern.start and span.end <= pattern.end) {
+                        try self.noteIdentifierWrite(hir_mod.identifierOf(self.hir, node).name, null);
+                        break;
+                    }
+                }
+            }
+        }
+        return &self.identifier_writes;
+    }
+
+    /// The block a `let` or `var` statement is declared in, or null.
+    fn variableDeclarationBlock(self: *Checker, decl: NodeId) ?NodeId {
+        var statement = decl;
+        var parent = self.hir.parentOf(statement);
+        if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .export_decl) {
+            statement = parent;
+            parent = self.hir.parentOf(statement);
+        }
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .block_stmt) return null;
+        return parent;
+    }
+
+    /// Whether every write to `name` is a plain `name = value;` statement in
+    /// the block that declares it at `decl`. Then assignment narrows apply in
+    /// order and no branch, loop or closure can join them, which Home's flow
+    /// scopes do not model (#1022).
+    fn variableWritesAreStraightLine(self: *Checker, decl: NodeId, name: hir_mod.StringId) CheckError!bool {
+        const kind = self.hir.kindOf(decl);
+        if (kind != .let_decl and kind != .var_decl) return false;
+        // An untyped declaration without an initializer has an evolving type.
+        const v = hir_mod.varDeclOf(self.hir, decl);
+        if (v.type_annotation == hir_mod.none_node_id and v.init == hir_mod.none_node_id) return false;
+        const block = self.variableDeclarationBlock(decl) orelse return false;
+        const writes = (try self.identifierWriteSummary()).get(name) orelse return true;
+        return !writes.nested and writes.block == block;
+    }
+
+    /// `typeMaybeAssignableTo`: a union source fits when any member does.
+    fn typeMaybeAssignableForReduction(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        if (source == types.Primitive.boolean_t) {
+            return (try self.checkerAssignableTo(types.Primitive.true_lit, target)) or
+                (try self.checkerAssignableTo(types.Primitive.false_lit, target));
+        }
+        if (source >= types.Primitive.first_dynamic and source < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(source).is_union)
+        {
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(source));
+            defer self.gpa.free(members);
+            for (members) |member| {
+                if (try self.typeMaybeAssignableForReduction(member, target)) return true;
+            }
+            return false;
+        }
+        return try self.checkerAssignableTo(source, target);
     }
 
     fn shouldRecordDeclaredVariableFlowNarrow(
@@ -109348,6 +109564,7 @@ pub const Checker = struct {
             },
             .identifier => blk: {
                 if (!allow_identifier_propagation) break :blk false;
+                if (self.identifierReadsAssignedBooleanLiteral(init_node, init_t)) break :blk true;
                 if (self.visibleAnnotatedIdentifierType(init_node)) |declared_t| {
                     if (init_t != declared_t and self.widenLiteralType(init_t) == declared_t) break :blk true;
                 }
@@ -120290,7 +120507,34 @@ pub const Checker = struct {
                         !self.isThisTypeParameter(target_t) and
                         !source_is_nonnullable_for_target;
                     const target_annotation_is_nonnullable = self.identifierAnnotationIsNonNullable(a.target);
-                    if (has_active_target_narrow and
+                    // A straight-line write narrows the declared type by the
+                    // assigned value, as `getAssignmentReducedType` does (#1022).
+                    const straight_line_slot_t: ?TypeId = blk_straight: {
+                        if (self.hir.kindOf(a.target) != .identifier) break :blk_straight null;
+                        // An untyped declaration without an initializer has
+                        // an evolving type, which takes each assigned type.
+                        if (target_is_untyped_uninitialized_var) break :blk_straight null;
+                        if (self.straightLineAssignmentBlock(node) == null) break :blk_straight null;
+                        if (assignment_result_t == types.Primitive.none or assignment_result_t == types.Primitive.unknown) break :blk_straight null;
+                        const target_id = hir_mod.identifierOf(self.hir, a.target);
+                        const decl = self.findLocalValueDeclBeforeExpression(a.target, target_id.name) orelse break :blk_straight null;
+                        if (!try self.variableWritesAreStraightLine(decl, target_id.name)) break :blk_straight null;
+                        const slot_t = self.hir.typeOf(decl);
+                        if (slot_t == types.Primitive.none or slot_t == types.Primitive.any or slot_t == types.Primitive.unknown) break :blk_straight null;
+                        break :blk_straight slot_t;
+                    };
+                    // Record the reduction when it narrows, or to end an
+                    // earlier narrow. A write that leaves the declared type
+                    // takes the existing path.
+                    const straight_line_narrow_t: ?TypeId = if (straight_line_slot_t) |slot_t| blk_reduce: {
+                        const reduced = try self.assignmentReducedType(slot_t, assignment_result_t);
+                        if (reduced == slot_t and !has_active_target_narrow) break :blk_reduce null;
+                        break :blk_reduce reduced;
+                    } else null;
+                    if (straight_line_narrow_t) |narrow_t| {
+                        const target_id = hir_mod.identifierOf(self.hir, a.target);
+                        try self.recordNarrow(target_id.name, narrow_t);
+                    } else if (has_active_target_narrow and
                         self.hir.kindOf(a.target) == .identifier and
                         !self.nodeIsInsideLoop(node) and
                         assignment_result_t == types.Primitive.any)
@@ -194120,9 +194364,10 @@ pub const Checker = struct {
     /// shape. Literal vs literal mismatches (`"a" -> "b"`) keep their
     /// precise labels so the message stays informative.
     fn shouldWidenForArgDiagnostic(self: *Checker, arg_t: TypeId, param_t: TypeId) bool {
+        // `reportRelationError` prints a literal source as its base type
+        // unless the target could hold a top-level singleton type (#1022).
         if (arg_t == types.Primitive.true_lit or arg_t == types.Primitive.false_lit) {
-            if (param_t != types.Primitive.void_t and self.typeIsNullishOnly(param_t)) return false;
-            return param_t != types.Primitive.true_lit and param_t != types.Primitive.false_lit;
+            return !self.typeCouldHaveTopLevelSingletonTypes(param_t, 0);
         }
         if (arg_t < types.Primitive.first_dynamic or arg_t >= self.interner.pool.typeCount()) return false;
         const arg_flags = self.interner.pool.flagsOf(arg_t);
@@ -194144,6 +194389,34 @@ pub const Checker = struct {
         const param_flags = self.interner.pool.flagsOf(param_t);
         if (param_flags.is_template_literal) return false;
         return !param_flags.is_literal;
+    }
+
+    /// TypeScript's `typeCouldHaveTopLevelSingletonTypes`: a unit type (a
+    /// literal, an enum member, `null`, `undefined`, a unique symbol), an
+    /// enum, a template literal or string mapping, or a union or
+    /// intersection with one. `boolean` and `void` do not count.
+    fn typeCouldHaveTopLevelSingletonTypes(self: *Checker, t: TypeId, depth: u8) bool {
+        if (depth > 16) return false;
+        switch (t) {
+            types.Primitive.true_lit, types.Primitive.false_lit, types.Primitive.null_t, types.Primitive.undefined_t => return true,
+            else => {},
+        }
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        if (self.typeIsEnumNominal(t) or self.enumNameFromNominal(t) != null) return true;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union or flags.is_intersection) {
+            const members = if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t);
+            for (members) |member| {
+                if (self.typeCouldHaveTopLevelSingletonTypes(member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            return self.typeCouldHaveTopLevelSingletonTypes(constraint, depth + 1);
+        }
+        return flags.is_literal or flags.is_enum_literal or flags.is_unique_symbol or
+            flags.is_template_literal or flags.is_string_mapping;
     }
 
     fn widenLiteralUnionForArgDiagnostic(self: *Checker, arg_t: TypeId, param_t: TypeId) CheckError!?TypeId {
@@ -204606,6 +204879,9 @@ pub const Checker = struct {
             },
             .literal_null => types.Primitive.null_t,
             .literal_undefined => types.Primitive.undefined_t,
+            // `!x` records its fresh literal; a `let` initializer's own type
+            // has been widened (#1017).
+            .unary_op => self.recordedLogicalNotLiteral(value_node) orelse fallback,
             .as_expr, .type_assertion => blk: {
                 const a = hir_mod.asExpressionOf(self.hir, value_node);
                 if (a.type_node != hir_mod.none_node_id and self.isAsConstMarker(a.type_node)) {
@@ -303675,4 +303951,72 @@ test "checker: without strictNullChecks only a falsy operand gives a literal (#1
     try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'true' is not assignable to type 'false'."));
     // Every value may be `null` or `undefined`, so nothing is only truthy.
     try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'true'."));
+}
+
+test "checker: an assignment narrows a union-typed variable by reduction (#1022)" {
+    const s = try newSetup(
+        \\declare function check(): boolean;
+        \\let flag = true;
+        \\const a1: false = flag;
+        \\let flag2: boolean = false;
+        \\const a2: true = flag2;
+        \\let flag3 = true;
+        \\flag3 = false;
+        \\const a3: true = flag3;
+        \\let flag4 = true;
+        \\flag4 = check();
+        \\const a4: true = flag4;
+        \\let u: string | number = 1;
+        \\const a5: string = u;
+        \\let x: string = "a";
+        \\const a6: "b" = x;
+        \\let copy = flag;
+        \\copy = false;
+        \\const elements = [flag];
+        \\const a7: string[] = elements;
+        \\function f() { let r = true; return r; }
+        \\const a8: false = f();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    // A top-level `let` narrows to its initializer and to a later write.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'true' is not assignable to type 'false'."));
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'false' is not assignable to type 'true'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'true'."));
+    // The reduction keeps declared members, not the assigned literal.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
+    // A declared type that is not a union is not narrowed.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type '\"b\"'."));
+    // The narrowed literal is fresh: a copy, an array element and an
+    // inferred return type widen it.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'boolean[]' is not assignable to type 'string[]'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'false'."));
+    try T.expectEqual(@as(usize, 8), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: a write in a branch or loop keeps the declared type (#1022)" {
+    const s = try newSetup(
+        \\declare const cond: boolean;
+        \\declare const items: number[];
+        \\function f() {
+        \\  let a = true;
+        \\  if (cond) { a = false; }
+        \\  const r1: true = a;
+        \\  let b = false;
+        \\  while (cond) { b = true; }
+        \\  const r2: true = b;
+        \\  let c = false;
+        \\  for (const i of items) { c = i > 0; }
+        \\  const r3: true = c;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    // Home's flow scopes do not join a branch or a loop, so a variable with
+    // such a write is not narrowed by its initializer. TypeScript's join
+    // gives `boolean` for each of these too.
+    try T.expectEqual(@as(usize, 3), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'true'."));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
 }
