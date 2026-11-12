@@ -337,12 +337,29 @@ fn dataBytes(ctx: *types.JSContextRef, value: ?*types.JSValue, allocator: std.me
 
 const CopyResult = union(enum) { ok, err: std.posix.E, unsupported };
 
-fn descriptorStat(fd: c_int, result: *std.c.Stat) ?std.posix.E {
+const DescriptorStat = if (builtin.os.tag == .linux) std.os.linux.Statx else std.c.Stat;
+
+fn descriptorStat(fd: c_int, result: *DescriptorStat) CopyResult {
+    const native_linux = builtin.os.tag == .linux;
+    const fields: std.os.linux.STATX = .{ .TYPE = true, .MODE = true, .INO = true };
     while (true) {
-        if (std.c.fstat(fd, result) == 0) return null;
-        const err = std.posix.errno(-1);
-        if (err != .INTR) return err;
+        // Zig 0.18 deliberately omits the libc-specific Linux stat ABI.
+        // AT_EMPTY_PATH queries this open handle, including unlinked files;
+        // resolving its original filename would race replacement/symlinks.
+        const status = if (native_linux)
+            std.c.statx(fd, "", std.c.AT.EMPTY_PATH, fields, result)
+        else
+            std.c.fstat(fd, result);
+        const err = std.posix.errno(status);
+        if (err == .SUCCESS) break;
+        if (err != .INTR) return .{ .err = err };
     }
+    if (native_linux) {
+        const available: u32 = @bitCast(result.mask);
+        const required: u32 = @bitCast(fields);
+        if (available & required != required) return .unsupported;
+    }
+    return .ok;
 }
 
 // Node copyFile truncates the opened destination inode. Atomic replacement
@@ -353,8 +370,9 @@ fn copyFileBytes(source: [:0]const u8, destination: [:0]const u8, exclusive: boo
         .err => |err| return .{ .err = err },
     };
     defer _ = std.c.close(input);
-    var source_info: std.c.Stat = undefined;
-    if (descriptorStat(input, &source_info)) |err| return .{ .err = err };
+    var source_info: DescriptorStat = undefined;
+    const source_status = descriptorStat(input, &source_info);
+    if (source_status != .ok) return source_status;
     const source_kind = source_info.mode & std.c.S.IFMT;
     if (source_kind == std.c.S.IFDIR) return .{ .err = if (builtin.os.tag == .macos) .OPNOTSUPP else .ISDIR };
     if (source_kind != std.c.S.IFREG) return .unsupported;
@@ -363,12 +381,17 @@ fn copyFileBytes(source: [:0]const u8, destination: [:0]const u8, exclusive: boo
         .err => |err| return .{ .err = err },
     };
     defer _ = std.c.close(output);
-    var destination_info: std.c.Stat = undefined;
-    if (descriptorStat(output, &destination_info)) |err| return .{ .err = err };
+    var destination_info: DescriptorStat = undefined;
+    const destination_status = descriptorStat(output, &destination_info);
+    if (destination_status != .ok) return destination_status;
     if (destination_info.mode & std.c.S.IFMT != std.c.S.IFREG) return .unsupported;
     // Compare the actual open handles before truncation, including devices:
     // source and destination may be different names for the same inode.
-    if (source_info.dev == destination_info.dev and source_info.ino == destination_info.ino) return .ok;
+    const same_device = if (builtin.os.tag == .linux)
+        source_info.dev_major == destination_info.dev_major and source_info.dev_minor == destination_info.dev_minor
+    else
+        source_info.dev == destination_info.dev;
+    if (same_device and source_info.ino == destination_info.ino) return .ok;
     var complete = false;
     defer if (!complete) {
         _ = std.c.unlink(destination.ptr);
