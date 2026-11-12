@@ -107,6 +107,9 @@ pub fn diagnosticIsSyntacticParseError(diagnostic: Diagnostic) bool {
         1044,
         1048,
         1049,
+        // ECMA-262 PropertySetParameterList is FormalParameter: defaults are
+        // valid JavaScript. TS1052 remains a checked TypeScript grammar error.
+        1052,
         1053,
         1054,
         1089,
@@ -37874,5 +37877,15 @@ test "parser: conditional arms do not borrow a later statement block" {
         try T.expectEqual(hir_mod.NodeKind.conditional, s.hir.kindOf(initializer));
         try T.expectEqual(case[1], s.hir.kindOf(hir_mod.conditionalOf(&s.hir, initializer).then_branch));
         try T.expectEqual(hir_mod.NodeKind.if_stmt, s.hir.kindOf(statements[1]));
+    }
+}
+
+test "parser: runtime setter initializers retain checked grammar without parse errors" {
+    var s = try newTestSetup("const target={set value(input=42){}}; class Target { set value(input=11){} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1052));
+    for (s.parser.diagnostics.items) |diagnostic| {
+        try T.expect(!diagnosticIsSyntacticParseError(diagnostic));
     }
 }

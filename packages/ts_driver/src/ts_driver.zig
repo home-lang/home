@@ -9323,3 +9323,40 @@ test "driver: runtime JSDoc comments preserve compiler diagnostics and real synt
         try T.expectError(error.ParseError, emitPreparedSource(prepared, .{}));
     }
 }
+
+test "driver: runtime setter defaults retain checked TS1052 and executable output" {
+    const source = "const target={set value(input=42){this.actual=input;}}; target.value=undefined;";
+    var prepared = try prepareSource(T.allocator, source, .{});
+    defer {
+        prepared.deinit();
+        T.allocator.destroy(prepared);
+    }
+    try T.expect(!prepared.has_syntactic_parse_diagnostics);
+    const js = try emitPreparedSource(prepared, .{});
+    defer T.allocator.free(js);
+    try T.expect(std.mem.indexOf(u8, js, "= 42") != null);
+    var checked = try compileSource(T.allocator, source, .{ .no_emit = true });
+    defer {
+        checked.deinit();
+        T.allocator.destroy(checked);
+    }
+    var saw_initializer_diagnostic = false;
+    for (checked.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1052) saw_initializer_diagnostic = true;
+    }
+    try T.expect(saw_initializer_diagnostic);
+}
+
+test "driver: runtime defaults preserve assignment expression boundaries" {
+    const source = "function values(input=(1,2),{value=(3,4)}={},[item=(5,6)]=[]){return [input,value,item];}";
+    var prepared = try prepareSource(T.allocator, source, .{});
+    defer {
+        prepared.deinit();
+        T.allocator.destroy(prepared);
+    }
+    const js = try emitPreparedSource(prepared, .{});
+    defer T.allocator.free(js);
+    for ([_][]const u8{ "input = (1, 2)", "value = (3, 4)", "item = (5, 6)" }) |boundary| {
+        try T.expect(std.mem.indexOf(u8, js, boundary) != null);
+    }
+}

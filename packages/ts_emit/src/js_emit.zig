@@ -1556,7 +1556,7 @@ pub const Printer = struct {
             if (param.name != hir_mod.none_node_id) try self.printBindingName(param.name);
             if (param.default_value != hir_mod.none_node_id) {
                 try self.write(" = ");
-                try self.printExpression(param.default_value);
+                try self.printExpr(param.default_value, .comma);
             }
         }
         try self.write(" }");
@@ -1574,7 +1574,7 @@ pub const Printer = struct {
             if (param.name != hir_mod.none_node_id) try self.printBindingName(param.name);
             if (param.default_value != hir_mod.none_node_id) {
                 try self.write(" = ");
-                try self.printExpression(param.default_value);
+                try self.printExpr(param.default_value, .comma);
             }
         }
         try self.write("]");
@@ -5892,7 +5892,9 @@ pub const Printer = struct {
         // ES5-clean; the shim is injected by `printFnBodyWithDefaults`.
         if (p.default_value != hir_mod.none_node_id and self.options.es_target != .es5) {
             try self.write(" = ");
-            try self.printExpression(p.default_value);
+            // ECMA-262 Initializer consumes AssignmentExpression. A comma
+            // expression must stay parenthesized inside the parameter list.
+            try self.printExpr(p.default_value, .comma);
         }
     }
 

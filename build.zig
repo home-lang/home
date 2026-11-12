@@ -857,6 +857,12 @@ pub fn build(b: *std.Build) void {
         run_runtime_jsdoc.expectStdOutEqual("RUNTIME JSDOC RESULTS {\"checks\":19,\"passed\":19,\"failures\":[]}\nRUNTIME JSDOC TRANSPILE RESULTS {\"checks\":17,\"passed\":17,\"failures\":[]}\nRUNTIME JSDOC 19 EXECUTED CHECKS OK\n");
         runtime_jsdoc.dependOn(&run_runtime_jsdoc.step);
         home_tool_smoke_step.dependOn(runtime_jsdoc);
+        const setter_defaults = b.step("home-tool-setter-defaults", "Verify executable setter defaults and real accessor syntax errors");
+        const run_setter_defaults = b.addRunArtifact(home_tool_exe);
+        run_setter_defaults.addArgs(&.{ "run", "packages/runtime/test/tool_modules/setter_runtime.mjs", "--transpile" });
+        run_setter_defaults.expectStdOutEqual("SETTER DEFAULT RESULTS {\"checks\":22,\"passed\":22,\"failures\":[]}\nSETTER DEFAULT TRANSPILE RESULTS {\"checks\":23,\"passed\":23,\"failures\":[]}\nSETTER DEFAULT 22 EXECUTED CHECKS OK\n");
+        setter_defaults.dependOn(&run_setter_defaults.step);
+        home_tool_smoke_step.dependOn(setter_defaults);
         const deprecations_fixture = b.addSystemCommand(&.{"python3"});
         deprecations_fixture.addFileArg(b.path("packages/runtime/test/tool_deprecations_fixture.py"));
         deprecations_fixture.addArtifactArg(home_tool_exe);
