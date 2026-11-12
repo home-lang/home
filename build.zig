@@ -1367,6 +1367,16 @@ pub fn build(b: *std.Build) void {
         run_home_tool_extname.addArgs(&.{ "run", "path_extname.mjs" });
         run_home_tool_extname.expectStdOutEqual("OK actual POSIX extname lexical boundaries, aliases and validation\n");
         home_tool_smoke_step.dependOn(&run_home_tool_extname.step);
+        const source_extensions = b.step("home-tool-source-extensions", "Verify TypeScript source extension substitution and exact package boundaries");
+        const run_source_extensions = b.addRunArtifact(home_tool_exe);
+        run_source_extensions.addArgs(&.{ "run", "packages/runtime/test/tool_modules/js_extension_resolution/entry.mjs" });
+        run_source_extensions.expectStdOutEqual("JS EXTENSION RESULTS {\"cases\":25,\"checks\":54,\"passed\":54,\"failures\":[]}\nJS EXTENSION 54 EXECUTED CHECKS OK\n");
+        source_extensions.dependOn(&run_source_extensions.step);
+        const run_extension_guards = b.addRunArtifact(home_tool_exe);
+        run_extension_guards.addArgs(&.{ "run", "packages/runtime/test/tool_modules/js_extension_resolution/guards.mjs" });
+        run_extension_guards.expectStdOutEqual("JS EXTENSION PACKAGE RESULTS {\"checks\":5,\"passed\":5,\"failures\":[]}\nJS EXTENSION PACKAGE GUARDS 5 CHECKS OK\n");
+        source_extensions.dependOn(&run_extension_guards.step);
+        home_tool_smoke_step.dependOn(source_extensions);
         const transpiler_sync = b.step("home-tool-transpiler-sync", "Verify real in-memory TypeScript transforms and explicit unsupported options");
         const run_transpiler_sync = b.addRunArtifact(home_tool_exe);
         run_transpiler_sync.addArgs(&.{ "run", "packages/runtime/test/tool_modules/transpiler_sync.mjs", "--home-refusals" });

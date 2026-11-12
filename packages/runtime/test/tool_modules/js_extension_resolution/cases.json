@@ -1,0 +1,102 @@
+[
+  {
+    "case": "exact-js",
+    "request": "./exact-js/dep.js"
+  },
+  {
+    "case": "js-ts",
+    "request": "./js-ts/dep.js"
+  },
+  {
+    "case": "js-tsx",
+    "request": "./js-tsx/dep.js"
+  },
+  {
+    "case": "js-both",
+    "request": "./js-both/dep.js"
+  },
+  {
+    "case": "jsx-ts",
+    "request": "./jsx-ts/dep.jsx"
+  },
+  {
+    "case": "jsx-tsx",
+    "request": "./jsx-tsx/dep.jsx"
+  },
+  {
+    "case": "jsx-both",
+    "request": "./jsx-both/dep.jsx"
+  },
+  {
+    "case": "mjs-mts",
+    "request": "./mjs-mts/dep.mjs"
+  },
+  {
+    "case": "cjs-cts",
+    "request": "./cjs-cts/dep.cjs"
+  },
+  {
+    "case": "upper-js",
+    "request": "./upper-js/dep.JS"
+  },
+  {
+    "case": "dotted-js",
+    "request": "./dotted-js/dep.compiled.js"
+  },
+  {
+    "case": "appended-js",
+    "request": "./appended-js/dep.js"
+  },
+  {
+    "case": "appended-tsx-js",
+    "request": "./appended-tsx-js/dep.js"
+  },
+  {
+    "case": "appended-mjs",
+    "request": "./appended-mjs/dep.mjs"
+  },
+  {
+    "case": "directory-js",
+    "request": "./directory-js/dep.js"
+  },
+  {
+    "case": "exact-jsx",
+    "request": "./exact-jsx/dep.jsx"
+  },
+  {
+    "case": "exact-mjs",
+    "request": "./exact-mjs/dep.mjs"
+  },
+  {
+    "case": "exact-cjs",
+    "request": "./exact-cjs/dep.cjs"
+  },
+  {
+    "case": "modules-js",
+    "request": "./modules-js/node_modules/pkg/dep.js"
+  },
+  {
+    "case": "modules-jsx",
+    "request": "./modules-jsx/node_modules/pkg/dep.jsx"
+  },
+  {
+    "case": "modules-mjs",
+    "request": "./modules-mjs/node_modules/pkg/dep.mjs"
+  },
+  {
+    "case": "modules-cjs",
+    "request": "./modules-cjs/node_modules/pkg/dep.cjs"
+  },
+  {
+    "case": "space-js",
+    "request": "./space-js/hello world.js"
+  },
+  {
+    "case": "unicode-js",
+    "request": "./unicode-js/\u03a9.js"
+  },
+  {
+    "case": "modules-lookalike",
+    "request": "./modules-lookalike/node_modules_x/dep.mjs"
+  }
+]

@@ -1,0 +1,127 @@
+[
+  {
+    "case": "exact-js",
+    "request": "./exact-js/dep.js",
+    "path": "exact-js/dep.js"
+  },
+  {
+    "case": "js-ts",
+    "request": "./js-ts/dep.js",
+    "path": "js-ts/dep.ts"
+  },
+  {
+    "case": "js-tsx",
+    "request": "./js-tsx/dep.js",
+    "path": "js-tsx/dep.tsx"
+  },
+  {
+    "case": "js-both",
+    "request": "./js-both/dep.js",
+    "path": "js-both/dep.ts"
+  },
+  {
+    "case": "jsx-ts",
+    "request": "./jsx-ts/dep.jsx",
+    "path": "jsx-ts/dep.ts"
+  },
+  {
+    "case": "jsx-tsx",
+    "request": "./jsx-tsx/dep.jsx",
+    "path": "jsx-tsx/dep.tsx"
+  },
+  {
+    "case": "jsx-both",
+    "request": "./jsx-both/dep.jsx",
+    "path": "jsx-both/dep.ts"
+  },
+  {
+    "case": "mjs-mts",
+    "request": "./mjs-mts/dep.mjs",
+    "path": "mjs-mts/dep.mts"
+  },
+  {
+    "case": "cjs-cts",
+    "request": "./cjs-cts/dep.cjs",
+    "path": "cjs-cts/dep.cts"
+  },
+  {
+    "case": "upper-js",
+    "request": "./upper-js/dep.JS",
+    "error": "MODULE_NOT_FOUND"
+  },
+  {
+    "case": "dotted-js",
+    "request": "./dotted-js/dep.compiled.js",
+    "path": "dotted-js/dep.compiled.ts"
+  },
+  {
+    "case": "appended-js",
+    "request": "./appended-js/dep.js",
+    "path": "appended-js/dep.js.ts"
+  },
+  {
+    "case": "appended-tsx-js",
+    "request": "./appended-tsx-js/dep.js",
+    "path": "appended-tsx-js/dep.js.tsx"
+  },
+  {
+    "case": "appended-mjs",
+    "request": "./appended-mjs/dep.mjs",
+    "path": "appended-mjs/dep.mjs.ts"
+  },
+  {
+    "case": "directory-js",
+    "request": "./directory-js/dep.js",
+    "path": "directory-js/dep.ts"
+  },
+  {
+    "case": "exact-jsx",
+    "request": "./exact-jsx/dep.jsx",
+    "path": "exact-jsx/dep.jsx"
+  },
+  {
+    "case": "exact-mjs",
+    "request": "./exact-mjs/dep.mjs",
+    "path": "exact-mjs/dep.mjs"
+  },
+  {
+    "case": "exact-cjs",
+    "request": "./exact-cjs/dep.cjs",
+    "path": "exact-cjs/dep.cjs"
+  },
+  {
+    "case": "modules-js",
+    "request": "./modules-js/node_modules/pkg/dep.js",
+    "path": "modules-js/node_modules/pkg/dep.ts"
+  },
+  {
+    "case": "modules-jsx",
+    "request": "./modules-jsx/node_modules/pkg/dep.jsx",
+    "path": "modules-jsx/node_modules/pkg/dep.tsx"
+  },
+  {
+    "case": "modules-mjs",
+    "request": "./modules-mjs/node_modules/pkg/dep.mjs",
+    "error": "MODULE_NOT_FOUND"
+  },
+  {
+    "case": "modules-cjs",
+    "request": "./modules-cjs/node_modules/pkg/dep.cjs",
+    "error": "MODULE_NOT_FOUND"
+  },
+  {
+    "case": "space-js",
+    "request": "./space-js/hello world.js",
+    "path": "space-js/hello world.ts"
+  },
+  {
+    "case": "unicode-js",
+    "request": "./unicode-js/\u03a9.js",
+    "path": "unicode-js/\u03a9.ts"
+  },
+  {
+    "case": "modules-lookalike",
+    "request": "./modules-lookalike/node_modules_x/dep.mjs",
+    "path": "modules-lookalike/node_modules_x/dep.mts"
+  }
+]

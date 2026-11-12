@@ -81,6 +81,31 @@ fn tryWithExtensions(allocator: std.mem.Allocator, base: []const u8) ?[]u8 {
         defer allocator.free(candidate);
         if (resolvedFile(allocator, candidate)) |path| return path;
     }
+    // Source packages can spell imports using the emitted JavaScript suffix.
+    // Bun keeps exact/appended files first, then substitutes source extensions;
+    // its mjs/cjs substitutions apply only outside node_modules (including cjs
+    // in the executed Bun1.4.4 controls). Package imports/exports keep their
+    // separate exact-target validation and are not routed here.
+    // https://bun.sh/docs/runtime/module-resolution
+    const extension = std.fs.path.extension(base);
+    var in_node_modules = false;
+    var components = std.mem.tokenizeAny(u8, base, "/\\");
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component, "node_modules")) in_node_modules = true;
+    }
+    const replacements: []const []const u8 = if (std.mem.eql(u8, extension, ".js") or std.mem.eql(u8, extension, ".jsx"))
+        &.{ ".ts", ".tsx" }
+    else if (!in_node_modules and std.mem.eql(u8, extension, ".mjs"))
+        &.{".mts"}
+    else if (!in_node_modules and std.mem.eql(u8, extension, ".cjs"))
+        &.{".cts"}
+    else
+        &.{};
+    for (replacements) |replacement| {
+        const candidate = std.mem.concat(allocator, u8, &.{ base[0 .. base.len - extension.len], replacement }) catch return null;
+        defer allocator.free(candidate);
+        if (resolvedFile(allocator, candidate)) |path| return path;
+    }
     return null;
 }
 

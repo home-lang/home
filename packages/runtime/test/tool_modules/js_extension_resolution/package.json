@@ -1,0 +1,8 @@
+{
+  "name": "home-source-suffix-fixture",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#missing": "./import-target.js"
+  }
+}
