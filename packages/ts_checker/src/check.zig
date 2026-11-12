@@ -120200,11 +120200,11 @@ pub const Checker = struct {
                         assignment_target_diag_fired = true;
                     }
                 }
-                // A variable narrowed to `undefined` is still a variable; its
-                // update reports the operand as possibly `undefined` (#1028).
-                if (target_kind == .literal_undefined or self.nodeSourceTextIs(a.target, "undefined") or
-                    (is_synth_update and target_kind != .identifier and self.typeIsExactUndefined(target_t)))
-                {
+                // tsc reports TS2539 from `checkIdentifier`, for `undefined`
+                // itself. A variable or property that may be `undefined` is
+                // still a reference; its update reports the operand as
+                // possibly `undefined` (#1028, #1034).
+                if (target_kind == .literal_undefined or self.nodeSourceTextIs(a.target, "undefined")) {
                     try self.report(a.target, TsCodes.cannot_assign_undefined, "Cannot assign to 'undefined' because it is not a variable.");
                     assignment_target_diag_fired = true;
                 }
@@ -120660,29 +120660,32 @@ pub const Checker = struct {
                 // its flow type, as tsc's `checkIdentifier` does for a compound
                 // target. That type is both the left operand and the type the
                 // result must fit (#1028).
-                const compound_identifier = target_kind == .identifier and a.op != null and switch (a.op.?) {
+                const compound_op = a.op != null and switch (a.op.?) {
                     .logical_or, .logical_and, .nullish_coalesce => false,
                     else => true,
                 };
+                const compound_identifier = target_kind == .identifier and compound_op;
                 const compound_declared_t = target_t;
                 var compound_operand_t: TypeId = target_t;
+                var compound_value_t: TypeId = value_t;
                 if (compound_identifier) {
                     const flow_t = self.lookupNarrow(hir_mod.identifierOf(self.hir, a.target).name) orelse target_t;
                     if (flow_t != types.Primitive.none and flow_t != types.Primitive.unknown) {
                         compound_operand_t = try self.baseTypeOfLiterals(flow_t);
                     }
-                    // `checkNonNullType`: an arithmetic operand, or a `+=` operand
-                    // with no string side, may not be `null` or `undefined`.
+                }
+                // `checkNonNullType`: both operands of an arithmetic compound
+                // assignment, and of a `+=` with no string side, may not be
+                // `null` or `undefined` (#1028, #1034). A `null` or
+                // `undefined` literal target keeps its reference diagnostics.
+                if (compound_op) {
                     const string_add = a.op.? == .add and
                         (self.typeMaybeStringLike(compound_operand_t) or self.typeMaybeStringLike(value_t));
-                    if (self.strict_flags.strict_null_checks and !string_add and
-                        compound_operand_t != types.Primitive.any and
-                        self.typeIsPossiblyNullishStrict(compound_operand_t) and
-                        !self.typeIsAnyLike(compound_operand_t))
-                    {
-                        try self.reportRelationalNullishOperand(a.target, compound_operand_t);
-                        const non_null_t = self.subtractNullUndefined(compound_operand_t) catch compound_operand_t;
-                        compound_operand_t = if (non_null_t == types.Primitive.never) types.Primitive.any else non_null_t;
+                    if (!string_add) {
+                        if (self.nullishLiteralOperandName(a.target) == null) {
+                            compound_operand_t = try self.checkNonNullOperand(a.target, compound_operand_t);
+                        }
+                        if (!is_synth_update) compound_value_t = try self.checkNonNullOperand(a.value, value_t);
                     }
                 }
                 var compound_result_t: ?TypeId = null;
@@ -120715,7 +120718,7 @@ pub const Checker = struct {
                                     a.value,
                                     compound_operand_t,
                                     if (compound_identifier) compound_operand_t else target_t,
-                                    value_t,
+                                    compound_value_t,
                                 );
                                 if (!is_synth_update and
                                     self.diagnostics.items.len == diagnostic_count)
@@ -120765,8 +120768,8 @@ pub const Checker = struct {
                                 target_arithmetic_allowed;
                             const value_shift_ok = !is_synth_update and
                                 !value_is_untyped_uninit and
-                                !self.typeIsExactNullish(value_t) and
-                                self.isArithmeticOperandAllowed(value_t);
+                                self.nullishLiteralOperandName(a.value) == null and
+                                self.isArithmeticOperandAllowed(compound_value_t);
                             if (is_synth_update and (self.hir.kindOf(a.target) == .literal_null or self.nodeSourceTextIs(a.target, "null"))) {
                                 try self.reportNullishRelationalOperand(a.target, compound_operand_t);
                             } else if (assignment_target_diag_fired) {
@@ -120793,15 +120796,13 @@ pub const Checker = struct {
                             // synthesized updates ÃÂ¢ÃÂÃÂ the `1` is a
                             // compiler-inserted constant and reporting
                             // it confuses the diagnostic baseline.
-                            if (!is_synth_update and !value_is_untyped_uninit and self.typeIsExactNullish(value_t)) {
-                                try self.reportNullishRelationalOperand(a.value, value_t);
-                            } else if (!is_synth_update and !self.isArithmeticOperandAllowed(value_t)) {
+                            if (!is_synth_update and !value_is_untyped_uninit and !self.isArithmeticOperandAllowed(compound_value_t)) {
                                 try self.reportArithmeticOperand(a.value, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                             }
                             const left_operand_ok = !self.typeIsExactNullish(compound_operand_t) and
                                 target_arithmetic_allowed;
                             const right_operand_ok = value_is_untyped_uninit or
-                                (!self.typeIsExactNullish(value_t) and self.isArithmeticOperandAllowed(value_t));
+                                self.isArithmeticOperandAllowed(compound_value_t);
                             if (!is_synth_update and
                                 !assignment_target_diag_fired and
                                 left_operand_ok and
@@ -120811,7 +120812,7 @@ pub const Checker = struct {
                             }
                             if (left_operand_ok and right_operand_ok) {
                                 const left_base = self.widenLiteralType(compound_operand_t);
-                                const right_base = self.widenLiteralType(value_t);
+                                const right_base = self.widenLiteralType(compound_value_t);
                                 compound_result_t = if (left_base == types.Primitive.bigint_t and right_base == types.Primitive.bigint_t and op != .shr_unsigned)
                                     types.Primitive.bigint_t
                                 else
@@ -168082,11 +168083,90 @@ pub const Checker = struct {
     }
 
     fn reportRelationalNullishOperand(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
-        if (self.nullishLiteralOperandName(node)) |name| {
-            try self.reportNullishLiteralBinaryOperand(node, name);
-            return;
+        try self.reportPossiblyNullishOperand(node, t);
+    }
+
+    /// tsc's `checkNonNullType` on an operator's operand (#1034). An operand
+    /// that may be `null` or `undefined` is reported, then checked without
+    /// them. When nothing is left it reads as `any`, tsc's errorType, so no
+    /// operand-type diagnostic follows. Without `strictNullChecks` unions
+    /// drop `null` and `undefined`, so only a type that is exactly one of
+    /// them counts. Returns the type to check the operand as.
+    fn checkNonNullOperand(self: *Checker, node: NodeId, t: TypeId) CheckError!TypeId {
+        const literal = self.symbolOperandAnchorPos(node) == null and self.nullishLiteralOperandName(node) != null;
+        if (!literal) {
+            if (self.typeIsAnyLike(t)) return t;
+            const may_be_nullish = if (self.strict_flags.strict_null_checks)
+                self.typeIsPossiblyNullishStrict(t)
+            else
+                t == types.Primitive.null_t or t == types.Primitive.undefined_t;
+            if (!may_be_nullish) return t;
+            // Without `noImplicitAny`, `var v;` is declared `any`. With it, v
+            // is auto-typed and reads as `undefined` until assigned.
+            if (!self.strict_flags.no_implicit_any and
+                self.hir.kindOf(node) == .identifier and
+                self.identifierIsUntypedUninitializedVar(node)) return types.Primitive.any;
         }
-        try self.reportPossiblyNullishMember(node, t);
+        try self.reportPossiblyNullishOperand(node, t);
+        if (literal or !self.strict_flags.strict_null_checks) return types.Primitive.any;
+        const non_null_t = self.subtractNullUndefined(t) catch t;
+        if (non_null_t == types.Primitive.never or self.typeIsPossiblyNullishStrict(non_null_t)) return types.Primitive.any;
+        return non_null_t;
+    }
+
+    /// tsc's `reportObjectPossiblyNullOrUndefinedError` for an operand. The
+    /// `null` and `undefined` literals "cannot be used here", an entity name
+    /// (`n`, `o.p`, `o?.p`) is named, and anything else, a parenthesized
+    /// operand included, is "Object is possibly …".
+    fn reportPossiblyNullishOperand(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
+        const paren_pos = self.symbolOperandAnchorPos(node);
+        if (paren_pos == null) {
+            if (self.nullishLiteralOperandName(node)) |name| {
+                try self.reportNullishLiteralBinaryOperand(node, name);
+                return;
+            }
+            if (self.hir.kindOf(node) == .this_expr or self.nodeIsThisIdentifier(node)) {
+                try self.reportPossiblyNullishMember(node, t);
+                return;
+            }
+        }
+        if (self.identifierIsNonNullishByEnclosingWhileAssignment(node)) return;
+        const kind = self.nullishKindOf(t);
+        const suffix: []const u8 = switch (kind) {
+            .only_null => "'null'",
+            .only_undefined => "'undefined'",
+            .both => "'null' or 'undefined'",
+        };
+        // `this.x` is not an entity name: its root is the `this` keyword.
+        const entity_name = if (paren_pos == null and !self.memberAccessRootIsThis(node))
+            try self.allocIdentifierRootedMemberAccessName(node)
+        else
+            null;
+        if (entity_name) |name| {
+            if (name.len < 100) {
+                const code: u32 = switch (kind) {
+                    .only_null => TsCodes.object_possibly_null,
+                    .only_undefined => TsCodes.object_possibly_undefined_18048,
+                    .both => TsCodes.object_possibly_nullish,
+                };
+                const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' is possibly {s}.", .{ name, suffix });
+                try self.diagnostics.append(self.gpa, .{ .node = node, .code = code, .message = msg });
+                return;
+            }
+        }
+        const code: u32 = switch (kind) {
+            .only_null => TsCodes.object_possibly_null_2531,
+            .only_undefined => TsCodes.object_possibly_undefined,
+            .both => TsCodes.object_possibly_nullish_2533,
+        };
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Object is possibly {s}.", .{suffix});
+        try self.diagnostics.append(self.gpa, .{ .node = node, .pos = paren_pos, .code = code, .message = msg });
+    }
+
+    fn memberAccessRootIsThis(self: *Checker, node: NodeId) bool {
+        var cur = node;
+        while (self.hir.kindOf(cur) == .member_access) cur = hir_mod.memberOf(self.hir, cur).object;
+        return self.hir.kindOf(cur) == .this_expr or self.nodeIsThisIdentifier(cur);
     }
 
     fn expressionRecoveredFromNullishDiagnostic(self: *Checker, node: NodeId) bool {
@@ -169860,19 +169940,19 @@ pub const Checker = struct {
                             rhs_eff = types.Primitive.any;
                         }
                     }
+                    // The operand continues without `null` and `undefined`, so
+                    // `big + 1n` on a `bigint | undefined` is `bigint` (#1034).
                     if (self.strict_flags.strict_null_checks and
                         lhs_eff == lhs_app and
                         self.typeIsPossiblyNullishStrict(lhs_app))
                     {
-                        try self.reportRelationalNullishOperand(b.lhs, lhs);
-                        lhs_eff = types.Primitive.any;
+                        lhs_eff = try self.checkNonNullOperand(b.lhs, lhs_app);
                     }
                     if (self.strict_flags.strict_null_checks and
                         rhs_eff == rhs_app and
                         self.typeIsPossiblyNullishStrict(rhs_app))
                     {
-                        try self.reportRelationalNullishOperand(b.rhs, rhs);
-                        rhs_eff = types.Primitive.any;
+                        rhs_eff = try self.checkNonNullOperand(b.rhs, rhs_app);
                     }
                 }
                 if (!add_any_like and
@@ -169907,48 +169987,39 @@ pub const Checker = struct {
                 break :blk types.Primitive.number_t;
             },
             .sub, .mul, .div, .mod, .pow => blk: {
-                // tsc calls `checkNonNullType` on each operand
-                // unconditionally for these ops; when the operand
-                // node is the literal `null` keyword or the
-                // `undefined` identifier it returns the errorType
-                // (treated as any-like by `checkArithmeticOperandType`)
-                // ÃÂ¢ÃÂÃÂ that suppresses the TS2362/TS2363 on the SAME
-                // side while still letting the OTHER operand's check
-                // run. Fixture:
-                //   arithmeticOperatorWithNullValueAndInvalidOperands.
-                const lhs_nullish = self.nullishLiteralOperandName(b.lhs);
-                const rhs_nullish = self.nullishLiteralOperandName(b.rhs);
-                const lhs_void_undefined = self.strict_flags.strict_null_checks and
-                    self.typeIsExactUndefined(lhs) and self.hir.kindOf(b.lhs) == .unary_op and
-                    hir_mod.unaryOf(self.hir, b.lhs).op == .void_;
-                const rhs_void_undefined = self.strict_flags.strict_null_checks and
-                    self.typeIsExactUndefined(rhs) and self.hir.kindOf(b.rhs) == .unary_op and
-                    hir_mod.unaryOf(self.hir, b.rhs).op == .void_;
-                if (lhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.lhs, name);
-                if (rhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.rhs, name);
-                if (lhs_void_undefined) {
-                    try self.reportAt(b.lhs, self.symbolOperandAnchorPos(b.lhs), TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
-                }
-                if (rhs_void_undefined) {
-                    try self.reportAt(b.rhs, self.symbolOperandAnchorPos(b.rhs), TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
-                }
-                if (lhs_nullish == null and !lhs_void_undefined and !self.isArithmeticOperandAllowed(lhs)) {
+                // tsc calls `checkNonNullType` on each operand first. A
+                // possibly nullish operand is reported (`'n' is possibly
+                // 'undefined'`, or TS18050 for the `null` and `undefined`
+                // literals) and checked without `null` and `undefined`.
+                // An operand with nothing left is tsc's errorType, which
+                // suppresses the TS2362/TS2363 on that side only (#1034).
+                // Fixture: arithmeticOperatorWithNullValueAndInvalidOperands.
+                const lhs_nn = try self.checkNonNullOperand(b.lhs, lhs);
+                const rhs_nn = try self.checkNonNullOperand(b.rhs, rhs);
+                if (!self.isArithmeticOperandAllowed(lhs_nn)) {
                     try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
-                if (rhs_nullish == null and !rhs_void_undefined and !self.isArithmeticOperandAllowed(rhs)) {
+                if (!self.isArithmeticOperandAllowed(rhs_nn)) {
                     try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
                 // TS2791 — exponentiation (`**`) on two bigint operands
                 // is not emittable below ES2016. Mirrors tsgo's
                 // `checkBinaryLikeExpression` bigint branch.
-                if (b.op == .pow and self.typeIsBigIntLike(lhs) and self.typeIsBigIntLike(rhs) and self.targetExplicitlyBelowEs2016()) {
+                if (b.op == .pow and self.typeIsBigIntLike(lhs_nn) and self.typeIsBigIntLike(rhs_nn) and self.targetExplicitlyBelowEs2016()) {
                     try self.report(node, TsCodes.bigint_exponentiation_below_es2016, "Exponentiation cannot be performed on 'bigint' values unless the 'target' option is set to 'es2016' or later.");
                 }
-                if (self.typeIsBigIntLike(lhs) and self.typeIsBigIntLike(rhs))
+                if (self.typeIsBigIntLike(lhs_nn) and self.typeIsBigIntLike(rhs_nn))
                     break :blk types.Primitive.bigint_t;
                 break :blk types.Primitive.number_t;
             },
             .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => blk: {
+                // `checkNonNullType` runs on both operands before the boolean
+                // suggestion, so `bo & true` on a `boolean | undefined` reports
+                // both (#1034).
+                const lhs_literal_nullish = self.nullishLiteralOperandName(b.lhs) != null;
+                const rhs_literal_nullish = self.nullishLiteralOperandName(b.rhs) != null;
+                const lhs_nn = try self.checkNonNullOperand(b.lhs, lhs);
+                const rhs_nn = try self.checkNonNullOperand(b.rhs, rhs);
                 // TS2447 — a bitwise `&`, `|`, or `^` applied to two
                 // boolean operands is almost always a logical-operator
                 // typo. tsc suggests `&&` / `||` / `!==` respectively
@@ -169956,7 +170027,7 @@ pub const Checker = struct {
                 // boolean suggestion and fall through to the operand
                 // checks. Mirrors `checkBinaryLikeExpression`.
                 if ((b.op == .bit_and or b.op == .bit_or or b.op == .bit_xor) and
-                    self.typeIsBooleanLike(lhs) and self.typeIsBooleanLike(rhs))
+                    self.typeIsBooleanLike(lhs_nn) and self.typeIsBooleanLike(rhs_nn))
                 {
                     const op_str: []const u8 = switch (b.op) {
                         .bit_and => "&",
@@ -169983,19 +170054,15 @@ pub const Checker = struct {
                     );
                     break :blk types.Primitive.number_t;
                 }
-                const lhs_nullish = self.nullishLiteralOperandName(b.lhs);
-                const rhs_nullish = self.nullishLiteralOperandName(b.rhs);
-                if (lhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.lhs, name);
-                if (rhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.rhs, name);
-                const lhs_allowed = self.isArithmeticOperandAllowed(lhs);
-                const rhs_allowed = self.isArithmeticOperandAllowed(rhs);
-                if (lhs_nullish == null and !lhs_allowed) {
+                const lhs_allowed = self.isArithmeticOperandAllowed(lhs_nn);
+                const rhs_allowed = self.isArithmeticOperandAllowed(rhs_nn);
+                if (!lhs_allowed) {
                     try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
-                if (rhs_nullish == null and !rhs_allowed) {
+                if (!rhs_allowed) {
                     try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
-                if (lhs_nullish == null and rhs_nullish == null and lhs_allowed and rhs_allowed) {
+                if (!lhs_literal_nullish and !rhs_literal_nullish and lhs_allowed and rhs_allowed) {
                     try self.reportSimplifiableShiftCount(node, b.lhs, b.rhs, b.op);
                 }
                 break :blk types.Primitive.number_t;
@@ -170232,9 +170299,9 @@ pub const Checker = struct {
                 // start, not the operator. Emits regardless of
                 // `strictNullChecks` since tsc's grammar-level check
                 // doesn't gate on it.
-                if (self.typeIsExactNullish(operand_t)) {
-                    try self.reportNullishRelationalOperand(u.operand, operand_t);
-                }
+                // `checkNonNullType` reports a possibly nullish operand by
+                // name (#1034); the result keeps the operand's own type.
+                _ = try self.checkNonNullOperand(u.operand, operand_t);
                 if (u.op == .plus and self.typeMaybeBigintLike(operand_t)) {
                     const display_t = try self.widenFreshLiteralType(operand_t);
                     const type_name = (try self.simpleDiagnosticTypeName(display_t)) orelse "bigint";
@@ -298990,7 +299057,9 @@ test "checker: generic call ambiguity keeps uninitialized var and value-only typ
         \\}
     );
     defer destroySetup(s);
-    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    // parserAmbiguityWithBinaryOperator4 runs under `strict`. Without
+    // `noImplicitAny`, `var c;` is declared `any` and `c + 1` reports nothing.
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_invoke_possibly_undefined));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
@@ -305562,4 +305631,64 @@ test "checker: a compound assignment reads and leaves its target's flow type (#1
     // An operand that may be `undefined` is reported by name.
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.object_possibly_undefined_18048, "'u' is possibly 'undefined'."));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.nullish_relational_operand));
+}
+
+test "checker: a possibly nullish arithmetic operand is reported by name (#1034)" {
+    const s = try newSetup(
+        \\declare const m: number | null;
+        \\declare const o: { p?: number; q: number | null };
+        \\declare const big: bigint | undefined;
+        \\declare const bo: boolean | undefined;
+        \\class C { x?: number; m() { return this.x - 1; } }
+        \\function f(n: number | undefined) {
+        \\  const a = m - 1;
+        \\  const b = 1 - n;
+        \\  const c = o.q * 2;
+        \\  const d = (n) & 1;
+        \\  const e = bo & true;
+        \\  const g = -n;
+        \\  o.p -= 1;
+        \\  o.p++;
+        \\  let x = 1;
+        \\  x -= n;
+        \\  const r: string = big + 1n;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    // `checkNonNullType` reports the operand and checks it without
+    // `null` and `undefined`, so no operand-type diagnostic follows.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.arithmetic_left_operand_type));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.arithmetic_right_operand_type));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.nullish_relational_operand));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_assign_undefined));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.object_possibly_null, "'m' is possibly 'null'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.object_possibly_null, "'o.q' is possibly 'null'."));
+    // `n` (three times), `bo`, `o.p` (twice) and `big`.
+    try T.expectEqual(@as(usize, 7), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+    // A parenthesized operand and `this.x` are not entity names.
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_possibly_undefined));
+    // The boolean suggestion reads the non-null operands.
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.bitwise_operator_not_allowed_for_boolean));
+    // `big + 1n` continues as `bigint`.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'bigint' is not assignable to type 'string'."));
+}
+
+test "checker: without strictNullChecks a null-typed arithmetic operand is reported by name (#1034)" {
+    const s = try newSetup(
+        \\declare const n0: null;
+        \\const a = n0 - 1;
+        \\const b = -n0;
+        \\const c = (null) - 1;
+        \\const d = null - 1;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_possibly_null));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.object_possibly_null_2531, "Object is possibly 'null'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.nullish_relational_operand, "The value 'null' cannot be used here."));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.nullish_relational_operand));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.arithmetic_left_operand_type));
 }
