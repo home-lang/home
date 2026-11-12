@@ -329,6 +329,9 @@ pub const Compilation = struct {
 };
 
 pub const CompileOptions = struct {
+    /// Runtime hosts erase types without checking comment annotations. The
+    /// checked compiler retains JSDoc diagnostics by default.
+    report_jsdoc_diagnostics: bool = true,
     /// Optional program-wide name keyspace. Preparation retains its own
     /// handle; caller and compilation lifetimes may end independently.
     /// HIR nodes, binder scopes and TypeIds remain owned by each source.
@@ -2212,6 +2215,7 @@ pub fn prepareSource(
                 !sourceHasNonDeclarationVirtualSection(source)));
     parser.setDeclarationFile(is_declaration_file);
     parser.setJavaScriptFile(pathIsJsLike(options.importer_path));
+    parser.setJSDocDiagnostics(options.report_jsdoc_diagnostics);
     parser.setStrictMode(options.always_strict);
     parser.setTargetEs2015OrLater(options.syntax_target_es2015);
     defer parser.deinit();
@@ -9288,4 +9292,34 @@ test "driver: deduplication keeps diagnostics whose elaboration chains differ" {
     sortDiagnosticsBySourceOrder(diags.items);
     deduplicateSortedDiagnostics(gpa, &diags);
     try T.expectEqual(@as(usize, 2), diags.items.len);
+}
+
+test "driver: runtime JSDoc comments preserve compiler diagnostics and real syntax rejection" {
+    const source = "/**\n * @returns {number} first\n * @returns {number} second\n */\nfunction answer() { return 42; }";
+    var checked = try compileSource(T.allocator, source, .{ .no_emit = true, .importer_path = "/source.cjs" });
+    defer {
+        checked.deinit();
+        T.allocator.destroy(checked);
+    }
+    var saw_jsdoc_error = false;
+    for (checked.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1223) saw_jsdoc_error = true;
+    }
+    try T.expect(saw_jsdoc_error);
+    var runtime = try prepareSource(T.allocator, source, .{ .report_jsdoc_diagnostics = false, .bind_only = true, .importer_path = "/source.cjs" });
+    defer {
+        runtime.deinit();
+        T.allocator.destroy(runtime);
+    }
+    const js = try emitPreparedSource(runtime, .{});
+    defer T.allocator.free(js);
+    try T.expect(std.mem.indexOf(u8, js, "return 42") != null);
+    for ([_][]const u8{ "const = ;", "const value = 'unterminated", "/* unterminated", "export const = 1;" }) |broken| {
+        var prepared = try prepareSource(T.allocator, broken, .{ .report_jsdoc_diagnostics = false, .bind_only = true });
+        defer {
+            prepared.deinit();
+            T.allocator.destroy(prepared);
+        }
+        try T.expectError(error.ParseError, emitPreparedSource(prepared, .{}));
+    }
 }

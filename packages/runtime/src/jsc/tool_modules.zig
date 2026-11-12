@@ -352,6 +352,7 @@ fn emitModule(allocator: std.mem.Allocator, source: []const u8, path: []const u8
     const is_tsx = std.mem.endsWith(u8, path, ".tsx");
     var options: ts_driver.CompileOptions = .{
         .continue_on_error = false,
+        .report_jsdoc_diagnostics = false,
         .is_tsx = is_tsx,
         .jsx_option_present = is_tsx,
         .importer_path = path,
@@ -548,6 +549,7 @@ fn transformTypeScriptNative(
     const result = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
     const options: ts_driver.CompileOptions = .{
         .continue_on_error = false,
+        .report_jsdoc_diagnostics = false,
         .bind_only = true,
         .no_resolve = true,
         .no_lib = true,

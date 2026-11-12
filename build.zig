@@ -851,6 +851,12 @@ pub fn build(b: *std.Build) void {
         run_source_nul.expectStdOutEqual("SOURCE NUL RESULTS {\"checks\":16,\"passed\":16,\"failures\":[]}\nSOURCE NUL TRANSPILE RESULTS {\"checks\":5,\"passed\":5,\"failures\":[]}\nSOURCE NUL 16 EXECUTED CHECKS OK\n");
         source_nul.dependOn(&run_source_nul.step);
         home_tool_smoke_step.dependOn(source_nul);
+        const runtime_jsdoc = b.step("home-tool-runtime-jsdoc", "Verify runtime comments remain separate from checked JSDoc diagnostics");
+        const run_runtime_jsdoc = b.addRunArtifact(home_tool_exe);
+        run_runtime_jsdoc.addArgs(&.{ "run", "packages/runtime/test/tool_modules/jsdoc_runtime.mjs", "--transpile" });
+        run_runtime_jsdoc.expectStdOutEqual("RUNTIME JSDOC RESULTS {\"checks\":19,\"passed\":19,\"failures\":[]}\nRUNTIME JSDOC TRANSPILE RESULTS {\"checks\":17,\"passed\":17,\"failures\":[]}\nRUNTIME JSDOC 19 EXECUTED CHECKS OK\n");
+        runtime_jsdoc.dependOn(&run_runtime_jsdoc.step);
+        home_tool_smoke_step.dependOn(runtime_jsdoc);
         const deprecations_fixture = b.addSystemCommand(&.{"python3"});
         deprecations_fixture.addFileArg(b.path("packages/runtime/test/tool_deprecations_fixture.py"));
         deprecations_fixture.addArtifactArg(home_tool_exe);

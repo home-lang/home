@@ -330,6 +330,7 @@ pub const Parser = struct {
     legacy_jsdoc_function_tail_pending: bool,
     legacy_jsdoc_function_parameter_name: ?hir_mod.StringId,
     saw_legacy_jsdoc_function_recovery: bool,
+    report_jsdoc_diagnostics: bool = true,
     async_arrow_await_recovery_arrow_pos: ?u32 = null,
     /// Indices into `diagnostics` of TS2463 ("A binding pattern parameter
     /// cannot be optional in an implementation signature.") diagnostics
@@ -518,6 +519,12 @@ pub const Parser = struct {
 
     pub fn setDeclarationFile(self: *Parser, enabled: bool) void {
         self.is_declaration_file = enabled;
+    }
+
+    /// Runtime transpilation treats JSDoc as ordinary comments. Checked
+    /// compilation keeps the default diagnostic scan.
+    pub fn setJSDocDiagnostics(self: *Parser, enabled: bool) void {
+        self.report_jsdoc_diagnostics = enabled;
     }
 
     pub fn setJavaScriptFile(self: *Parser, enabled: bool) void {
@@ -1252,7 +1259,7 @@ pub const Parser = struct {
 
     /// Parse TypeScript source elements into a source-file block.
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
-        try self.reportJSDocTypeArgumentSyntaxDiagnostics();
+        if (self.report_jsdoc_diagnostics) try self.reportJSDocTypeArgumentSyntaxDiagnostics();
         if (self.sourceHasStrictTrueDirective()) {
             self.strict_grammar_mode = true;
         }
