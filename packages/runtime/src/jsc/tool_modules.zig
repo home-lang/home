@@ -506,6 +506,54 @@ fn resolveModuleNative(
     return @ptrCast(object);
 }
 
+// Parse/emit an in-memory TypeScript module without resolving imports, checking
+// types or executing its body. This is deliberately separate from emitModule's
+// CommonJS host linkage: callers need ordinary ESM output for generated code.
+fn transformTypeScriptNative(
+    ctx: ?*JSContextRef,
+    _: ?*JSObject,
+    _: ?*JSObject,
+    count: usize,
+    args: [*c]const ?*JSValue,
+    _: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    const c = ctx orelse return null;
+    if (count != 1 or !extern_fns.JSValueIsString(c, args[0])) return extern_fns.JSValueMakeNull(c);
+    const allocator = std.heap.smp_allocator;
+    const source = valueToOwnedUtf8(c, args[0].?, allocator) orelse return extern_fns.JSValueMakeNull(c);
+    defer allocator.free(source);
+    const result = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
+    const options: ts_driver.CompileOptions = .{
+        .continue_on_error = false,
+        .bind_only = true,
+        .no_resolve = true,
+        .no_lib = true,
+        .emit = .{ .module_kind = .esm, .es_target = .esnext },
+    };
+    const compilation = ts_driver.prepareSource(allocator, source, options) catch |err| {
+        setProperty(c, result, "error", stringValue(c, @errorName(err)));
+        return @ptrCast(result);
+    };
+    defer {
+        compilation.deinit();
+        allocator.destroy(compilation);
+    }
+    for (compilation.diagnostics.items) |diagnostic| {
+        if (!diagnostic.isSyntactic()) continue;
+        const message = std.fmt.allocPrint(allocator, "{s} (TS{d}, byte {d})", .{ diagnostic.message, diagnostic.code, diagnostic.pos }) catch return extern_fns.JSValueMakeNull(c);
+        defer allocator.free(message);
+        setProperty(c, result, "syntax", stringValue(c, message));
+        return @ptrCast(result);
+    }
+    const emitted = ts_driver.emitPreparedSource(compilation, options.emit) catch |err| {
+        setProperty(c, result, "error", stringValue(c, @errorName(err)));
+        return @ptrCast(result);
+    };
+    defer allocator.free(emitted);
+    setProperty(c, result, "source", stringValue(c, emitted));
+    return @ptrCast(result);
+}
+
 // System JSC does not retain eval sourceURL directives in Error.stack.
 // Its public evaluator supplies the same generated-source URL explicitly.
 fn evaluateModuleNative(
@@ -532,6 +580,10 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
 }
 
 pub fn installWithConditions(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject, conditions: []const []const u8) void {
+    callback.registerCallback(ctx, global, "__home_tool_transform_ts", transformTypeScriptNative);
+    const transpiler = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_transpiler.js"), "home:tool-transpiler-install", 1) catch return;
+    defer transpiler.deinit(allocator);
+    if (transpiler.exception != null) return;
     const json = std.json.Stringify.valueAlloc(allocator, conditions, .{}) catch return;
     defer allocator.free(json);
     setProperty(ctx, @ptrCast(global), "__home_tool_conditions", stringValue(ctx, json));

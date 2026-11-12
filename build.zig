@@ -1367,6 +1367,12 @@ pub fn build(b: *std.Build) void {
         run_home_tool_extname.addArgs(&.{ "run", "path_extname.mjs" });
         run_home_tool_extname.expectStdOutEqual("OK actual POSIX extname lexical boundaries, aliases and validation\n");
         home_tool_smoke_step.dependOn(&run_home_tool_extname.step);
+        const transpiler_sync = b.step("home-tool-transpiler-sync", "Verify real in-memory TypeScript transforms and explicit unsupported options");
+        const run_transpiler_sync = b.addRunArtifact(home_tool_exe);
+        run_transpiler_sync.addArgs(&.{ "run", "packages/runtime/test/tool_modules/transpiler_sync.mjs", "--home-refusals" });
+        run_transpiler_sync.expectStdOutEqual("TRANSPILE SYNC RESULTS {\"checks\":20,\"passed\":20,\"failures\":[]}\nTRANSPILE EXPLICIT REFUSALS 16\nTRANSPILE 20 EXECUTED CHECKS OK\n");
+        transpiler_sync.dependOn(&run_transpiler_sync.step);
+        home_tool_smoke_step.dependOn(transpiler_sync);
         const late_static_imports = b.step("home-tool-late-static-imports", "Verify initialized static bindings before module body code");
         const late_import_emit_tests = b.addTest(.{
             .name = "home-tool-static-import-emission-tests",
