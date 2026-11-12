@@ -4,6 +4,8 @@
 // `JSGlobalContextCreate` realm, which has no host globals — in particular no
 // `console`. Bun's realms expose `console`; this installs a faithful-enough
 // `console.{log,info,debug}` → stdout and `console.{error,warn}` → stderr.
+// `assert` adds real stderr diagnostics with bounded primitive/JSON formatting;
+// object inspection remains explicitly unsupported, not a silent assertion.
 //
 // Each argument is rendered with `JSValueToStringCopy` and joined by a single
 // space, then terminated with a newline. That matches the simple console path
@@ -54,15 +56,17 @@ fn emit(ctx: *JSContextRef, fd: c_int, argument_count: usize, arguments: [*c]con
         const string = extern_fns.JSValueToStringCopy(ctx, value, null) orelse continue;
         defer extern_fns.JSStringRelease(string);
 
-        const capacity = extern_fns.JSStringGetLength(string) * 4 + 1;
-        if (capacity == 1) continue;
-
-        const buf = allocator.alloc(u8, capacity) catch continue;
-        defer allocator.free(buf);
-
-        const written = extern_fns.JSStringGetUTF8CString(string, buf.ptr, buf.len);
-        const end = if (written > 0) written - 1 else 0;
-        writeAll(fd, buf[0..end]);
+        // The system JSC UTF-8 C-string conversion can stop at an unpaired
+        // surrogate. Read the full UTF-16 value and replace invalid units,
+        // preserving both embedded NULs and the suffix after the replacement.
+        const length = extern_fns.JSStringGetLength(string);
+        if (length == 0) continue;
+        const chars = allocator.dupe(u16, extern_fns.JSStringGetCharactersPtr(string)[0..length]) catch continue;
+        defer allocator.free(chars);
+        for (chars) |*char| char.* = std.mem.nativeToLittle(u16, char.*);
+        const bytes = std.fmt.allocPrint(allocator, "{f}", .{std.unicode.fmtUtf16Le(chars)}) catch continue;
+        defer allocator.free(bytes);
+        writeAll(fd, bytes);
     }
     writeAll(fd, "\n");
 }
@@ -107,6 +111,8 @@ const install_glue =
     \\  error: globalThis.__home_console_error_native,
     \\  warn: globalThis.__home_console_error_native,
     \\};
+    \\globalThis.console.assert = globalThis.__home_console_assert_factory(globalThis.console, globalThis.__home_console_error_native);
+    \\delete globalThis.__home_console_assert_factory;
     \\delete globalThis.__home_console_log_native;
     \\delete globalThis.__home_console_error_native;
 ;
@@ -116,6 +122,10 @@ const install_glue =
 /// evaluation failure so callers never have to special-case it.
 pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
     if (comptime !build_options.enable_jsc) return;
+
+    const assertion = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_console_assert.js"), "home:console-assert-install", 1) catch return;
+    defer assertion.deinit(allocator);
+    if (assertion.exception != null) return;
 
     callback.registerCallback(ctx, global, "__home_console_log_native", logNative);
     callback.registerCallback(ctx, global, "__home_console_error_native", errorNative);
