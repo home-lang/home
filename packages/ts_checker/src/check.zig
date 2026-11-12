@@ -95630,9 +95630,12 @@ pub const Checker = struct {
             v.init != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .identifier and
             try self.variableNarrowsByAssignment(node, hir_mod.identifierOf(self.hir, v.name).name);
+        // A declared `any` or `unknown` never narrows, so its initializer is
+        // not read again, which would repeat its diagnostics.
         if (v.name != hir_mod.none_node_id and
             v.init != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .identifier and
+            !self.typeIsAnyLike(final_type) and
             (!top_level_decl or
                 ((straight_line_decl or self.hir.kindOf(node) == .const_decl) and !self.sourceHasVirtualFilenameSections())))
         {
@@ -96282,8 +96285,7 @@ pub const Checker = struct {
     }
 
     const IdentifierWrites = struct {
-        /// A write the flow joins do not model: a destructuring, update or
-        /// arithmetic compound assignment.
+        /// A write the flow joins do not model: a destructuring assignment.
         unmodeled: bool,
     };
 
@@ -96325,15 +96327,9 @@ pub const Checker = struct {
             if (target == hir_mod.none_node_id) continue;
             switch (self.hir.kindOf(target)) {
                 .identifier => {
-                    const modeled = switch (self.hir.kindOf(node)) {
-                        .assignment => if (hir_mod.assignmentOf(self.hir, node).op) |op|
-                            op == .logical_or or op == .logical_and or op == .nullish_coalesce
-                        else
-                            true,
-                        .update_op => false,
-                        else => true,
-                    };
-                    try self.noteIdentifierWrite(hir_mod.identifierOf(self.hir, target).name, modeled);
+                    // Plain, compound and logical assignments, updates and
+                    // loop targets are all joined (#1023, #1028).
+                    try self.noteIdentifierWrite(hir_mod.identifierOf(self.hir, target).name, true);
                 },
                 .array_literal, .object_literal, .array_pattern, .object_pattern => try pattern_spans.append(self.gpa, self.hir.spanOf(target)),
                 else => {},
@@ -120204,8 +120200,10 @@ pub const Checker = struct {
                         assignment_target_diag_fired = true;
                     }
                 }
+                // A variable narrowed to `undefined` is still a variable; its
+                // update reports the operand as possibly `undefined` (#1028).
                 if (target_kind == .literal_undefined or self.nodeSourceTextIs(a.target, "undefined") or
-                    (is_synth_update and self.typeIsExactUndefined(target_t)))
+                    (is_synth_update and target_kind != .identifier and self.typeIsExactUndefined(target_t)))
                 {
                     try self.report(a.target, TsCodes.cannot_assign_undefined, "Cannot assign to 'undefined' because it is not a variable.");
                     assignment_target_diag_fired = true;
@@ -120658,6 +120656,36 @@ pub const Checker = struct {
                         try self.recordUntypedUninitializedVarAssignment(a.target, assignment_result_t);
                     }
                 }
+                // A compound assignment reads its target as the base type of
+                // its flow type, as tsc's `checkIdentifier` does for a compound
+                // target. That type is both the left operand and the type the
+                // result must fit (#1028).
+                const compound_identifier = target_kind == .identifier and a.op != null and switch (a.op.?) {
+                    .logical_or, .logical_and, .nullish_coalesce => false,
+                    else => true,
+                };
+                const compound_declared_t = target_t;
+                var compound_operand_t: TypeId = target_t;
+                if (compound_identifier) {
+                    const flow_t = self.lookupNarrow(hir_mod.identifierOf(self.hir, a.target).name) orelse target_t;
+                    if (flow_t != types.Primitive.none and flow_t != types.Primitive.unknown) {
+                        compound_operand_t = try self.baseTypeOfLiterals(flow_t);
+                    }
+                    // `checkNonNullType`: an arithmetic operand, or a `+=` operand
+                    // with no string side, may not be `null` or `undefined`.
+                    const string_add = a.op.? == .add and
+                        (self.typeMaybeStringLike(compound_operand_t) or self.typeMaybeStringLike(value_t));
+                    if (self.strict_flags.strict_null_checks and !string_add and
+                        compound_operand_t != types.Primitive.any and
+                        self.typeIsPossiblyNullishStrict(compound_operand_t) and
+                        !self.typeIsAnyLike(compound_operand_t))
+                    {
+                        try self.reportRelationalNullishOperand(a.target, compound_operand_t);
+                        const non_null_t = self.subtractNullUndefined(compound_operand_t) catch compound_operand_t;
+                        compound_operand_t = if (non_null_t == types.Primitive.never) types.Primitive.any else non_null_t;
+                    }
+                }
+                var compound_result_t: ?TypeId = null;
                 if (a.op) |op| {
                     switch (op) {
                         .add => {
@@ -120668,7 +120696,7 @@ pub const Checker = struct {
                             // `checkCompoundAdditionAssignment`. Mirrors
                             // `symbolType4.ts(2,1)` / `(3,1)`.
                             if (is_synth_update and (self.hir.kindOf(a.target) == .literal_null or self.nodeSourceTextIs(a.target, "null"))) {
-                                try self.reportNullishRelationalOperand(a.target, target_t);
+                                try self.reportNullishRelationalOperand(a.target, compound_operand_t);
                             } else if (assignment_target_diag_fired) {
                                 // Target-kind errors (class/enum/namespace
                                 // names and `undefined`) win over the
@@ -120676,12 +120704,19 @@ pub const Checker = struct {
                             } else if (is_synth_update and self.updateOperandIsEnumBinaryExpression(a.target)) {
                                 try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
                             } else if (is_synth_update and
-                                !self.isArithmeticOperandAllowed(target_t))
+                                !self.isArithmeticOperandAllowed(compound_operand_t))
                             {
                                 try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
                             } else {
                                 const diagnostic_count = self.diagnostics.items.len;
-                                try self.checkCompoundAdditionAssignment(node, a.target, a.value, target_t, value_t);
+                                compound_result_t = try self.checkCompoundAdditionAssignment(
+                                    node,
+                                    a.target,
+                                    a.value,
+                                    compound_operand_t,
+                                    if (compound_identifier) compound_operand_t else target_t,
+                                    value_t,
+                                );
                                 if (!is_synth_update and
                                     self.diagnostics.items.len == diagnostic_count)
                                 {
@@ -120722,24 +120757,24 @@ pub const Checker = struct {
                                     "this",
                                 ) and
                                 !self.nodeIsInsideFunctionLike(a.target);
-                            const target_arithmetic_allowed = self.isArithmeticOperandAllowed(target_t) and
+                            const target_arithmetic_allowed = self.isArithmeticOperandAllowed(compound_operand_t) and
                                 !target_is_top_level_this;
                             const target_shift_ok = !is_synth_update and
                                 !assignment_target_diag_fired and
-                                !self.typeIsExactNullish(target_t) and
+                                !self.typeIsExactNullish(compound_operand_t) and
                                 target_arithmetic_allowed;
                             const value_shift_ok = !is_synth_update and
                                 !value_is_untyped_uninit and
                                 !self.typeIsExactNullish(value_t) and
                                 self.isArithmeticOperandAllowed(value_t);
                             if (is_synth_update and (self.hir.kindOf(a.target) == .literal_null or self.nodeSourceTextIs(a.target, "null"))) {
-                                try self.reportNullishRelationalOperand(a.target, target_t);
+                                try self.reportNullishRelationalOperand(a.target, compound_operand_t);
                             } else if (assignment_target_diag_fired) {
                                 // Reference-target diagnostics win once the
                                 // update operand's arithmetic type is valid.
                             } else if (is_synth_update and self.updateOperandIsEnumBinaryExpression(a.target)) {
                                 try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
-                            } else if (!is_synth_update and self.typeIsExactNullish(target_t)) {
+                            } else if (!is_synth_update and self.typeIsExactNullish(compound_operand_t)) {
                                 assignment_target_diag_fired = try self.reportInvalidAssignmentReference(a.target, false);
                                 if (self.parenthesizedAssignmentTargetStart(a.target)) |pos| {
                                     try self.diagnostics.append(self.gpa, .{
@@ -120749,7 +120784,7 @@ pub const Checker = struct {
                                         .message = "Object is possibly 'null'.",
                                     });
                                 } else {
-                                    try self.reportNullishRelationalOperand(a.target, target_t);
+                                    try self.reportNullishRelationalOperand(a.target, compound_operand_t);
                                 }
                             } else if (!assignment_target_diag_fired and !target_arithmetic_allowed) {
                                 try self.reportArithmeticOperand(a.target, arith_code, arith_msg);
@@ -120763,7 +120798,7 @@ pub const Checker = struct {
                             } else if (!is_synth_update and !self.isArithmeticOperandAllowed(value_t)) {
                                 try self.reportArithmeticOperand(a.value, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                             }
-                            const left_operand_ok = !self.typeIsExactNullish(target_t) and
+                            const left_operand_ok = !self.typeIsExactNullish(compound_operand_t) and
                                 target_arithmetic_allowed;
                             const right_operand_ok = value_is_untyped_uninit or
                                 (!self.typeIsExactNullish(value_t) and self.isArithmeticOperandAllowed(value_t));
@@ -120774,6 +120809,14 @@ pub const Checker = struct {
                             {
                                 assignment_target_diag_fired = try self.reportInvalidAssignmentReference(a.target, false);
                             }
+                            if (left_operand_ok and right_operand_ok) {
+                                const left_base = self.widenLiteralType(compound_operand_t);
+                                const right_base = self.widenLiteralType(value_t);
+                                compound_result_t = if (left_base == types.Primitive.bigint_t and right_base == types.Primitive.bigint_t and op != .shr_unsigned)
+                                    types.Primitive.bigint_t
+                                else
+                                    types.Primitive.number_t;
+                            }
                             if (target_shift_ok and value_shift_ok) {
                                 try self.reportSimplifiableShiftCount(node, a.target, a.value, op);
                             }
@@ -120781,6 +120824,18 @@ pub const Checker = struct {
                         else => {},
                     }
                 }
+                // The expression has the compound result's type, and the
+                // target reads as its declared type reduced by it (#1028).
+                // `x++` and `x--` are numeric whatever the operand, unless it is
+                // a `bigint` (`checkPrefixUnaryExpression`).
+                if (is_synth_update and compound_result_t != null) {
+                    compound_result_t = if (self.widenLiteralType(compound_operand_t) == types.Primitive.bigint_t)
+                        types.Primitive.bigint_t
+                    else
+                        types.Primitive.number_t;
+                }
+                if (compound_result_t) |result_t| assignment_result_t = result_t;
+                if (compound_identifier) try self.recordCompoundAssignmentFlow(a.target, compound_declared_t);
                 if (a.op == null and self.hir.kindOf(a.target) == .array_literal) {
                     const source_is_annotated_tuple_union = self.annotatedTupleUnionForIdentifier(a.value) != null;
                     try self.checkArrayDestructuringAssignment(a.target, assignment_check_value_t, a.value, 0);
@@ -140781,6 +140836,11 @@ pub const Checker = struct {
             return after_value;
         }
         const current = after_value orelse return null;
+        if (assignment.op) |op| switch (op) {
+            .logical_or, .logical_and, .nullish_coalesce => {},
+            // `x op= v` reads as the base type of `x` before it (#1028).
+            else => return try self.baseTypeOfLiterals(current),
+        };
         const assigned = (if (walk.estimate)
             try self.estimatedAssignmentFlowType(node, current, walk)
         else
@@ -140808,11 +140868,10 @@ pub const Checker = struct {
         const declared_t = self.assignmentTargetDeclaredType(assignment.target);
         if (assignment.op) |op| switch (op) {
             .logical_or, .logical_and, .nullish_coalesce => {},
-            else => {
-                const result_t = self.hir.typeOf(node);
-                if (result_t == types.Primitive.none) return null;
-                return try self.reduceAssignedFlow(assignment.target, declared_t, result_t);
-            },
+            // A compound write reads as the base type of the flow before it,
+            // which its caller knows; the declared type with literals
+            // widened stands in here.
+            else => return try self.baseTypeOfLiterals(declared_t),
         };
         // The checked assignment expression carries contextual generic
         // inference from its target (`bucket = new Map()` becomes the
@@ -140877,21 +140936,59 @@ pub const Checker = struct {
         return try self.assignmentReducedType(declared_t, raw_flow);
     }
 
+    /// `getTypeAtFlowAssignment` for `x += v`: a compound assignment does not
+    /// reduce by its value; `x` reads as the base type of its type before
+    /// the write, so `0` becomes `number` (#1028).
+    fn recordCompoundAssignmentFlow(self: *Checker, target: NodeId, declared_t: TypeId) CheckError!void {
+        if (self.identifierIsUntypedUninitializedVar(target)) return;
+        const name = hir_mod.identifierOf(self.hir, target).name;
+        const decl = self.enclosingVariableDeclaration(target, name) orelse return;
+        if (!try self.variableNarrowsByAssignment(decl, name)) return;
+        const before_t = self.lookupNarrow(name) orelse declared_t;
+        if (before_t == types.Primitive.none or before_t == types.Primitive.any or before_t == types.Primitive.unknown) return;
+        const after_t = try self.baseTypeOfLiterals(before_t);
+        if (after_t == before_t) return;
+        try self.recordNarrow(name, after_t);
+    }
+
+    /// `getBaseTypeOfLiteralType`, mapped over a union's members.
+    fn baseTypeOfLiterals(self: *Checker, t: TypeId) CheckError!TypeId {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(t).is_union) return self.widenLiteralType(t);
+        const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(t));
+        defer self.gpa.free(members);
+        var widened: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer widened.deinit(self.gpa);
+        var changed = false;
+        for (members) |member| {
+            const base = self.widenLiteralType(member);
+            if (base != member) changed = true;
+            for (widened.items) |existing| {
+                if (existing == base) break;
+            } else try widened.append(self.gpa, base);
+        }
+        if (!changed) return t;
+        if (widened.items.len == 1) return widened.items[0];
+        return self.interner.internUnion(widened.items) catch return error.OutOfMemory;
+    }
+
     /// The flow type of an assignment that is not checked yet, for a loop
     /// head estimate. `current` is the walk's flow of the target just before
     /// the write. Null when the value needs checking.
     fn estimatedAssignmentFlowType(self: *Checker, node: NodeId, current: ?TypeId, walk: FlowJoinWalk) CheckError!?TypeId {
         const assignment = hir_mod.assignmentOf(self.hir, node);
-        if (assignment.op) |op| switch (op) {
-            .logical_or, .logical_and, .nullish_coalesce => {},
-            else => return null,
-        };
         const id = hir_mod.identifierOf(self.hir, assignment.target);
-        const assigned = (try self.estimateValueType(assignment.value, id.name, current, walk, 0)) orelse return null;
         const decl = self.enclosingVariableDeclaration(assignment.target, id.name) orelse return null;
         const slot_t = self.hir.typeOf(decl);
         if (slot_t == types.Primitive.none or slot_t == types.Primitive.any or slot_t == types.Primitive.unknown) return null;
-        return try self.reduceAssignedFlow(assignment.target, slot_t, assigned);
+        const value_t = (try self.estimateValueType(assignment.value, id.name, current, walk, 0)) orelse return null;
+        const op = assignment.op orelse return try self.reduceAssignedFlow(assignment.target, slot_t, value_t);
+        switch (op) {
+            .logical_or, .logical_and, .nullish_coalesce => return try self.reduceAssignedFlow(assignment.target, slot_t, value_t),
+            else => {},
+        }
+        // `x op= v` reads as the base type of `x` before it (#1028).
+        return try self.baseTypeOfLiterals(current orelse return null);
     }
 
     /// The type of `value` before it is checked, for a loop head estimate
@@ -166057,10 +166154,11 @@ pub const Checker = struct {
         node: NodeId,
         target: NodeId,
         value: NodeId,
+        operand_t: TypeId,
         target_t: TypeId,
         value_t: TypeId,
-    ) CheckError!void {
-        if (self.typeContainsSymbol(target_t) or self.typeContainsSymbol(value_t)) {
+    ) CheckError!?TypeId {
+        if (self.typeContainsSymbol(operand_t) or self.typeContainsSymbol(value_t)) {
             // tsc emits TS2469 ("The '+=' operator cannot be applied
             // to type 'symbol'.") whenever one operand is symbol and
             // the other is string-like ÃÂ¢ÃÂÃÂ string concat would otherwise
@@ -166068,9 +166166,9 @@ pub const Checker = struct {
             // specifically. Anchor at the symbol-typed operand.
             // Mirrors `symbolType12.ts(11,1)` (`s += ""`) and `(12,8)`
             // (`str += s` ÃÂ¢ÃÂÃÂ anchored at `s`).
-            const target_has_symbol = self.typeContainsSymbol(target_t);
+            const target_has_symbol = self.typeContainsSymbol(operand_t);
             const value_has_symbol = self.typeContainsSymbol(value_t);
-            const target_is_string_like = self.typeMaybeStringLike(target_t);
+            const target_is_string_like = self.typeMaybeStringLike(operand_t);
             const value_is_string_like = self.typeMaybeStringLike(value_t);
             if ((target_has_symbol and value_is_string_like) or
                 (value_has_symbol and target_is_string_like))
@@ -166078,14 +166176,14 @@ pub const Checker = struct {
                 const anchor_node = if (target_has_symbol) target else value;
                 const pos = self.symbolOperandAnchorPos(anchor_node);
                 try self.reportSymbolOperatorAt(anchor_node, pos, "+=");
-                return;
+                return null;
             }
             // Otherwise prefer the type-rich
             // `Operator '+=' cannot be applied to types 'A' and 'B'.`
             // (TS2365) when both operand types render as simple names.
             // Mirrors `symbolType12.ts(9,1)` / `(10,1)` for `s += s`
             // and `s += 0`.
-            if (try self.addOperatorDiagnosticTypeName(target, target_t)) |t_name| {
+            if (try self.addOperatorDiagnosticTypeName(target, operand_t)) |t_name| {
                 if (try self.addOperatorDiagnosticTypeName(value, value_t)) |v_name| {
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -166097,11 +166195,11 @@ pub const Checker = struct {
                         .code = TsCodes.operator_cannot_be_applied,
                         .message = msg,
                     });
-                    return;
+                    return null;
                 }
             }
             try self.reportSymbolOperator(node, "+=");
-            return;
+            return null;
         }
         // tsc skips TS18050 when the RHS is an untyped, uninitialized
         // variable (`var v; x += v;` ÃÂ¢ÃÂÃÂ v is `any` in tsc's flow even
@@ -166111,23 +166209,23 @@ pub const Checker = struct {
             self.identifierIsUntypedUninitializedVar(value);
         if (!value_is_untyped_uninit and
             self.typeIsExactNullish(value_t) and
-            !self.compoundAdditionAllowsNullish(target_t))
+            !self.compoundAdditionAllowsNullish(operand_t))
         {
             try self.reportNullishRelationalOperand(value, value_t);
-            return;
+            return null;
         }
 
-        const apparent_target_t = (try self.indexedAccessBaseConstraint(target_t, 0)) orelse target_t;
+        const apparent_operand_t = (try self.indexedAccessBaseConstraint(operand_t, 0)) orelse operand_t;
         const result_t: TypeId = blk: {
-            if (self.typeIsAnyLike(target_t) or self.typeIsAnyLike(value_t)) break :blk types.Primitive.any;
-            if (self.typeMaybeStringLike(apparent_target_t) or self.typeMaybeStringLike(value_t)) break :blk types.Primitive.string_t;
-            if (self.isArithmeticOperandAllowed(apparent_target_t) and self.isArithmeticOperandAllowed(value_t)) break :blk types.Primitive.number_t;
+            if (self.typeIsAnyLike(operand_t) or self.typeIsAnyLike(value_t)) break :blk types.Primitive.any;
+            if (self.typeMaybeStringLike(apparent_operand_t) or self.typeMaybeStringLike(value_t)) break :blk types.Primitive.string_t;
+            if (self.isArithmeticOperandAllowed(apparent_operand_t) and self.isArithmeticOperandAllowed(value_t)) break :blk types.Primitive.number_t;
             // Prefer tsc's type-rich form
             // `Operator '+=' cannot be applied to types 'A' and 'B'.`
             // when both endpoints have a simple display name; fall
             // back to the generic `ÃÂ¢ÃÂÃÂ¦to these operand types.` form.
             // Mirrors `compoundAdditionAssignmentWithInvalidOperands.ts`.
-            if (try self.addOperatorDiagnosticTypeName(target, target_t)) |t_name| {
+            if (try self.addOperatorDiagnosticTypeName(target, operand_t)) |t_name| {
                 if (try self.addOperatorDiagnosticTypeName(value, value_t)) |v_name| {
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -166139,16 +166237,17 @@ pub const Checker = struct {
                         .code = TsCodes.operator_cannot_be_applied,
                         .message = msg,
                     });
-                    return;
+                    return null;
                 }
             }
             try self.report(node, TsCodes.operator_cannot_be_applied, "Operator '+=' cannot be applied to these operand types.");
-            return;
+            return null;
         };
 
         if (!try self.compoundAdditionAssignableBack(result_t, target_t)) {
             try self.reportTypeNotAssignable(target, result_t, target_t, "Type is not assignable to target type.");
         }
+        return result_t;
     }
 
     /// Locate the `=` token inside an `x = <init>` assignment node used
@@ -305431,4 +305530,36 @@ test "checker: a loop head joins computed values assigned in the body (#1027)" {
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
     // The `while (e)` guard holds in the body.
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: a compound assignment reads and leaves its target's flow type (#1028)" {
+    const s = try newSetup(
+        \\declare const items: number[];
+        \\function f(v: string | number) {
+        \\  let n: number | undefined = 0;
+        \\  n += 1;
+        \\  const r1: "q" = n;
+        \\  let m: number | undefined = 0;
+        \\  for (const i of items) { m += i; }
+        \\  let s: string | number = 1;
+        \\  s += "x";
+        \\  v += "x";
+        \\  const r2: "q" = v;
+        \\  let u: number | undefined;
+        \\  u -= 1;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    // The narrowed `number` operand accepts `+= 1`, inside a loop too.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.operator_cannot_be_applied));
+    // After the write the target keeps the base type of its flow type.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '\"q\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string | number' is not assignable to type '\"q\"'."));
+    // The result must fit the narrowed target, as in TypeScript.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
+    // An operand that may be `undefined` is reported by name.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.object_possibly_undefined_18048, "'u' is possibly 'undefined'."));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.nullish_relational_operand));
 }
