@@ -19858,6 +19858,38 @@ pub const Checker = struct {
         return self.interner.internNumberLiteral(signed) catch return error.OutOfMemory;
     }
 
+    /// The literal type of `!x` (#1017). `checkPrefixUnaryExpression` types
+    /// it from the facts of `x`: `false` when `x` is only truthy, `true`
+    /// when it is only falsy. Returns null when the result is `boolean`.
+    fn logicalNotLiteralType(self: *Checker, operand: NodeId, operand_t: TypeId) CheckError!?TypeId {
+        // A literal operand is checked as its widened primitive, so read its
+        // literal type from the node.
+        const facts = self.truthinessFacts(try self.valueNodeLiteralType(operand, operand_t));
+        if (facts.truthy and !facts.falsy) return types.Primitive.false_lit;
+        if (facts.falsy and !facts.truthy) return types.Primitive.true_lit;
+        return null;
+    }
+
+    /// The literal recorded for an already checked `!x`, or null. Literal
+    /// nodes are checked as their widened primitive and their literal is read
+    /// from the node; a `!x` node records its literal as its type.
+    fn recordedLogicalNotLiteral(self: *Checker, node: NodeId) ?TypeId {
+        if (self.hir.kindOf(node) != .unary_op) return null;
+        if (hir_mod.unaryOf(self.hir, node).op != .not) return null;
+        const t = self.hir.typeOf(node);
+        return if (t == types.Primitive.true_lit or t == types.Primitive.false_lit) t else null;
+    }
+
+    /// tsc types an array element or an object literal property with
+    /// `checkExpressionForMutableLocation`, which widens a fresh literal.
+    /// Other literal nodes already arrive widened; `!x` arrives as its literal.
+    fn widenLogicalNotLiteral(self: *Checker, node: NodeId, t: TypeId) TypeId {
+        if (t != types.Primitive.true_lit and t != types.Primitive.false_lit) return t;
+        if (self.hir.kindOf(node) != .unary_op) return t;
+        if (hir_mod.unaryOf(self.hir, node).op != .not) return t;
+        return types.Primitive.boolean_t;
+    }
+
     fn expressionNarrowLiteralType(self: *Checker, node: NodeId) CheckError!?TypeId {
         if (try self.bigIntLiteralExpressionType(node)) |bigint_t| return bigint_t;
         return switch (self.hir.kindOf(node)) {
@@ -19873,7 +19905,7 @@ pub const Checker = struct {
             // numeric literal type — tsc renders `Type '-1' is not
             // assignable …` and matches it against enum member values.
             // Mirrors `validEnumAssignments.ts(26,1)`.
-            .unary_op => try self.numericLiteralExpressionType(node),
+            .unary_op => (try self.numericLiteralExpressionType(node)) orelse self.recordedLogicalNotLiteral(node),
             .literal_bool => self.interner.internBooleanLiteral(hir_mod.literalBoolOf(self.hir, node)),
             .literal_undefined => types.Primitive.undefined_t,
             .template_literal => blk: {
@@ -109301,6 +109333,8 @@ pub const Checker = struct {
             .literal_string, .literal_number, .literal_bool, .literal_bigint => true,
             .unary_op => blk: {
                 const u = hir_mod.unaryOf(self.hir, init_node);
+                // `!x` is typed with a fresh `true` or `false` (#1017).
+                if (u.op == .not) break :blk init_t == types.Primitive.true_lit or init_t == types.Primitive.false_lit;
                 if (u.op != .neg and u.op != .plus) break :blk false;
                 const operand_kind = self.hir.kindOf(u.operand);
                 break :blk operand_kind == .literal_number or operand_kind == .literal_bigint;
@@ -125018,7 +125052,7 @@ pub const Checker = struct {
                         self.interner.pool.flagsOf(raw_t).is_enum_literal)
                         self.widenLiteralType(raw_t)
                     else
-                        raw_t;
+                        self.widenLogicalNotLiteral(el, raw_t);
                     try elem_types.append(self.gpa, t);
                 }
                 const elem_t: TypeId = if (elem_types.items.len == 0)
@@ -125418,7 +125452,7 @@ pub const Checker = struct {
                         const op_is_method = op.is_method or
                             ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
                                 self.memberSourceLooksMethod(p));
-                        const raw_vt = try self.checkExpression(op.value);
+                        const raw_vt = self.widenLogicalNotLiteral(op.value, try self.checkExpression(op.value));
                         const jsdoc_t = try self.jsDocTypeForLeadingNode(p);
                         if (jsdoc_t) |target_t| {
                             const jsdoc_ok = try self.jsDocObjectPropertyValueAssignable(op.value, raw_vt, target_t);
@@ -125593,7 +125627,7 @@ pub const Checker = struct {
                     const raw_vt = if (shorthand_assignment_initializer) shorthand_init: {
                         const a = hir_mod.assignmentOf(self.hir, op.value);
                         break :shorthand_init try self.checkExpression(a.value);
-                    } else try self.checkExpression(op.value);
+                    } else self.widenLogicalNotLiteral(op.value, try self.checkExpression(op.value));
                     if (self.strict_flags.no_implicit_any and
                         (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn))
                     {
@@ -168600,7 +168634,7 @@ pub const Checker = struct {
                     },
                     else => {},
                 }
-                break :blk types.Primitive.boolean_t;
+                break :blk (try self.logicalNotLiteralType(u.operand, operand_t)) orelse types.Primitive.boolean_t;
             },
             .typeof => try self.typeofExpressionType(),
             .void_ => types.Primitive.undefined_t,
@@ -194821,6 +194855,10 @@ pub const Checker = struct {
             return (try self.literalExpressionAssignableToTarget(c.then_branch, target_t)) and
                 (try self.literalExpressionAssignableToTarget(c.else_branch, target_t));
         }
+        // `!x` is a fresh `true` or `false` (#1017).
+        if (self.recordedLogicalNotLiteral(value_node)) |literal_t| {
+            if (self.engine.isAssignableTo(literal_t, target_t) catch false) return true;
+        }
         if (target_t == types.Primitive.true_lit) return self.hir.kindOf(value_node) == .literal_bool and hir_mod.literalBoolOf(self.hir, value_node);
         if (target_t == types.Primitive.false_lit) return self.hir.kindOf(value_node) == .literal_bool and !hir_mod.literalBoolOf(self.hir, value_node);
         if (self.hir.kindOf(value_node) == .literal_string) {
@@ -194982,7 +195020,8 @@ pub const Checker = struct {
             // `-1` as a unary negation renders as the negative numeric
             // literal — `Type '-1' is not assignable to type 'E'.`,
             // mirroring `validEnumAssignments.ts(26,1)`.
-            .unary_op => (try self.numericLiteralExpressionType(value_node)) orelse fallback,
+            .unary_op => (try self.numericLiteralExpressionType(value_node)) orelse
+                self.recordedLogicalNotLiteral(value_node) orelse fallback,
             .literal_bool => if (hir_mod.literalBoolOf(self.hir, value_node)) types.Primitive.true_lit else types.Primitive.false_lit,
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, value_node);
@@ -207474,6 +207513,133 @@ pub const Checker = struct {
             };
         }
         return false;
+    }
+
+    const TruthinessFacts = struct {
+        truthy: bool,
+        falsy: bool,
+
+        const both: TruthinessFacts = .{ .truthy = true, .falsy = true };
+        const only_truthy: TruthinessFacts = .{ .truthy = true, .falsy = false };
+        const only_falsy: TruthinessFacts = .{ .truthy = false, .falsy = true };
+        const none: TruthinessFacts = .{ .truthy = false, .falsy = false };
+    };
+
+    /// The `Truthy | Falsy` part of tsc's `getTypeFacts` (#1017): whether a
+    /// value of `t` can be truthy and whether it can be falsy. Without
+    /// `strictNullChecks` every type except `never` may also be falsy,
+    /// because it admits `null` and `undefined`. A type Home does not
+    /// classify here reports both, as `unknown` does.
+    fn truthinessFacts(self: *Checker, t: TypeId) TruthinessFacts {
+        var facts = self.strictTruthinessFacts(t, 0);
+        if (!self.strict_flags.strict_null_checks and (facts.truthy or facts.falsy)) facts.falsy = true;
+        return facts;
+    }
+
+    fn strictTruthinessFacts(self: *Checker, t: TypeId, depth: u8) TruthinessFacts {
+        if (depth > 16) return .both;
+        switch (t) {
+            types.Primitive.never => return .none,
+            types.Primitive.void_t, types.Primitive.null_t, types.Primitive.undefined_t, types.Primitive.false_lit => return .only_falsy,
+            types.Primitive.true_lit, types.Primitive.symbol_t, types.Primitive.object_t => return .only_truthy,
+            else => {},
+        }
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return .both;
+        const flags = self.interner.pool.flagsOf(t);
+        // A union or intersection inherits its members' flags, so test the
+        // composite kinds first.
+        if (flags.is_union) {
+            var facts: TruthinessFacts = .none;
+            for (self.interner.unionMembers(t)) |member| {
+                const part = self.strictTruthinessFacts(member, depth + 1);
+                facts.truthy = facts.truthy or part.truthy;
+                facts.falsy = facts.falsy or part.falsy;
+            }
+            return facts;
+        }
+        if (flags.is_intersection) {
+            // `getIntersectionTypeFacts`: object members of an intersection
+            // with a primitive are type tags and are ignored, and the
+            // truthiness facts of the rest are and-ed.
+            const members = self.interner.intersectionMembers(t);
+            var ignore_objects = false;
+            for (members) |member| {
+                if (self.typeIsPrimitiveForTruthiness(member)) ignore_objects = true;
+            }
+            var facts: TruthinessFacts = .both;
+            var counted = false;
+            for (members) |member| {
+                if (ignore_objects and self.typeIsObjectForTruthiness(member)) continue;
+                const part = self.strictTruthinessFacts(member, depth + 1);
+                facts.truthy = facts.truthy and part.truthy;
+                facts.falsy = facts.falsy and part.falsy;
+                counted = true;
+            }
+            return if (counted) facts else .both;
+        }
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return .both;
+            return self.strictTruthinessFacts(constraint, depth + 1);
+        }
+        if (flags.is_unique_symbol) return .only_truthy;
+        if (flags.is_literal) {
+            if (flags.is_string) {
+                const value = self.stringLiteralValueFromType(t) orelse return .both;
+                return if (self.string_interner.get(value).len == 0) .only_falsy else .only_truthy;
+            }
+            if (flags.is_number) {
+                const value = self.numberLiteralValueFromType(t) orelse return .both;
+                return if (value == 0) .only_falsy else .only_truthy;
+            }
+            if (flags.is_bigint) {
+                return switch (self.interner.literalOf(t)) {
+                    .bigint_lit => |digits| if (std.mem.eql(u8, self.string_interner.get(digits), "0")) .only_falsy else .only_truthy,
+                    else => .both,
+                };
+            }
+            return .both;
+        }
+        if (flags.is_template_literal) {
+            // TypeScript reduces `${string}` to `string`; any other template
+            // literal type is a non-empty string.
+            const texts = self.interner.templateLiteralTexts(t);
+            const holes = self.interner.templateLiteralTypes(t);
+            var all_empty = true;
+            for (texts) |text| {
+                if (self.string_interner.get(text).len != 0) all_empty = false;
+            }
+            if (all_empty and holes.len == 1 and holes[0] == types.Primitive.string_t) return .both;
+            return .only_truthy;
+        }
+        if (flags.is_string_mapping) return .both;
+        if (self.interner.isSignature(t) or flags.is_tuple or flags.is_mapped) return .only_truthy;
+        if (flags.is_object_type) {
+            // An empty anonymous object type such as `{}` admits every
+            // non-nullish value, falsy primitives included.
+            if (self.typeIsEmptyObjectType(t)) {
+                const payload = self.interner.pool.object_type_payloads.items[self.interner.pool.payloadOf(t)];
+                if (payload.call_sig == 0 and payload.construct_sig == 0) return .both;
+            }
+            return .only_truthy;
+        }
+        return .both;
+    }
+
+    fn typeIsPrimitiveForTruthiness(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.object_t or t == types.Primitive.any or t == types.Primitive.unknown or t == types.Primitive.never) return false;
+        if (t < types.Primitive.first_dynamic) return t != types.Primitive.none and t != types.Primitive.unmodeled;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union or flags.is_intersection or flags.is_object_type or flags.is_type_parameter) return false;
+        return flags.is_string or flags.is_number or flags.is_boolean or flags.is_bigint or flags.is_symbol or
+            flags.is_void or flags.is_null or flags.is_undefined;
+    }
+
+    fn typeIsObjectForTruthiness(self: *Checker, t: TypeId) bool {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union or flags.is_intersection or flags.is_type_parameter) return false;
+        return flags.is_object_type or flags.is_tuple or flags.is_mapped or self.interner.isSignature(t);
     }
 
     /// Widen `t` with `undefined` when `noUncheckedIndexedAccess`
@@ -303449,4 +303615,64 @@ test "checker: keyof gives a numeric property name its number literal type (#101
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '3' is not assignable to type '2'."));
     // `Pick` and `Record` accept a number key.
     try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
+}
+
+test "checker: a negation of known truthiness is a boolean literal (#1017)" {
+    const s = try newSetup(
+        \\declare const o: { a: number };
+        \\declare const e: {};
+        \\declare const s: string;
+        \\declare const u: string | undefined;
+        \\declare const tag: string & { __brand: "x" };
+        \\const r1: false = !0;
+        \\const r2: true = !1;
+        \\const r3: false = !"";
+        \\const r4: false = !null;
+        \\const r5: true = !o;
+        \\const r6: false = !e;
+        \\const r7: false = !s;
+        \\const r8: false = !u;
+        \\const r9: false = !tag;
+        \\const r10: false = !!0;
+        \\const r11: symbol = !0;
+        \\const n = !0;
+        \\const x: false = n;
+        \\const arr = [!0];
+        \\const a2: string[] = arr;
+        \\const obj = { k: !0 };
+        \\const o2: { k: string } = obj;
+        \\let flag = !0;
+        \\flag = false;
+        \\const ok: { k: true } = { k: !0 };
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    // `0`, `""` and `null` are only falsy; `n` keeps the literal of `!0`.
+    try T.expectEqual(@as(usize, 4), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'true' is not assignable to type 'false'."));
+    // `1` and an object type are only truthy.
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'false' is not assignable to type 'true'."));
+    // `{}` admits falsy primitives, and a branded string is a string.
+    try T.expectEqual(@as(usize, 4), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'false'."));
+    // The literal is fresh: a non-literal target, an array element, an
+    // object property and a `let` widen it.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'symbol'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'boolean[]' is not assignable to type 'string[]'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '{ k: boolean; }' is not assignable to type '{ k: string; }'."));
+    try T.expectEqual(@as(usize, 13), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: without strictNullChecks only a falsy operand gives a literal (#1017)" {
+    const s = try newSetup(
+        \\declare const o: { a: number };
+        \\const r1: false = !0;
+        \\const r2: true = !1;
+        \\const r3: false = !null;
+        \\const r4: true = !o;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'true' is not assignable to type 'false'."));
+    // Every value may be `null` or `undefined`, so nothing is only truthy.
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'true'."));
 }
