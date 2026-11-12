@@ -20,7 +20,8 @@ const JSObject = opaques.JSObject;
 const JSGlobalObject = opaques.JSGlobalObject;
 const g_io = std.Io.Threaded.global_single_threaded.io();
 
-const extensions = [_][]const u8{ ".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json" };
+// Native filenames participate in lookup, but never in source evaluation.
+const extensions = [_][]const u8{ ".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json", ".node" };
 
 fn valueToOwnedUtf8(ctx: *JSContextRef, value: *JSValue, allocator: std.mem.Allocator) ?[]u8 {
     const string = extern_fns.JSValueToStringCopy(ctx, value, null) orelse return null;
@@ -462,6 +463,15 @@ fn resolveModuleNative(
     if (argument_count > 2 and arguments[2] != null and extern_fns.JSValueToBoolean(c, arguments[2])) {
         const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
         setProperty(c, object, "path", stringValue(c, path));
+        return @ptrCast(object);
+    }
+    // A native addon can resolve without being executable by this host. Refuse
+    // before reading its bytes: treating .node as TS can execute source text or
+    // turn a binary into misleading parser errors and incomplete module state.
+    if (std.mem.eql(u8, std.fs.path.extension(path), ".node")) {
+        const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
+        setProperty(c, object, "error", stringValue(c, "NativeAddonUnsupported: Home cannot execute .node native addons"));
+        setProperty(c, object, "code", stringValue(c, "ERR_HOME_UNSUPPORTED_NATIVE_ADDON"));
         return @ptrCast(object);
     }
     const source = std.Io.Dir.cwd().readFileAlloc(g_io, path, allocator, std.Io.Limit.unlimited) catch

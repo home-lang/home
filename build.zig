@@ -835,6 +835,12 @@ pub fn build(b: *std.Build) void {
         deprecations_fixture.addArtifactArg(home_tool_exe);
         deprecations_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
         home_tool_smoke_step.dependOn(&deprecations_fixture.step);
+        const native_addon_fixture = b.addSystemCommand(&.{"python3"});
+        native_addon_fixture.addFileArg(b.path("packages/runtime/test/tool_native_addon_fixture.py"));
+        native_addon_fixture.addArtifactArg(home_tool_exe);
+        native_addon_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/native_addon_refusals.cjs"));
+        home_tool_smoke_step.dependOn(&native_addon_fixture.step);
+        b.step("home-tool-native-addon-refusals", "Refuse unavailable native formats without executing source or populating cache").dependOn(&native_addon_fixture.step);
         const deprecations_step = b.step("home-tool-deprecations-smoke", "Verify real warning events, deprecation forwarding, stderr and fatal policy");
         deprecations_step.dependOn(&deprecations_fixture.step);
         deprecations_step.dependOn(&run_warning_tests.step);
