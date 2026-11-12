@@ -15,6 +15,7 @@ pub const timers = @import("tool_timers.zig");
 pub const async_context = @import("tool_async_context.zig");
 pub const os = @import("tool_os.zig");
 pub const dns = @import("tool_dns.zig");
+pub const vm = @import("tool_vm.zig");
 pub const glob = @import("tool_glob.zig");
 pub const markdown = @import("tool_markdown.zig");
 pub const fs = @import("tool_fs.zig");

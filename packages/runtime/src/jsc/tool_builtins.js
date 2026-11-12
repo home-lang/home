@@ -1281,6 +1281,13 @@
   const v8Api = v8Factory(bufferApi.Buffer, nativeIsProxy, nativeIsPromise);
   builtins.v8 = v8Api;
   builtins['node:v8'] = v8Api;
+  const vmFactory = globalThis.__home_tool_vm_factory;
+  const nativeScript = globalThis.__home_tool_run_script;
+  delete globalThis.__home_tool_vm_factory;
+  delete globalThis.__home_tool_run_script;
+  const vmApi = vmFactory(nativeScript);
+  builtins.vm = vmApi;
+  builtins['node:vm'] = vmApi;
   const netFactory = globalThis.__home_tool_net_factory;
   delete globalThis.__home_tool_net_factory;
   const netApi = netFactory();

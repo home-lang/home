@@ -67,6 +67,7 @@ fn runSource(
     tool_runtime.performance.install(ctx, global);
     tool_runtime.os.install(ctx, global);
     tool_runtime.dns.install(ctx, global);
+    tool_runtime.vm.install(ctx, global);
     var filesystem = tool_runtime.fs.Host.init(allocator, ctx);
     defer filesystem.deinit();
     filesystem.install(global);
