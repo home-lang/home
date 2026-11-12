@@ -1909,7 +1909,7 @@ pub const Program = struct {
             if (!needsCompilation(f, shared_options)) continue;
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
-            try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
+            try self.populateCheckedExportSchemas(f, &declarations);
             try self.populateCheckedJavaScriptClassMethods(f, program_exported_classes);
         }
         for (compilation_order) |file_index| {
@@ -1918,7 +1918,7 @@ pub const Program = struct {
             if (!needsCompilation(f, shared_options)) continue;
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
-            try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
+            try self.populateCheckedExportSchemas(f, &declarations);
             try self.populateCheckedJavaScriptClassMethods(f, program_exported_classes);
         }
 
@@ -2180,7 +2180,7 @@ pub const Program = struct {
             if (!needsCompilation(f, shared_options)) continue;
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
-            try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
+            try self.populateCheckedExportSchemas(f, &declarations);
             try self.populateCheckedJavaScriptClassMethods(f, program_exported_classes);
         }
         for (compilation_order) |file_index| {
@@ -2195,7 +2195,7 @@ pub const Program = struct {
             }
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
-            try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
+            try self.populateCheckedExportSchemas(f, &declarations);
             try self.populateCheckedJavaScriptClassMethods(f, program_exported_classes);
             callback(ctx, f.path, f.compilation.?.diagnostics.items);
         }
@@ -2896,16 +2896,21 @@ pub const Program = struct {
         }
     }
 
-    /// Bound declaration routes are available before checking, but JavaScript
-    /// functions with inferred returns and collection variables need their
-    /// checked owner types. Publish those types before checking importers.
-    fn populateCheckedJavaScriptExportSchemas(
+    /// Bound declaration routes are available before checking, but some
+    /// exports need their checked owner types. Publish those types before
+    /// checking importers: JavaScript functions with inferred returns and
+    /// collection variables, and any TypeScript variable whose initializer the
+    /// syntax projector cannot write down (`-5`, `2 + 3`, a call, `as const`,
+    /// an unannotated `let`). Files are checked in dependency order, so an
+    /// importer sees the exporter's checked type, as TypeScript's does (#1013).
+    fn populateCheckedExportSchemas(
         self: *Program,
         file: *File,
         declarations: *declaration_graph.Graph,
     ) ProgramError!void {
         const compilation = file.compilation orelse return;
-        if (!compilation.checked_types_ready or !jsdoc_types.isJavaScriptPath(file.path)) return;
+        if (!compilation.checked_types_ready) return;
+        const is_javascript = jsdoc_types.isJavaScriptPath(file.path);
         var by_position: std.AutoHashMapUnmanaged(u32, hir_mod_ns.NodeId) = .empty;
         defer by_position.deinit(self.gpa);
         var node: hir_mod_ns.NodeId = 1;
@@ -2931,6 +2936,25 @@ pub const Program = struct {
             const checked_type = compilation.hir.typeOf(owner_node);
             if (checked_type == ts_driver.Primitive.none) continue;
             if (route.expression_origin) {
+                const body = checked_schema.lowerTypeInArena(
+                    declarations.arena.allocator(),
+                    file.path,
+                    compilation,
+                    checked_type,
+                ) catch return error.OutOfMemory;
+                if (!(ts_driver.ProgramClassSchema.Schema.expressionSupported(body, self.gpa) catch return error.OutOfMemory)) continue;
+                @constCast(declaration).body = body;
+                route.projection_only = false;
+                continue;
+            }
+            if (!is_javascript) {
+                // Only a variable whose syntactic projection failed; an exact
+                // syntactic schema stays as it is.
+                if (route.kind != .variable or !route.projection_only) continue;
+                switch (compilation.hir.kindOf(owner_node)) {
+                    .var_decl, .let_decl, .const_decl => {},
+                    else => continue,
+                }
                 const body = checked_schema.lowerTypeInArena(
                     declarations.arena.allocator(),
                     file.path,
@@ -4457,7 +4481,7 @@ pub const Program = struct {
             if (!needsCompilation(f, shared_options)) continue;
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
-            try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
+            try self.populateCheckedExportSchemas(f, &declarations);
             try self.populateCheckedJavaScriptClassMethods(f, program_exported_classes);
         }
         if (self.programCommonJsExportsNeedDependencyChecking(program_commonjs_exports) or
@@ -4532,7 +4556,7 @@ pub const Program = struct {
                     self.files.items[index],
                     program_commonjs_exports,
                 );
-                try self.populateCheckedJavaScriptExportSchemas(self.files.items[index], declarations);
+                try self.populateCheckedExportSchemas(self.files.items[index], declarations);
                 try self.populateCheckedJavaScriptClassMethods(self.files.items[index], options.program_exported_classes);
             }
         }
@@ -7364,6 +7388,69 @@ test "Program: imported rest tuples retain positional owner types" {
     for (compilation.diagnostics.items) |diagnostic| {
         try T.expectEqual(@as(u32, 2345), diagnostic.code);
     }
+}
+
+test "Program: an importer sees the checked type of a const the schema cannot project (#1013)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const owner =
+        \\export const sum = 2 + 3;
+        \\export const call = Math.abs(1);
+        \\export const negative = -5;
+        \\export const fixed = 5 as const;
+        \\export const object = { k: -1 };
+        \\export let mutable = 5;
+    ;
+    const app =
+        \\import { sum, call, negative, fixed, object, mutable } from './owner';
+        \\const a: string = sum;
+        \\const b: string = call;
+        \\const c: 5 = negative;
+        \\const d: 6 = fixed;
+        \\const e: { k: string } = object;
+        \\const f: string = mutable;
+        \\void [a, b, c, d, e, f];
+    ;
+    try vfs.addFile("/owner.ts", owner);
+    try vfs.addFile("/app.ts", app);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var source_exports = SourceExportResolver{
+        .resolver = &resolver,
+        .program = &program,
+        .arena = std.heap.ArenaAllocator.init(T.allocator),
+    };
+    defer source_exports.arena.deinit();
+    const app_id = try program.add("/app.ts", app);
+    _ = try program.add("/owner.ts", owner);
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable },
+    });
+    const compilation = program.fileById(app_id).compilation.?;
+    // Each import used to be `any`, so none of these was reported.
+    const expected = [_][]const u8{
+        "Type 'number' is not assignable to type 'string'.",
+        "Type '-5' is not assignable to type '5'.",
+        "Type '5' is not assignable to type '6'.",
+        "Type '{ k: number; }' is not assignable to type '{ k: string; }'.",
+    };
+    for (expected) |message| {
+        var found = false;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == 2322 and std.mem.eql(u8, diagnostic.message, message)) found = true;
+        }
+        if (!found) std.debug.print("missing: {s}\n", .{message});
+        try T.expect(found);
+    }
+    var count: usize = 0;
+    for (compilation.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2322) count += 1;
+    }
+    try T.expectEqual(@as(usize, 6), count);
 }
 
 test "Program: imported class heritage retains base nominal identity" {
