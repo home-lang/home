@@ -19,12 +19,11 @@ Home's flow narrowing for a declaration differed in three ways:
 `assignmentReducedType` in `check.zig` ports the reduction. Declarations and
 plain assignments now record the reduced type.
 
-Home's flow scopes do not join narrows across branches, loops, `try`,
-`switch` or closures. An earlier narrow survives a write inside one of them,
-which already happens for a literal initializer. The new narrowing therefore
-applies only to a variable whose every write is a plain `name = value;`
-statement in the block that declares it. Any other variable keeps the
-existing behavior.
+At #1022 Home's flow scopes did not join narrows across branches, loops,
+`try`, `switch` or closures, so the new narrowing applied only to a variable
+whose every write was a plain `name = value;` statement in its declaring
+block. #1023 added the joins and lifted that restriction; see
+`../issue1023-assignment-joins/`.
 
 An untyped declaration without an initializer keeps its evolving type,
 which takes each assigned type as before.
@@ -60,15 +59,11 @@ prints the same 24 lines.
 - **Writes in a branch or a loop**, which leave the declared type in both
   compilers.
 
-Not covered, and why:
+Not covered, and why (callback writes and loop exit conditions are pinned by
+#1023):
 
-- **A write inside a callback.** TypeScript ignores it for the enclosing
-  flow, so `let d = false; run(() => { d = true; }); d` reads as `false`.
-  Home keeps `boolean`.
 - **Narrowing preserved in a closure** created after the last assignment, as
   TypeScript 5.4 does. Home reads the declared type in every closure.
-- **A loop exit condition.** After `while (!done) { … }` TypeScript reads
-  `done` as `true`; Home does not narrow by the exit condition.
 - **A narrow to `never`**, such as `false` inside `if (flag)`. Home falls
   back to the declared type, as it already does for a `const`.
 - **An enum member initializer.** `let e = E.A` reads as `E.A` in TypeScript.
