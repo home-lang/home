@@ -462,6 +462,7 @@
       const error = new Error(`${result.error}: ${operation} ${fd}`);
       error.code = result.error;
       error.syscall = result.syscall || operation;
+      if (result.errno !== undefined) error.errno = result.errno;
       throw error;
     }
   }
@@ -1219,6 +1220,26 @@
       if (typeof directory !== 'string' || directory.indexOf('\0') !== -1) unsupported('Home os.tmpdir requires environment strings without NUL bytes');
       return directory.length > 1 && directory.endsWith('/') ? directory.slice(0, -1) : directory;
     },
+  };
+  const nativeErrnoConstants = globalThis.__home_tool_errno_constants;
+  delete globalThis.__home_tool_errno_constants;
+  if (!nativeErrnoConstants) unsupported('Home errno constants require native macOS or Linux headers');
+  const errnoConstants = Object.create(null);
+  for (const key of Object.keys(nativeErrnoConstants)) {
+    Object.defineProperty(errnoConstants, key, { value: nativeErrnoConstants[key], enumerable: true });
+    Object.defineProperty(legacyConstants, key, { value: nativeErrnoConstants[key], enumerable: true });
+  }
+  const osConstants = Object.create(null);
+  osConstants.errno = errnoConstants;
+  Object.defineProperty(osApi, 'constants', { value: osConstants, enumerable: true });
+  // A bounded alias over actual public host constants. No native modules,
+  // process internals, crypto/zlib tables or fabricated API objects are loaded.
+  const bindingConstants = Object.create(null);
+  bindingConstants.fs = fsConstants;
+  bindingConstants.os = osConstants;
+  process.binding = function binding(name) {
+    if (name !== 'constants') unsupported('Home process.binding supports native fs/os.errno constants only');
+    return bindingConstants;
   };
   // EOL is platform metadata fixed when the OS module initializes; unlike
   // platform(), later writes to process.platform must not change its value.

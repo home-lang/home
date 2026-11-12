@@ -775,7 +775,14 @@ pub fn build(b: *std.Build) void {
                 .flags = &sqlite_amalgamation_flags,
             });
         }
+        const tool_errno_c = b.addTranslateC(.{
+            .root_source_file = b.path("packages/runtime/src/jsc/tool_errno.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
         const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
+        tool_runtime_pkg.addImport("tool_errno_native", tool_errno_c.createModule());
         tool_runtime_pkg.addImport("bun", tool_compat_pkg);
         tool_runtime_pkg.addImport("tool_glob_matcher", tool_glob_matcher_pkg);
         tool_runtime_pkg.addImport("tool_markdown_parser", tool_markdown_parser_pkg);
@@ -1804,6 +1811,13 @@ pub fn build(b: *std.Build) void {
         base64_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_base64.mjs"));
         home_tool_smoke_step.dependOn(&base64_fixture.step);
         b.step("home-tool-buffer-base64-smoke", "Verify actual base64 bytes and Node decoding oracles").dependOn(&base64_fixture.step);
+        const native_constants_fixture = b.addSystemCommand(&.{"python3"});
+        native_constants_fixture.addFileArg(b.path("packages/runtime/test/tool_native_constants_fixture.py"));
+        native_constants_fixture.addArtifactArg(home_tool_exe);
+        native_constants_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/native_constants.mjs"));
+        native_constants_fixture.addArg("--home-profile");
+        home_tool_smoke_step.dependOn(&native_constants_fixture.step);
+        b.step("home-tool-native-constants-smoke", "Verify target errno and filesystem constants against physical OS operations").dependOn(&native_constants_fixture.step);
         const fs_mutations_fixture = b.addSystemCommand(&.{"python3"});
         fs_mutations_fixture.addFileArg(b.path("packages/runtime/test/tool_fs_mutations_fixture.py"));
         fs_mutations_fixture.addArtifactArg(home_tool_exe);

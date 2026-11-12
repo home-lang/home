@@ -106,7 +106,23 @@ fn endianness(
     return api.JSValueMakeString(c, string);
 }
 
+// Read the target libc headers, rather than copying another platform's errno
+// numbers. Darwin's POSIX EOPNOTSUPP differs from Zig's BSD enum spelling.
+const native_errno = @import("tool_errno_native");
+
+fn installErrno(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
+    if (comptime builtin.os.tag != .macos and builtin.os.tag != .linux) return;
+    const fs = @import("tool_fs.zig");
+    const object = api.JSObjectMake(ctx, null, null) orelse return;
+    // The portable Node errno names; absent target macros remain absent.
+    inline for (.{ "E2BIG", "EACCES", "EADDRINUSE", "EADDRNOTAVAIL", "EAFNOSUPPORT", "EAGAIN", "EALREADY", "EBADF", "EBADMSG", "EBUSY", "ECANCELED", "ECHILD", "ECONNABORTED", "ECONNREFUSED", "ECONNRESET", "EDEADLK", "EDESTADDRREQ", "EDOM", "EDQUOT", "EEXIST", "EFAULT", "EFBIG", "EHOSTUNREACH", "EIDRM", "EILSEQ", "EINPROGRESS", "EINTR", "EINVAL", "EIO", "EISCONN", "EISDIR", "ELOOP", "EMFILE", "EMLINK", "EMSGSIZE", "EMULTIHOP", "ENAMETOOLONG", "ENETDOWN", "ENETRESET", "ENETUNREACH", "ENFILE", "ENOBUFS", "ENODATA", "ENODEV", "ENOENT", "ENOEXEC", "ENOLCK", "ENOLINK", "ENOMEM", "ENOMSG", "ENOPROTOOPT", "ENOSPC", "ENOSR", "ENOSTR", "ENOSYS", "ENOTCONN", "ENOTDIR", "ENOTEMPTY", "ENOTSOCK", "ENOTSUP", "ENOTTY", "ENXIO", "EOPNOTSUPP", "EOVERFLOW", "EPERM", "EPIPE", "EPROTO", "EPROTONOSUPPORT", "EPROTOTYPE", "ERANGE", "EROFS", "ESPIPE", "ESRCH", "ESTALE", "ETIME", "ETIMEDOUT", "ETXTBSY", "EWOULDBLOCK", "EXDEV" }) |name| {
+        if (@hasDecl(native_errno, name)) fs.set(ctx, object, name, api.JSValueMakeNumber(ctx, @floatFromInt(@field(native_errno, name))));
+    }
+    fs.set(ctx, @ptrCast(global), "__home_tool_errno_constants", @ptrCast(object));
+}
+
 pub fn install(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
+    installErrno(ctx, global);
     callback.registerCallback(ctx, global, "__home_tool_endianness", endianness);
     callback.registerCallback(ctx, global, "__home_tool_account_homedir", homedir);
     callback.registerCallback(ctx, global, "__home_tool_available_parallelism", availableParallelism);
