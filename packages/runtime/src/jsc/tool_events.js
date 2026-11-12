@@ -210,14 +210,15 @@
   });
   EventEmitter.EventEmitter = EventEmitter;
   EventEmitter.errorMonitor = errorMonitor;
-  // Installation happens before user code or process listeners exist. Use the
-  // same real implementation for process events, retaining native process I/O,
-  // exit handling and the existing emitWarning delivery surface.
+  // The native bootstrap already owns the default warning reporter. Preserve
+  // those listeners when replacing its minimal emitter, before any user code.
   const target = globalThis.process;
+  const warningListeners = target.listeners('warning');
   EventEmitter.call(target);
   Object.setPrototypeOf(target, EventEmitter.prototype);
   for (const method of ['on', 'addListener', 'prependListener', 'once', 'prependOnceListener', 'off', 'removeListener', 'removeAllListeners', 'emit', 'listeners', 'rawListeners', 'listenerCount', 'eventNames', 'setMaxListeners', 'getMaxListeners']) {
     target[method] = EventEmitter.prototype[method];
   }
+  for (const listener of warningListeners) target.on('warning', listener);
   globalThis.__home_tool_events = EventEmitter;
 })();

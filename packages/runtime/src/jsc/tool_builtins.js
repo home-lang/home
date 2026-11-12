@@ -1349,7 +1349,42 @@
     utilDefine(ctor, 'super_', { __proto__: null, value: parent, writable: true, configurable: true });
     utilSetPrototype(ctor.prototype, parent.prototype);
   }
+  const deprecate = (function() {
+    'use strict';
+    const deprecatedCodes = new Set();
+    const warningProcess = globalThis.process;
+    const utilConstruct = Reflect.construct;
+    function deprecate(fn, message, code, options) {
+      const {modifyPrototype = true} = options === undefined ? {} : options;
+      if (code !== undefined && typeof code !== 'string') nodeArgumentError('ERR_INVALID_ARG_TYPE', 'deprecate code must be a string');
+      let warned = false;
+      function deprecated(...args) {
+        if (!warningProcess.noDeprecation && !warned) {
+          // Mark this wrapper before calling the observable warning hook, even
+          // when it throws. Shared codes are recorded only after that call.
+          warned = true;
+          if (code === 'ExperimentalWarning') warningProcess.emitWarning(message, code, deprecated);
+          else if (code === undefined) warningProcess.emitWarning(message, 'DeprecationWarning', deprecated);
+          else if (!deprecatedCodes.has(code)) {
+            const emit = warningProcess.emitWarning;
+            emit(message, 'DeprecationWarning', code, deprecated);
+            deprecatedCodes.add(code);
+          }
+        }
+        return new.target ? utilConstruct(fn, args, new.target) : utilApply(fn, this, args);
+      }
+      if (modifyPrototype) {
+        utilSetPrototype(deprecated, fn);
+        if (fn.prototype) deprecated.prototype = fn.prototype;
+        const length = Object.getOwnPropertyDescriptor(fn, 'length');
+        if (length) utilDefine(deprecated, 'length', length);
+      }
+      return deprecated;
+    }
+    return deprecate;
+  })();
   const utilApi = {
+    deprecate,
     promisify,
     inherits,
     types: utilTypes,

@@ -521,26 +521,15 @@ const install_glue =
     \\    p.off = function(t, fn) { var l = events[t]; if (l) events[t] = l.filter(function(e) { return e.fn !== fn; }); return p; };
     \\    p.removeListener = p.off;
     \\    p.removeAllListeners = function(t) { if (t === undefined) events = Object.create(null); else delete events[t]; return p; };
-    \\    p.emit = function(t) { var l = events[t]; if (!l || !l.length) return false; var args = Array.prototype.slice.call(arguments, 1); var snap = l.slice(); for (var i = 0; i < snap.length; i++) { var e = snap[i]; if (e.once) p.off(t, e.fn); try { e.fn.apply(p, args); } catch (err) { if (t === "exit") throw err; } } return true; };
+    \\    p.emit = function(t) { var l = events[t]; if (!l || !l.length) return false; var args = Array.prototype.slice.call(arguments, 1); var snap = l.slice(); for (var i = 0; i < snap.length; i++) { var e = snap[i]; if (e.once) p.off(t, e.fn); try { e.fn.apply(p, args); } catch (err) { if (t === "exit" || t === "warning") throw err; } } return true; };
     \\    p.listeners = function(t) { return (events[t] || []).map(function(e) { return e.fn; }); };
     \\    p.rawListeners = p.listeners;
     \\    p.listenerCount = function(t) { return (events[t] || []).length; };
     \\    p.eventNames = function() { return Object.keys(events); };
     \\    p.setMaxListeners = function() { return p; };
     \\    p.getMaxListeners = function() { return 10; };
-    \\    // emitWarning: fire a 'warning' event with an Error-like payload, falling
-    \\    // back to stderr when nothing is listening (Node's default behavior).
-    \\    p.emitWarning = function(warning, options) {
-    \\      var type = "Warning", code, detail;
-    \\      if (typeof options === "string") { type = options; }
-    \\      else if (options && typeof options === "object") { type = options.type || "Warning"; code = options.code; detail = options.detail; }
-    \\      var w = (warning instanceof Error) ? warning : new Error(String(warning));
-    \\      if (!(warning instanceof Error)) w.name = type;
-    \\      if (code !== undefined) w.code = code;
-    \\      if (detail !== undefined) w.detail = detail;
-    \\      if (!p.emit("warning", w)) { try { p.stderr.write((w.name || "Warning") + ": " + w.message + "\n"); } catch (e) { void e; } }
-    \\    };
     \\  })();
+++ @embedFile("process_warnings.js") ++
     \\  delete globalThis.__home_process_argv;
     \\  delete globalThis.__home_process_env;
     \\  delete globalThis.__home_process_static_info;
@@ -772,16 +761,21 @@ test "process.emitWarning fires a warning event with code/detail" {
     const argv = [_][]const u8{"home"};
     install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
-        "  if (typeof process.emitWarning !== 'function') return false;" ++
-        "  if (process.stdout.fd !== 1 || process.stderr.fd !== 2) return false;" ++
-        "  var got = null; process.on('warning', function(w) { got = w; });" ++
-        "  process.emitWarning('be careful', { code: 'W001', detail: 'more' });" ++
-        "  if (!got || !(got instanceof Error) || got.message !== 'be careful') return false;" ++
-        "  if (got.name !== 'Warning' || got.code !== 'W001' || got.detail !== 'more') return false;" ++
-        "  var e2 = new Error('boom'); process.emitWarning(e2);" ++ // Error passes through
-        "  return got === e2 && got.message === 'boom';" ++
-        "})()"));
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__warningTest = { events: [], original: new Error('boom') };" ++
+        "process.on('warning', function(w) { __warningTest.events.push(w); });" ++
+        "process.emitWarning('be careful', { code: 'W001', detail: 'more' });" ++
+        "process.emitWarning(__warningTest.original, { code: 'must-not-mutate' });" ++
+        "if (__warningTest.events.length !== 0) throw new Error('warning delivered synchronously');", "home:process-warning-setup", 1, null);
+    // The owning host boundary runs the queued warnings before this next entry.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "__warningTest.events.length === 2 && " ++
+        "__warningTest.events[0] instanceof Error && " ++
+        "__warningTest.events[0].name === 'Warning' && " ++
+        "__warningTest.events[0].message === 'be careful' && " ++
+        "__warningTest.events[0].code === 'W001' && " ++
+        "__warningTest.events[0].detail === 'more' && " ++
+        "__warningTest.events[1] === __warningTest.original && " ++
+        "__warningTest.original.code === undefined && " ++
+        "process.stdout.fd === 1 && process.stderr.fd === 2"));
 }
 
 test "process is an EventEmitter (on/once/off/emit/listeners)" {

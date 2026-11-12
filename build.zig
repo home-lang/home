@@ -803,6 +803,22 @@ pub fn build(b: *std.Build) void {
         home_tool_exe.root_module.addImport("tool_runtime", tool_runtime_pkg);
         home_tool_exe.root_module.addImport("ts_driver", ts_driver_pkg);
         home_tool_exe.root_module.addImport("build_options", tool_build_options_module);
+        const warning_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/process.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "bun", .module = tool_compat_pkg },
+                    .{ .name = "build_options", .module = tool_build_options_module },
+                },
+            }),
+            .filters = &.{"process.emitWarning fires a warning event with code/detail"},
+        });
+        if (tool_use_zig_js) linkZigJs(b, warning_tests.root_module, configured_zig_js_root) else warning_tests.root_module.linkFramework("JavaScriptCore", .{});
+        const run_warning_tests = b.addRunArtifact(warning_tests);
+        b.step("home-tool-warning-test", "Verify actual queued warning events at the public C host boundary").dependOn(&run_warning_tests.step);
         b.installArtifact(home_tool_exe);
         const home_tool_step = b.step("home-tool", "Build Home's native JS/TS repository-tool runner");
         home_tool_step.dependOn(&b.addInstallArtifact(home_tool_exe, .{}).step);
@@ -813,6 +829,15 @@ pub fn build(b: *std.Build) void {
         run_home_tool_package_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_package_smoke.addArgs(&.{ "run", "main.ts" });
         const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
+        home_tool_smoke_step.dependOn(&run_warning_tests.step);
+        const deprecations_fixture = b.addSystemCommand(&.{"python3"});
+        deprecations_fixture.addFileArg(b.path("packages/runtime/test/tool_deprecations_fixture.py"));
+        deprecations_fixture.addArtifactArg(home_tool_exe);
+        deprecations_fixture.addDirectoryArg(b.path("packages/runtime/test/tool_modules"));
+        home_tool_smoke_step.dependOn(&deprecations_fixture.step);
+        const deprecations_step = b.step("home-tool-deprecations-smoke", "Verify real warning events, deprecation forwarding, stderr and fatal policy");
+        deprecations_step.dependOn(&deprecations_fixture.step);
+        deprecations_step.dependOn(&run_warning_tests.step);
         const timer_step = b.step("home-tool-timers-smoke", "Verify kernel timer tasks, cancellation, liveness and fatal callbacks");
         inline for (.{
             .{ "timers.mjs", "OK actual timer deadlines, cancellation, callback jobs, values and aliases\n" },
