@@ -751,11 +751,34 @@ pub const Printer = struct {
             try self.write(helpers);
             try self.write(self.options.newline);
         }
+        // ECMA-262 Source Text Module InitializeEnvironment initializes import
+        // bindings before module code, regardless of declaration position.
+        // This host has already evaluated the static dependencies. Ordinary
+        // CommonJS emission and explicit require/import-equals keep their timing.
+        const initialize_host_imports = self.options.module_kind == .commonjs and
+            self.options.commonjs_import_binding != null;
+        var first_statement: usize = 0;
+        if (initialize_host_imports) {
+            // Preserve a source directive prologue ahead of the binding prelude.
+            while (first_statement < stmts.len and self.hir.kindOf(stmts[first_statement]) == .literal_string) : (first_statement += 1) {
+                try self.emitLeadingJsDoc(stmts[first_statement]);
+                try self.printStatement(stmts[first_statement]);
+                try self.write(self.options.newline);
+            }
+            for (stmts[first_statement..]) |stmt| {
+                if (self.hir.kindOf(stmt) != .import_decl) continue;
+                const imp = hir_mod.importOf(self.hir, stmt);
+                if (imp.is_type_only or imp.is_require_equals) continue;
+                try self.emitLeadingJsDoc(stmt);
+                try self.printStatement(stmt);
+                try self.write(self.options.newline);
+            }
+        }
         // §4.A.31 — open the module-level temp-hoist scope after imports so a
         // downlevel transform in a top-level statement can allocate a `_a`
         // temp whose `var _a;` declaration lands here.
         try self.pushTempScope();
-        var i: usize = 0;
+        var i: usize = first_statement;
         // Whether any prior top-level statement produced output. The
         // inter-statement newline is gated on this rather than on `i > 0` so a
         // stripped type-only statement (interface / type alias / `import type`
@@ -764,6 +787,8 @@ pub const Printer = struct {
         var emitted_any = false;
         while (i < stmts.len) : (i += 1) {
             const stmt = stmts[i];
+            if (initialize_host_imports and self.hir.kindOf(stmt) == .import_decl and
+                !hir_mod.importOf(self.hir, stmt).is_require_equals) continue;
             // Decorator preamble: collect a run of decorator
             // siblings preceding a class_decl. Emit the class
             // first, then the __decorate(...) helper call.
@@ -16979,4 +17004,32 @@ test "emit: native for-of sequence sources keep assignment precedence" {
             try T.expect(std.mem.indexOf(u8, out, "of (side(), source))") != null);
         }
     }
+}
+
+test "commonjs host static imports initialize before module code" {
+    const out = try emitWithOpts(
+        "\"use strict\"; globalThis.before = [value, primary, ns.x]; import primary, {named as value} from \"a\"; import * as ns from \"b\"; import type Missing from \"types\"; const explicit = require(\"c\"); import legacy = require(\"d\");",
+        .{ .module_kind = .commonjs, .commonjs_import_binding = "__host_import" },
+    );
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.startsWith(u8, out, "\"use strict\";"));
+    const body = std.mem.indexOf(u8, out, "globalThis.before").?;
+    try std.testing.expect(std.mem.indexOf(u8, out, "__host_import(\"a\")").? < body);
+    try std.testing.expect(std.mem.indexOf(u8, out, "__host_import(\"b\")").? < body);
+    try std.testing.expect(std.mem.indexOf(u8, out, "require(\"c\")").? > body);
+    try std.testing.expect(std.mem.indexOf(u8, out, "require(\"d\")").? > body);
+    try std.testing.expect(std.mem.indexOf(u8, out, "types") == null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "__host_import(\"a\")"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "__host_import(\"b\")"));
+}
+
+test "commonjs host static imports preserve ordinary module emission" {
+    const source = "console.log(value); import {value} from \"dep\";";
+    const ordinary = try emitWithOpts(source, .{ .module_kind = .commonjs });
+    defer std.testing.allocator.free(ordinary);
+    try std.testing.expect(std.mem.indexOf(u8, ordinary, "console.log").? < std.mem.indexOf(u8, ordinary, "require(\"dep\")").?);
+    const esm = try emitWithOpts(source, .{ .commonjs_import_binding = "__host_import" });
+    defer std.testing.allocator.free(esm);
+    try std.testing.expect(std.mem.indexOf(u8, esm, "console.log").? < std.mem.indexOf(u8, esm, "import").?);
+    try std.testing.expect(std.mem.indexOf(u8, esm, "__host_import") == null);
 }

@@ -1,0 +1,1 @@
+globalThis.lateImportTrace.push('effect');

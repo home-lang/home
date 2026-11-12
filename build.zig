@@ -1367,6 +1367,18 @@ pub fn build(b: *std.Build) void {
         run_home_tool_extname.addArgs(&.{ "run", "path_extname.mjs" });
         run_home_tool_extname.expectStdOutEqual("OK actual POSIX extname lexical boundaries, aliases and validation\n");
         home_tool_smoke_step.dependOn(&run_home_tool_extname.step);
+        const late_static_imports = b.step("home-tool-late-static-imports", "Verify initialized static bindings before module body code");
+        const late_import_emit_tests = b.addTest(.{
+            .name = "home-tool-static-import-emission-tests",
+            .root_module = ts_emit_pkg,
+            .filters = &.{"commonjs host static import"},
+        });
+        late_static_imports.dependOn(&b.addRunArtifact(late_import_emit_tests).step);
+        const run_late_static_imports = b.addRunArtifact(home_tool_exe);
+        run_late_static_imports.addArgs(&.{ "run", "packages/runtime/test/tool_modules/late_static_imports/entry.mjs" });
+        run_late_static_imports.expectStdOutEqual("LATE STATIC IMPORT RESULTS {\"checks\":19,\"passed\":19,\"failures\":[]}\nLATE STATIC IMPORT 19 CHECKS OK\n");
+        late_static_imports.dependOn(&run_late_static_imports.step);
+        home_tool_smoke_step.dependOn(late_static_imports);
         const run_home_tool_module_scope = b.addRunArtifact(home_tool_exe);
         run_home_tool_module_scope.setCwd(b.path("packages/runtime/test/tool_modules/module_scope"));
         run_home_tool_module_scope.addArgs(&.{ "run", "entry.mjs" });
