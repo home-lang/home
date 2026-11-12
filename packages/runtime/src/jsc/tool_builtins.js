@@ -1492,6 +1492,13 @@
   builtins['node:string_decoder'] = stringDecoderApi;
   builtins.crypto = cryptoApi;
   builtins['node:crypto'] = cryptoApi;
+  const ttyFactory = globalThis.__home_tool_tty_factory;
+  const ttyColorsFactory = globalThis.__home_tool_tty_colors_factory;
+  const nativeTtySize = globalThis.__home_tool_tty_size;
+  delete globalThis.__home_tool_tty_factory;
+  delete globalThis.__home_tool_tty_colors_factory;
+  delete globalThis.__home_tool_tty_size;
+  ttyFactory(ttyApi, nativeTtySize, fs, fdOperation, streamsApi.Writable, readlineApi, ttyColorsFactory());
   builtins.tty = ttyApi;
   builtins['node:tty'] = ttyApi;
   builtins.events = eventsApi;

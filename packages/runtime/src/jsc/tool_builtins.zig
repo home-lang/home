@@ -13,6 +13,9 @@ pub fn install(allocator: std.mem.Allocator, ctx: *opaques.JSContextRef) void {
     const string_decoder = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_string_decoder.js"), "home:tool-string-decoder-factory-install", 1) catch return;
     defer string_decoder.deinit(allocator);
     if (string_decoder.exception != null) return;
+    const tty = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_tty.js"), "home:tool-tty-factory-install", 1) catch return;
+    defer tty.deinit(allocator);
+    if (tty.exception != null) return;
     const streams = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_streams.js"), "home:tool-streams-factory-install", 1) catch return;
     defer streams.deinit(allocator);
     if (streams.exception != null) return;
