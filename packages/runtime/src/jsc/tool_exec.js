@@ -5,6 +5,7 @@ globalThis.__home_tool_exec_factory = function(native, Buffer, inherited) {
   const apply = Reflect.apply;
   const from = Buffer.from;
   const toString = Buffer.prototype.toString;
+  const join = Array.prototype.join;
   const Process = process;
   const maxBytes = 32 * 1024 * 1024;
   function invalid(message, code = 'ERR_INVALID_ARG_TYPE') {
@@ -19,7 +20,7 @@ globalThis.__home_tool_exec_factory = function(native, Buffer, inherited) {
     return value;
   }
   function bytes(...args) { return apply(from, Buffer, args); }
-  function execFileSync(file, args, options) {
+  function capture(file, args, options, displayCommand) {
     if (args === undefined || args === null) args = [];
     else if (!Array.isArray(args)) { options = args; args = []; }
     if (options === undefined || options === null) options = {};
@@ -67,7 +68,17 @@ globalThis.__home_tool_exec_factory = function(native, Buffer, inherited) {
     const stderr = result.stderrBytes && ArrayBuffer.isView(result.stderrBytes) ? bytes(result.stderrBytes) : null;
     const decode = value => value === null || normalized === 'buffer' ? value : apply(toString, value, ['utf8']);
     if (result.error || result.status !== 0 || result.signal !== null) {
-      const error = new Error(`Command failed: ${file}${result.detail ? ` (${result.detail})` : ''}`);
+      let message;
+      if (result.error) message = `Command failed: ${file}${result.detail ? ` (${result.detail})` : ''}`;
+      else {
+        // Like Node, error.message carries the original command and the
+        // captured UTF-8 stderr even when callers only stringify the error.
+        // Retain the original status, signal and raw output on the error.
+        const command = displayCommand === undefined ? file + (args.length ? ' ' + apply(join, args, [' ']) : '') : displayCommand;
+        message = `Command failed: ${command}`;
+        if (stderr !== null && stderr.byteLength) message += '\n' + apply(toString, stderr, ['utf8']);
+      }
+      const error = new Error(message);
       if (result.error) error.code = result.error;
       if (result.errno !== undefined) error.errno = result.errno;
       if (result.pid !== undefined) error.pid = result.pid;
@@ -80,6 +91,9 @@ globalThis.__home_tool_exec_factory = function(native, Buffer, inherited) {
     }
     if (stdout === null || stderr === null) throw new Error('Native captured output was not returned');
     return decode(stdout);
+  }
+  function execFileSync(file, args, options) {
+    return capture(file, args, options);
   }
   function execSync(command, options) {
     command = string(command, 'Command');
@@ -95,7 +109,7 @@ globalThis.__home_tool_exec_factory = function(native, Buffer, inherited) {
     // Pass the command intact so quoting, redirections and expansion belong
     // to the real shell; execFileSync remains the literal argv API.
     const shell = typeof selected === 'string' ? selected : '/bin/sh';
-    return execFileSync(shell, ['-c', command], forwarded);
+    return capture(shell, ['-c', command], forwarded, command);
   }
   return { execFileSync, execSync };
 };

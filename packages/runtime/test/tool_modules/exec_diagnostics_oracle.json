@@ -1,0 +1,425 @@
+{
+  "node": "v26.10.0",
+  "cases": [
+    {
+      "name": "shell_empty",
+      "record": {
+        "name": "shell_empty",
+        "message": "Command failed: exit 7",
+        "stringified": "Error: Command failed: exit 7",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: exit 7",
+        "status": 7,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "shell_stderr",
+      "record": {
+        "name": "shell_stderr",
+        "message": "Command failed: printf native-cause >&2; exit 7\nnative-cause",
+        "stringified": "Error: Command failed: printf native-cause >&2; exit 7\nnative-cause",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf native-cause >&2; exit 7\nnative-cause",
+        "status": 7,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "6e61746976652d6361757365"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "shell_multiline",
+      "record": {
+        "name": "shell_multiline",
+        "message": "Command failed: printf \"first\\nsecond\\n\" >&2; exit 3\nfirst\nsecond\n",
+        "stringified": "Error: Command failed: printf \"first\\nsecond\\n\" >&2; exit 3\nfirst\nsecond\n",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf \"first\\nsecond\\n\" >&2; exit 3\nfirst\nsecond\n",
+        "status": 3,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "66697273740a7365636f6e640a"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "shell_unicode",
+      "record": {
+        "name": "shell_unicode",
+        "message": "Command failed: printf \"\u20ac\ud83d\ude00\" >&2; exit 4\n\u20ac\ud83d\ude00",
+        "stringified": "Error: Command failed: printf \"\u20ac\ud83d\ude00\" >&2; exit 4\n\u20ac\ud83d\ude00",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf \"\u20ac\ud83d\ude00\" >&2; exit 4\n\u20ac\ud83d\ude00",
+        "status": 4,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "e282acf09f9880"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "shell_binary",
+      "record": {
+        "name": "shell_binary",
+        "message": "Command failed: printf \"out\\000raw\\377\"; printf \"err\\000raw\\376\" >&2; exit 6\nerr\u0000raw\ufffd",
+        "stringified": "Error: Command failed: printf \"out\\000raw\\377\"; printf \"err\\000raw\\376\" >&2; exit 6\nerr\u0000raw\ufffd",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf \"out\\000raw\\377\"; printf \"err\\000raw\\376\" >&2; exit 6\nerr\u0000raw\ufffd",
+        "status": 6,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": "6f757400726177ff"
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "65727200726177fe"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "shell_utf8",
+      "record": {
+        "name": "shell_utf8",
+        "message": "Command failed: printf out; printf cause >&2; exit 5\ncause",
+        "stringified": "Error: Command failed: printf out; printf cause >&2; exit 5\ncause",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf out; printf cause >&2; exit 5\ncause",
+        "status": 5,
+        "signal": null,
+        "stdout": {
+          "kind": "string",
+          "value": "out"
+        },
+        "stderr": {
+          "kind": "string",
+          "value": "cause"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "shell_utf8_alias",
+      "record": {
+        "name": "shell_utf8_alias",
+        "message": "Command failed: printf out; printf cause >&2; exit 5\ncause",
+        "stringified": "Error: Command failed: printf out; printf cause >&2; exit 5\ncause",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf out; printf cause >&2; exit 5\ncause",
+        "status": 5,
+        "signal": null,
+        "stdout": {
+          "kind": "string",
+          "value": "out"
+        },
+        "stderr": {
+          "kind": "string",
+          "value": "cause"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "shell_default_mirror",
+      "record": {
+        "name": "shell_default_mirror",
+        "message": "Command failed: printf out; printf mirrored >&2; exit 2\nmirrored",
+        "stringified": "Error: Command failed: printf out; printf mirrored >&2; exit 2\nmirrored",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf out; printf mirrored >&2; exit 2\nmirrored",
+        "status": 2,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": "6f7574"
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "6d6972726f726564"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": "6d6972726f726564"
+    },
+    {
+      "name": "shell_false_option",
+      "record": {
+        "name": "shell_false_option",
+        "message": "Command failed: printf shell-cause >&2; exit 8\nshell-cause",
+        "stringified": "Error: Command failed: printf shell-cause >&2; exit 8\nshell-cause",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf shell-cause >&2; exit 8\nshell-cause",
+        "status": 8,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "7368656c6c2d6361757365"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "shell_true_option",
+      "record": {
+        "name": "shell_true_option",
+        "message": "Command failed: printf shell-cause >&2; exit 8\nshell-cause",
+        "stringified": "Error: Command failed: printf shell-cause >&2; exit 8\nshell-cause",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf shell-cause >&2; exit 8\nshell-cause",
+        "status": 8,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "7368656c6c2d6361757365"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "shell_explicit_option",
+      "record": {
+        "name": "shell_explicit_option",
+        "message": "Command failed: printf shell-cause >&2; exit 8\nshell-cause",
+        "stringified": "Error: Command failed: printf shell-cause >&2; exit 8\nshell-cause",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf shell-cause >&2; exit 8\nshell-cause",
+        "status": 8,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "7368656c6c2d6361757365"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "shell_signal",
+      "record": {
+        "name": "shell_signal",
+        "message": "Command failed: printf signal-cause >&2; kill -TERM $$\nsignal-cause",
+        "stringified": "Error: Command failed: printf signal-cause >&2; kill -TERM $$\nsignal-cause",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: printf signal-cause >&2; kill -TERM $$\nsignal-cause",
+        "status": null,
+        "signal": "SIGTERM",
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "7369676e616c2d6361757365"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "file_empty",
+      "record": {
+        "name": "file_empty",
+        "message": "Command failed: /bin/sh -c exit 7",
+        "stringified": "Error: Command failed: /bin/sh -c exit 7",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: /bin/sh -c exit 7",
+        "status": 7,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "file_stderr",
+      "record": {
+        "name": "file_stderr",
+        "message": "Command failed: /bin/sh -c printf native-cause >&2; exit 7\nnative-cause",
+        "stringified": "Error: Command failed: /bin/sh -c printf native-cause >&2; exit 7\nnative-cause",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: /bin/sh -c printf native-cause >&2; exit 7\nnative-cause",
+        "status": 7,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "6e61746976652d6361757365"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "file_empty_argument",
+      "record": {
+        "name": "file_empty_argument",
+        "message": "Command failed: /bin/sh -c exit 7 ",
+        "stringified": "Error: Command failed: /bin/sh -c exit 7 ",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: /bin/sh -c exit 7 ",
+        "status": 7,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "file_argument_spaces",
+      "record": {
+        "name": "file_argument_spaces",
+        "message": "Command failed: /bin/sh -c printf \"%s\" \"$1\" >&2; exit 7 label actual argument\nactual argument",
+        "stringified": "Error: Command failed: /bin/sh -c printf \"%s\" \"$1\" >&2; exit 7 label actual argument\nactual argument",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: /bin/sh -c printf \"%s\" \"$1\" >&2; exit 7 label actual argument\nactual argument",
+        "status": 7,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "61637475616c20617267756d656e74"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "file_binary",
+      "record": {
+        "name": "file_binary",
+        "message": "Command failed: /bin/sh -c printf \"out\\000raw\\377\"; printf \"err\\000raw\\376\" >&2; exit 6\nerr\u0000raw\ufffd",
+        "stringified": "Error: Command failed: /bin/sh -c printf \"out\\000raw\\377\"; printf \"err\\000raw\\376\" >&2; exit 6\nerr\u0000raw\ufffd",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: /bin/sh -c printf \"out\\000raw\\377\"; printf \"err\\000raw\\376\" >&2; exit 6\nerr\u0000raw\ufffd",
+        "status": 6,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": "6f757400726177ff"
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "65727200726177fe"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "file_utf8",
+      "record": {
+        "name": "file_utf8",
+        "message": "Command failed: /bin/sh -c printf out; printf cause >&2; exit 5\ncause",
+        "stringified": "Error: Command failed: /bin/sh -c printf out; printf cause >&2; exit 5\ncause",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: /bin/sh -c printf out; printf cause >&2; exit 5\ncause",
+        "status": 5,
+        "signal": null,
+        "stdout": {
+          "kind": "string",
+          "value": "out"
+        },
+        "stderr": {
+          "kind": "string",
+          "value": "cause"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    },
+    {
+      "name": "file_default_mirror",
+      "record": {
+        "name": "file_default_mirror",
+        "message": "Command failed: /bin/sh -c printf out; printf mirrored >&2; exit 2\nmirrored",
+        "stringified": "Error: Command failed: /bin/sh -c printf out; printf mirrored >&2; exit 2\nmirrored",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: /bin/sh -c printf out; printf mirrored >&2; exit 2\nmirrored",
+        "status": 2,
+        "signal": null,
+        "stdout": {
+          "kind": "buffer",
+          "hex": "6f7574"
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "6d6972726f726564"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": "6d6972726f726564"
+    },
+    {
+      "name": "file_signal",
+      "record": {
+        "name": "file_signal",
+        "message": "Command failed: /bin/sh -c printf signal-cause >&2; kill -TERM $$\nsignal-cause",
+        "stringified": "Error: Command failed: /bin/sh -c printf signal-cause >&2; kill -TERM $$\nsignal-cause",
+        "wrapped": "TypeError: Could not parse the Cargo.toml: Error: Command failed: /bin/sh -c printf signal-cause >&2; kill -TERM $$\nsignal-cause",
+        "status": null,
+        "signal": "SIGTERM",
+        "stdout": {
+          "kind": "buffer",
+          "hex": ""
+        },
+        "stderr": {
+          "kind": "buffer",
+          "hex": "7369676e616c2d6361757365"
+        },
+        "outputAliases": true
+      },
+      "stderr_hex": ""
+    }
+  ]
+}

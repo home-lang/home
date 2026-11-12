@@ -1811,6 +1811,12 @@ pub fn build(b: *std.Build) void {
         base64_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_buffer_base64.mjs"));
         home_tool_smoke_step.dependOn(&base64_fixture.step);
         b.step("home-tool-buffer-base64-smoke", "Verify actual base64 bytes and Node decoding oracles").dependOn(&base64_fixture.step);
+        const exec_diagnostics_fixture = b.addSystemCommand(&.{"python3"});
+        exec_diagnostics_fixture.addFileArg(b.path("packages/runtime/test/tool_exec_diagnostics_fixture.py"));
+        exec_diagnostics_fixture.addArtifactArg(home_tool_exe);
+        exec_diagnostics_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/exec_diagnostics.cjs"));
+        home_tool_smoke_step.dependOn(&exec_diagnostics_fixture.step);
+        b.step("home-tool-exec-diagnostics-smoke", "Verify real captured command failures retain Node diagnostics and raw data").dependOn(&exec_diagnostics_fixture.step);
         const console_assert_fixture = b.addSystemCommand(&.{"python3"});
         console_assert_fixture.addFileArg(b.path("packages/runtime/test/tool_console_assert_fixture.py"));
         console_assert_fixture.addArtifactArg(home_tool_exe);
