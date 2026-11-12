@@ -4644,6 +4644,10 @@ pub const Checker = struct {
     /// narrowing (#1022). Built on first use by `identifierWriteSummary`.
     identifier_writes: std.AutoHashMapUnmanaged(hir_mod.StringId, IdentifierWrites) = .empty,
     identifier_writes_ready: bool = false,
+    /// The loops being checked, with the narrow-scope depth where each one's
+    /// body begins. A narrow at that depth or deeper was recorded in the
+    /// loop itself (#1027).
+    loop_flow_entries: std.ArrayListUnmanaged(LoopFlowEntry) = .empty,
     /// Memoized generic-type-alias instantiations, mirroring tsc's
     /// `getTypeAliasInstantiation` cache. Key: "<body_node>,<arg0>,<arg1>,…"
     /// (effective type arguments in declaration order, defaults filled).
@@ -6926,6 +6930,7 @@ pub const Checker = struct {
         }
         self.narrow_scopes.deinit(self.gpa);
         self.identifier_writes.deinit(self.gpa);
+        self.loop_flow_entries.deinit(self.gpa);
         self.program_module_namespace_types.deinit(self.gpa);
         self.program_import_resolutions.deinit(self.gpa);
         self.clearProgramGenericInstances();
@@ -92600,7 +92605,7 @@ pub const Checker = struct {
         const right = rhs orelse return null;
         if (left == right) return left;
         if (self.typeIsAnyLike(left) or self.typeIsAnyLike(right)) return types.Primitive.any;
-        return self.interner.internUnion(&.{ left, right }) catch return error.OutOfMemory;
+        return try self.joinFlowMembers(left, right, false);
     }
 
     fn identifierFlowTypeAfterStatement(
@@ -140417,7 +140422,57 @@ pub const Checker = struct {
         if (lhs == rhs or (self.engine.isIdenticalTo(lhs, rhs) catch false)) return lhs;
         if (lhs == types.Primitive.never) return rhs;
         if (rhs == types.Primitive.never) return lhs;
-        return try self.foldBooleanLiteralMembers(try self.internConditionalUnion(&.{ lhs, rhs }));
+        return try self.foldBooleanLiteralMembers(try self.joinFlowMembers(lhs, rhs, true));
+    }
+
+    /// The union of two flow types. Object types are not interned, so the
+    /// same interface can arrive under two ids, one from an annotation and
+    /// one from a value; a member identical to an earlier one is dropped
+    /// rather than printed twice.
+    fn joinFlowMembers(self: *Checker, lhs: TypeId, rhs: TypeId, reduce_primitive_subtypes: bool) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer members.deinit(self.gpa);
+        for ([_]TypeId{ lhs, rhs }) |side| {
+            if (side >= types.Primitive.first_dynamic and side < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(side).is_union)
+            {
+                try members.appendSlice(self.gpa, self.interner.unionMembers(side));
+            } else {
+                try members.append(self.gpa, side);
+            }
+        }
+        if (members.items.len > 32) {
+            if (!reduce_primitive_subtypes) return self.interner.internUnion(&.{ lhs, rhs }) catch return error.OutOfMemory;
+            return try self.internConditionalUnion(&.{ lhs, rhs });
+        }
+        var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer kept.deinit(self.gpa);
+        for (members.items) |member| {
+            const duplicate = for (kept.items) |existing| {
+                if (try self.sameFlowMember(existing, member)) break true;
+            } else false;
+            if (!duplicate) try kept.append(self.gpa, member);
+        }
+        if (kept.items.len == 1) return kept.items[0];
+        if (!reduce_primitive_subtypes) return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
+        return try self.internConditionalUnion(kept.items);
+    }
+
+    /// Whether two union members are the same type for a flow join: equal,
+    /// identical, or two ids of one object type that print the same and
+    /// are assignable both ways.
+    fn sameFlowMember(self: *Checker, existing: TypeId, member: TypeId) CheckError!bool {
+        if (existing == member) return true;
+        if (self.engine.isIdenticalTo(existing, member) catch false) return true;
+        for ([_]TypeId{ existing, member }) |t| {
+            if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+            const flags = self.interner.pool.flagsOf(t);
+            if (!flags.is_object_type or flags.is_union or flags.is_intersection) return false;
+        }
+        const existing_name = (try self.allocSimpleTypeName(existing)) orelse return false;
+        const member_name = (try self.allocSimpleTypeName(member)) orelse return false;
+        if (!std.mem.eql(u8, existing_name, member_name)) return false;
+        return (try self.checkerAssignableTo(existing, member)) and (try self.checkerAssignableTo(member, existing));
     }
 
     /// `internUnion` keeps `true | false` apart; TypeScript's `boolean` is
@@ -140488,22 +140543,43 @@ pub const Checker = struct {
     /// and a labeled block the target of a jump to its label. Without a
     /// target the jump leaves the statement being joined, so its path is not
     /// part of the join.
+    /// A condition that holds (or fails) on the path a join walk is at.
+    /// Estimates read other identifiers through it (#1027).
+    const FlowPathGuard = struct {
+        condition: NodeId,
+        when_true: bool,
+        parent: ?*const FlowPathGuard,
+    };
+
     const FlowJoinWalk = struct {
         break_flow: ?*?TypeId = null,
         continue_flow: ?*?TypeId = null,
         label: ?hir_mod.StringId = null,
         label_flow: ?*?TypeId = null,
-        /// The statement is not checked yet. Assigned types come from literal
-        /// values, and guards other than a plain truthiness test are skipped.
+        /// The statement is not checked yet. Assigned types are estimated
+        /// from declared types (`estimateValueType`), and only guards that
+        /// need no checking are applied.
         estimate: bool = false,
         /// Loops being walked around this point. Each loop walks its body
         /// twice, so deeper loops walk theirs once to stay linear.
         loop_depth: u8 = 0,
+        /// The conditions on the path to this point within the estimated loop.
+        path: ?*const FlowPathGuard = null,
+        /// The loop being estimated and the identifiers it assigns. Another
+        /// identifier it assigns has no estimate before the loop is checked.
+        loop_node: NodeId = hir_mod.none_node_id,
+        loop_names: ?*const std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = null,
 
         fn nested(walk: FlowJoinWalk, break_flow: *?TypeId, continue_flow: ?*?TypeId) FlowJoinWalk {
             var inner = walk;
             inner.break_flow = break_flow;
             inner.continue_flow = continue_flow;
+            return inner;
+        }
+
+        fn guarded(walk: FlowJoinWalk, guard: *const FlowPathGuard) FlowJoinWalk {
+            var inner = walk;
+            inner.path = guard;
             return inner;
         }
     };
@@ -140558,11 +140634,13 @@ pub const Checker = struct {
                     else
                         try self.identifierJoinFlow(conditional.else_branch, name, else_incoming, walk);
                 }
-                const then_flow = try self.identifierJoinFlow(conditional.then_branch, name, then_incoming, walk);
+                const then_guard: FlowPathGuard = .{ .condition = conditional.cond, .when_true = true, .parent = walk.path };
+                const else_guard: FlowPathGuard = .{ .condition = conditional.cond, .when_true = false, .parent = walk.path };
+                const then_flow = try self.identifierJoinFlow(conditional.then_branch, name, then_incoming, walk.guarded(&then_guard));
                 const else_flow = if (conditional.else_branch == hir_mod.none_node_id)
                     else_incoming
                 else
-                    try self.identifierJoinFlow(conditional.else_branch, name, else_incoming, walk);
+                    try self.identifierJoinFlow(conditional.else_branch, name, else_incoming, walk.guarded(&else_guard));
                 break :blk try self.joinReachableIdentifierFlows(then_flow, else_flow);
             },
             .return_stmt => blk: {
@@ -140610,7 +140688,9 @@ pub const Checker = struct {
                     .@"or" => try self.joinGuardFlow(logical.lhs, name, after_lhs, true, walk),
                     .nullish => after_lhs,
                 };
-                const after_rhs = try self.identifierJoinFlow(logical.rhs, name, rhs_incoming, walk);
+                const rhs_guard: FlowPathGuard = .{ .condition = logical.lhs, .when_true = logical.op != .@"or", .parent = walk.path };
+                const rhs_walk = if (logical.op == .nullish) walk else walk.guarded(&rhs_guard);
+                const after_rhs = try self.identifierJoinFlow(logical.rhs, name, rhs_incoming, rhs_walk);
                 break :blk try self.joinReachableIdentifierFlows(skipped, after_rhs);
             },
             .conditional => blk: {
@@ -140618,8 +140698,10 @@ pub const Checker = struct {
                 const after_cond = try self.identifierJoinFlow(conditional.cond, name, incoming, walk);
                 const then_incoming = try self.joinGuardFlow(conditional.cond, name, after_cond, true, walk);
                 const else_incoming = try self.joinGuardFlow(conditional.cond, name, after_cond, false, walk);
-                const then_flow = try self.identifierJoinFlow(conditional.then_branch, name, then_incoming, walk);
-                const else_flow = try self.identifierJoinFlow(conditional.else_branch, name, else_incoming, walk);
+                const then_guard: FlowPathGuard = .{ .condition = conditional.cond, .when_true = true, .parent = walk.path };
+                const else_guard: FlowPathGuard = .{ .condition = conditional.cond, .when_true = false, .parent = walk.path };
+                const then_flow = try self.identifierJoinFlow(conditional.then_branch, name, then_incoming, walk.guarded(&then_guard));
+                const else_flow = try self.identifierJoinFlow(conditional.else_branch, name, else_incoming, walk.guarded(&else_guard));
                 break :blk try self.joinReachableIdentifierFlows(then_flow, else_flow);
             },
             .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => incoming,
@@ -140676,7 +140758,10 @@ pub const Checker = struct {
             },
             else => {},
         }
-        if (walk.estimate) return current;
+        if (walk.estimate) {
+            const narrowed = (try self.pureFlowGuard(condition, name, current, when_true)) orelse return current;
+            return if (narrowed == types.Primitive.never) null else narrowed;
+        }
         return try self.guardedIdentifierFlowForCondition(condition, name, current, when_true);
     }
 
@@ -140697,7 +140782,7 @@ pub const Checker = struct {
         }
         const current = after_value orelse return null;
         const assigned = (if (walk.estimate)
-            try self.estimatedAssignmentFlowType(node)
+            try self.estimatedAssignmentFlowType(node, current, walk)
         else
             try self.assignedIdentifierFlowType(node)) orelse return current;
         const op = assignment.op orelse return assigned;
@@ -140792,31 +140877,348 @@ pub const Checker = struct {
         return try self.assignmentReducedType(declared_t, raw_flow);
     }
 
-    /// The flow type of an assignment that is not checked yet, read from a
-    /// literal value; null when the value needs checking.
-    fn estimatedAssignmentFlowType(self: *Checker, node: NodeId) CheckError!?TypeId {
+    /// The flow type of an assignment that is not checked yet, for a loop
+    /// head estimate. `current` is the walk's flow of the target just before
+    /// the write. Null when the value needs checking.
+    fn estimatedAssignmentFlowType(self: *Checker, node: NodeId, current: ?TypeId, walk: FlowJoinWalk) CheckError!?TypeId {
         const assignment = hir_mod.assignmentOf(self.hir, node);
         if (assignment.op) |op| switch (op) {
             .logical_or, .logical_and, .nullish_coalesce => {},
             else => return null,
         };
-        const value = assignment.value;
-        const assigned: TypeId = switch (self.hir.kindOf(value)) {
-            .literal_null => types.Primitive.null_t,
-            .literal_string, .literal_number, .literal_bool, .literal_bigint, .literal_undefined, .identifier => (try self.expressionNarrowLiteralType(value)) orelse return null,
-            .unary_op => switch (hir_mod.unaryOf(self.hir, value).op) {
-                .not => types.Primitive.boolean_t,
-                .void_ => types.Primitive.undefined_t,
-                .neg, .plus => (try self.numericLiteralExpressionType(value)) orelse return null,
-                else => return null,
-            },
-            else => return null,
-        };
         const id = hir_mod.identifierOf(self.hir, assignment.target);
+        const assigned = (try self.estimateValueType(assignment.value, id.name, current, walk, 0)) orelse return null;
         const decl = self.enclosingVariableDeclaration(assignment.target, id.name) orelse return null;
         const slot_t = self.hir.typeOf(decl);
         if (slot_t == types.Primitive.none or slot_t == types.Primitive.any or slot_t == types.Primitive.unknown) return null;
         return try self.reduceAssignedFlow(assignment.target, slot_t, assigned);
+    }
+
+    /// The type of `value` before it is checked, for a loop head estimate
+    /// (#1027). It is read from literals and declared types and never by
+    /// checking `value`. `name`, the identifier being joined, reads as
+    /// `current`. Null when the value needs checking.
+    fn estimateValueType(
+        self: *Checker,
+        value: NodeId,
+        name: hir_mod.StringId,
+        current: ?TypeId,
+        walk: FlowJoinWalk,
+        depth: u8,
+    ) CheckError!?TypeId {
+        if (value == hir_mod.none_node_id or depth > 8) return null;
+        const next = depth + 1;
+        return switch (self.hir.kindOf(value)) {
+            .literal_null => types.Primitive.null_t,
+            .literal_string, .literal_number, .literal_bool, .literal_bigint, .literal_undefined => try self.expressionNarrowLiteralType(value),
+            .template_literal => (try self.expressionNarrowLiteralType(value)) orelse types.Primitive.string_t,
+            .identifier => try self.estimateIdentifierType(value, name, current, walk, next),
+            .unary_op => blk: {
+                const unary = hir_mod.unaryOf(self.hir, value);
+                break :blk switch (unary.op) {
+                    .not, .delete => types.Primitive.boolean_t,
+                    .void_ => types.Primitive.undefined_t,
+                    .neg, .plus, .bit_not => (try self.numericLiteralExpressionType(value)) orelse inner: {
+                        const operand = (try self.estimateValueType(unary.operand, name, current, walk, next)) orelse break :inner null;
+                        const base = self.widenLiteralType(operand);
+                        if (base == types.Primitive.bigint_t and unary.op != .plus) break :inner types.Primitive.bigint_t;
+                        break :inner if (base == types.Primitive.number_t) types.Primitive.number_t else null;
+                    },
+                    .typeof => null,
+                };
+            },
+            .binary_op => blk: {
+                const binary = hir_mod.binopOf(self.hir, value);
+                switch (binary.op) {
+                    .eq, .neq, .eq_strict, .neq_strict, .lt, .le, .gt, .ge, .instanceof, .in => break :blk types.Primitive.boolean_t,
+                    .comma => break :blk try self.estimateValueType(binary.rhs, name, current, walk, next),
+                    .logical_or, .logical_and, .nullish_coalesce => break :blk null,
+                    else => {},
+                }
+                const lhs = self.widenLiteralType((try self.estimateValueType(binary.lhs, name, current, walk, next)) orelse break :blk null);
+                const rhs = self.widenLiteralType((try self.estimateValueType(binary.rhs, name, current, walk, next)) orelse break :blk null);
+                if (binary.op == .add and (lhs == types.Primitive.string_t or rhs == types.Primitive.string_t)) break :blk types.Primitive.string_t;
+                if (lhs == types.Primitive.number_t and rhs == types.Primitive.number_t) break :blk types.Primitive.number_t;
+                if (lhs == types.Primitive.bigint_t and rhs == types.Primitive.bigint_t and binary.op != .shr_unsigned) break :blk types.Primitive.bigint_t;
+                break :blk null;
+            },
+            .logical_op => blk: {
+                const logical = hir_mod.logicalOf(self.hir, value);
+                const lhs = (try self.estimateValueType(logical.lhs, name, current, walk, next)) orelse break :blk null;
+                const rhs = (try self.estimateValueType(logical.rhs, name, current, walk, next)) orelse break :blk null;
+                const kept = switch (logical.op) {
+                    .@"and" => try self.flowFalsyType(lhs),
+                    .@"or" => try self.logicalOrTruthyType(lhs),
+                    .nullish => self.subtractNullUndefined(lhs) catch lhs,
+                };
+                break :blk try self.joinReachableIdentifierFlows(if (kept == types.Primitive.never) null else kept, rhs);
+            },
+            .conditional => blk: {
+                const conditional = hir_mod.conditionalOf(self.hir, value);
+                const then_t = (try self.estimateValueType(conditional.then_branch, name, current, walk, next)) orelse break :blk null;
+                const else_t = (try self.estimateValueType(conditional.else_branch, name, current, walk, next)) orelse break :blk null;
+                break :blk try self.joinReachableIdentifierFlows(then_t, else_t);
+            },
+            .await_expr => blk: {
+                const operand = (try self.estimateValueType(hir_mod.awaitExprOf(self.hir, value).expr, name, current, walk, next)) orelse break :blk null;
+                break :blk self.evalAwaited(operand);
+            },
+            .non_null_expr => blk: {
+                const operand = (try self.estimateValueType(hir_mod.asExpressionOf(self.hir, value).expr, name, current, walk, next)) orelse break :blk null;
+                const non_null = self.subtractNullUndefined(operand) catch operand;
+                break :blk if (non_null == types.Primitive.never) null else non_null;
+            },
+            .assignment => blk: {
+                // `a = b` has the value of `b`.
+                const assignment = hir_mod.assignmentOf(self.hir, value);
+                if (assignment.op != null) break :blk null;
+                break :blk try self.estimateValueType(assignment.value, name, current, walk, next);
+            },
+            .call_expr => try self.estimateCallType(value, name, current, walk, next),
+            .new_expr => blk: {
+                const callee = hir_mod.callOf(self.hir, value).callee;
+                if (self.hir.kindOf(callee) != .identifier) break :blk null;
+                const class_name = hir_mod.identifierOf(self.hir, callee).name;
+                if (self.generic_aliases.contains(class_name)) break :blk null;
+                break :blk self.class_instance_types.get(class_name);
+            },
+            .member_access => try self.estimateMemberType(value, name, current, walk, next),
+            .element_access => blk: {
+                const element = hir_mod.elementOf(self.hir, value);
+                if (self.hir.kindOf(element.index) == .literal_string) break :blk null;
+                const object_t = (try self.estimateValueType(element.object, name, current, walk, next)) orelse break :blk null;
+                if (object_t == types.Primitive.any or object_t == types.Primitive.unknown) break :blk null;
+                if (!element.optional and self.typeIsPossiblyNullishStrict(object_t)) break :blk null;
+                const base = self.subtractNullUndefined(object_t) catch object_t;
+                if (base < types.Primitive.first_dynamic or base >= self.interner.pool.typeCount()) break :blk null;
+                const element_t = self.interner.objectNumberIndex(base);
+                if (element_t == types.Primitive.never or element_t == types.Primitive.none) break :blk null;
+                if (self.strict_flags.no_unchecked_indexed_access or (element.optional and self.typeIsPossiblyNullishStrict(object_t))) {
+                    break :blk self.interner.internUnion(&.{ element_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+                }
+                break :blk element_t;
+            },
+            else => null,
+        };
+    }
+
+    /// An identifier's type for a loop head estimate: its type where the
+    /// loop starts, narrowed by the conditions on the walk's path. An
+    /// identifier the loop also assigns has no estimate, except the one being
+    /// joined, which reads as `current`.
+    fn estimateIdentifierType(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+        current: ?TypeId,
+        walk: FlowJoinWalk,
+        depth: u8,
+    ) CheckError!?TypeId {
+        const id_name = hir_mod.identifierOf(self.hir, node).name;
+        if (id_name == name) return current;
+        if (std.mem.eql(u8, self.string_interner.get(id_name), "undefined")) return types.Primitive.undefined_t;
+        const loop_names = walk.loop_names orelse return null;
+        if (loop_names.contains(id_name)) return null;
+        var t: TypeId = blk: {
+            const binding_t = (try self.estimateLoopBindingType(node, id_name, name, current, walk, depth)) orelse return null;
+            if (binding_t != types.Primitive.none) break :blk binding_t;
+            if (self.enclosingVariableDeclaration(node, id_name)) |decl| {
+                if (walk.loop_node != hir_mod.none_node_id) {
+                    const loop_span = self.hir.spanOf(walk.loop_node);
+                    const decl_span = self.hir.spanOf(decl);
+                    if (decl_span.start >= loop_span.start and decl_span.end <= loop_span.end) {
+                        // A constant declared earlier in the loop body has
+                        // the value of its initializer.
+                        if (self.hir.kindOf(decl) != .const_decl) return null;
+                        const variable = hir_mod.varDeclOf(self.hir, decl);
+                        if (variable.type_annotation != hir_mod.none_node_id) return null;
+                        break :blk (try self.estimateValueType(variable.init, name, current, walk, depth)) orelse return null;
+                    }
+                }
+                const slot_t = self.lookupNarrow(id_name) orelse self.hir.typeOf(decl);
+                if (slot_t == types.Primitive.none) return null;
+                break :blk slot_t;
+            }
+            // A parameter or an outer binding. An unchecked `for…of` target
+            // reads as `any` here, so `any` is not an estimate.
+            const visible_t = (try self.typeOfVisibleNameNoDiag(node, id_name)) orelse return null;
+            if (visible_t == types.Primitive.none or visible_t == types.Primitive.any or visible_t == types.Primitive.unknown) return null;
+            break :blk visible_t;
+        };
+        var guard = walk.path;
+        while (guard) |g| : (guard = g.parent) {
+            if (!self.flowNodeMentionsIdentifier(g.condition, id_name)) continue;
+            t = (try self.pureFlowGuard(g.condition, id_name, t, g.when_true)) orelse return null;
+            if (t == types.Primitive.never) return null;
+        }
+        return t;
+    }
+
+    /// The return type of a call to a non-generic function with one
+    /// signature, for a loop head estimate.
+    fn estimateCallType(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+        current: ?TypeId,
+        walk: FlowJoinWalk,
+        depth: u8,
+    ) CheckError!?TypeId {
+        const call = hir_mod.callOf(self.hir, node);
+        const callee_t = switch (self.hir.kindOf(call.callee)) {
+            .identifier => try self.estimateIdentifierType(call.callee, name, current, walk, depth),
+            .member_access => try self.estimateMemberType(call.callee, name, current, walk, depth),
+            else => null,
+        } orelse return null;
+        if (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) return null;
+        if (!call.optional and self.typeIsPossiblyNullishStrict(callee_t)) return null;
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        try self.collectCallSignatures(self.subtractNullUndefined(callee_t) catch callee_t, &signatures);
+        if (signatures.items.len != 1) return null;
+        const signature = signatures.items[0];
+        if (self.generic_signature_params.contains(signature)) return null;
+        const return_t = self.interner.signatureReturn(signature) orelse return null;
+        if (return_t == types.Primitive.none or self.isThisTypeParameter(return_t)) return null;
+        if (call.optional and self.typeIsPossiblyNullishStrict(callee_t)) {
+            return self.interner.internUnion(&.{ return_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+        }
+        return return_t;
+    }
+
+    /// A property's type on an estimated object, for a loop head estimate.
+    fn estimateMemberType(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+        current: ?TypeId,
+        walk: FlowJoinWalk,
+        depth: u8,
+    ) CheckError!?TypeId {
+        const member = hir_mod.memberOf(self.hir, node);
+        const object_t = (try self.estimateValueType(member.object, name, current, walk, depth)) orelse return null;
+        if (object_t == types.Primitive.any or object_t == types.Primitive.unknown) return null;
+        const nullish = self.typeIsPossiblyNullishStrict(object_t);
+        if (nullish and !member.optional) return null;
+        const base = self.subtractNullUndefined(object_t) catch object_t;
+        if (base == types.Primitive.never) return null;
+        const member_t = (try self.lookupObjectMember(base, member.name)) orelse return null;
+        if (member_t == types.Primitive.none) return null;
+        // An optional property reads as possibly `undefined`.
+        const optional_property = self.strict_flags.strict_null_checks and self.objectMemberAccessIsOptional(base, member.name);
+        if ((member.optional and nullish) or optional_property) {
+            return self.interner.internUnion(&.{ member_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+        }
+        return member_t;
+    }
+
+    /// The type of a `for` loop's own binding before the loop is checked: a
+    /// `for…of` element, a `for…in` key or a `for (let i = 0; …)` counter.
+    /// `.none` when no enclosing loop binds `id_name`, and null when one does
+    /// but its type needs checking.
+    fn estimateLoopBindingType(
+        self: *Checker,
+        node: NodeId,
+        id_name: hir_mod.StringId,
+        name: hir_mod.StringId,
+        current: ?TypeId,
+        walk: FlowJoinWalk,
+        depth: u8,
+    ) CheckError!?TypeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => return types.Primitive.none,
+                .for_of_stmt, .for_in_stmt => {
+                    const statement = hir_mod.forInOf(self.hir, cur);
+                    if (!self.loopDeclarationBindsName(statement.target, id_name)) continue;
+                    if (self.hir.kindOf(cur) == .for_in_stmt) return types.Primitive.string_t;
+                    if (statement.is_await) return null;
+                    const source_t = (try self.estimateValueType(statement.source, name, current, walk, depth)) orelse return null;
+                    if (source_t == types.Primitive.any or source_t == types.Primitive.unknown) return null;
+                    const element_t = try self.iterableElementType(source_t);
+                    if (element_t == types.Primitive.none or element_t == types.Primitive.any or
+                        element_t == types.Primitive.unknown or element_t == types.Primitive.never) return null;
+                    return element_t;
+                },
+                .for_stmt => {
+                    const for_init = hir_mod.forStmtOf(self.hir, cur).init;
+                    if (for_init == hir_mod.none_node_id) continue;
+                    const declarations: []const NodeId = if (self.hir.kindOf(for_init) == .block_stmt) hir_mod.blockStmts(self.hir, for_init) else &.{for_init};
+                    for (declarations) |declaration| {
+                        if (!self.loopDeclarationBindsName(declaration, id_name)) continue;
+                        const variable = hir_mod.varDeclOf(self.hir, declaration);
+                        if (variable.type_annotation != hir_mod.none_node_id or variable.init == hir_mod.none_node_id) return null;
+                        const init_t = (try self.estimateValueType(variable.init, name, current, walk, depth)) orelse return null;
+                        return if (self.hir.kindOf(declaration) == .const_decl) init_t else self.widenLiteralType(init_t);
+                    }
+                },
+                else => {},
+            }
+        }
+        return types.Primitive.none;
+    }
+
+    fn loopDeclarationBindsName(self: *Checker, declaration: NodeId, name: hir_mod.StringId) bool {
+        if (declaration == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(declaration)) {
+            .var_decl, .let_decl, .const_decl => {},
+            else => return false,
+        }
+        const variable = hir_mod.varDeclOf(self.hir, declaration);
+        return variable.name != hir_mod.none_node_id and
+            self.hir.kindOf(variable.name) == .identifier and
+            hir_mod.identifierOf(self.hir, variable.name).name == name;
+    }
+
+    /// Narrow `t`, the type of `name`, by a condition that needs no checking:
+    /// a truthiness test, `!`, a comparison with `null` or `undefined`, or
+    /// `&&` / `||` of those. Null for any other condition that mentions it.
+    fn pureFlowGuard(self: *Checker, condition: NodeId, name: hir_mod.StringId, t: TypeId, when_true: bool) CheckError!?TypeId {
+        if (!self.flowNodeMentionsIdentifier(condition, name)) return t;
+        switch (self.hir.kindOf(condition)) {
+            .identifier => return if (when_true) try self.logicalOrTruthyType(t) else try self.flowFalsyType(t),
+            .unary_op => {
+                const unary = hir_mod.unaryOf(self.hir, condition);
+                if (unary.op != .not) return null;
+                return try self.pureFlowGuard(unary.operand, name, t, !when_true);
+            },
+            .logical_op => {
+                const logical = hir_mod.logicalOf(self.hir, condition);
+                // Both operands hold when `a && b` is true, and both fail
+                // when `a || b` is false.
+                if (!((logical.op == .@"and" and when_true) or (logical.op == .@"or" and !when_true))) return null;
+                const after_lhs = (try self.pureFlowGuard(logical.lhs, name, t, when_true)) orelse return null;
+                return try self.pureFlowGuard(logical.rhs, name, after_lhs, when_true);
+            },
+            .binary_op => {
+                const binary = hir_mod.binopOf(self.hir, condition);
+                const strict = switch (binary.op) {
+                    .eq_strict, .neq_strict => true,
+                    .eq, .neq => false,
+                    else => return null,
+                };
+                const lhs_is_name = self.hir.kindOf(binary.lhs) == .identifier and hir_mod.identifierOf(self.hir, binary.lhs).name == name;
+                const rhs_is_name = self.hir.kindOf(binary.rhs) == .identifier and hir_mod.identifierOf(self.hir, binary.rhs).name == name;
+                const other = if (lhs_is_name) binary.rhs else if (rhs_is_name) binary.lhs else return null;
+                const other_is_null = self.hir.kindOf(other) == .literal_null;
+                const other_is_undefined = self.hir.kindOf(other) == .literal_undefined or
+                    (self.hir.kindOf(other) == .identifier and
+                        std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, other).name), "undefined"));
+                if (!other_is_null and !other_is_undefined) return null;
+                const equal = (binary.op == .eq or binary.op == .eq_strict) == when_true;
+                // Only the path that rules the nullish value out is modeled.
+                if (equal) return null;
+                const kind: NullishGuardKind = if (!strict)
+                    .null_or_undefined
+                else if (other_is_null)
+                    .null_only
+                else
+                    .undefined_only;
+                return try self.subtractNullishGuardedType(t, kind);
+            },
+            else => return null,
+        }
     }
 
     /// Narrowing by a failed truthiness test keeps the members that may be
@@ -140993,12 +141395,17 @@ pub const Checker = struct {
                 },
                 else => {
                     var body_start = head;
+                    var body_walk = inner;
+                    const cond_guard: FlowPathGuard = .{ .condition = cond, .when_true = true, .parent = walk.path };
                     if (cond != hir_mod.none_node_id) {
                         const after_cond = try self.identifierJoinFlow(cond, name, head, walk);
                         body_start = if (forever) after_cond else try self.joinGuardFlow(cond, name, after_cond, true, walk);
-                        if (!forever) failed = try self.joinGuardFlow(cond, name, after_cond, false, walk);
+                        if (!forever) {
+                            failed = try self.joinGuardFlow(cond, name, after_cond, false, walk);
+                            body_walk = inner.guarded(&cond_guard);
+                        }
                     }
-                    const body_end = try self.identifierJoinFlow(body, name, body_start, inner);
+                    const body_end = try self.identifierJoinFlow(body, name, body_start, body_walk);
                     back = try self.joinReachableIdentifierFlows(body_end, continues);
                     if (update != hir_mod.none_node_id and back != null) back = try self.identifierJoinFlow(update, name, back, walk);
                 },
@@ -141084,7 +141491,7 @@ pub const Checker = struct {
         const statement = hir_mod.tryOf(self.hir, node);
         var completed = try self.identifierJoinFlow(statement.block, name, incoming, walk);
         if (statement.catch_block != hir_mod.none_node_id) {
-            const catch_start = try self.tryClauseStartFlow(statement.block, hir_mod.none_node_id, name, incoming, walk.estimate);
+            const catch_start = try self.tryClauseStartFlow(statement.block, hir_mod.none_node_id, name, incoming, walk);
             const catch_end = if (self.bindingPatternDeclaresName(statement.catch_param, name))
                 catch_start
             else
@@ -141105,10 +141512,10 @@ pub const Checker = struct {
         catch_block: NodeId,
         name: hir_mod.StringId,
         incoming: ?TypeId,
-        estimate: bool,
+        walk: FlowJoinWalk,
     ) CheckError!?TypeId {
-        const after_try = try self.joinNestedAssignmentFlows(try_block, name, incoming, estimate);
-        return try self.joinNestedAssignmentFlows(catch_block, name, after_try, estimate);
+        const after_try = try self.joinNestedAssignmentFlows(try_block, name, incoming, incoming, walk);
+        return try self.joinNestedAssignmentFlows(catch_block, name, after_try, incoming, walk);
     }
 
     fn joinNestedAssignmentFlows(
@@ -141116,7 +141523,8 @@ pub const Checker = struct {
         node: NodeId,
         name: hir_mod.StringId,
         incoming: ?TypeId,
-        estimate: bool,
+        clause_start: ?TypeId,
+        walk: FlowJoinWalk,
     ) CheckError!?TypeId {
         if (node == hir_mod.none_node_id) return incoming;
         var flow = incoming;
@@ -141125,8 +141533,8 @@ pub const Checker = struct {
             .assignment => {
                 const target = hir_mod.assignmentOf(self.hir, node).target;
                 if (self.hir.kindOf(target) == .identifier and hir_mod.identifierOf(self.hir, target).name == name) {
-                    const assigned = if (estimate)
-                        try self.estimatedAssignmentFlowType(node)
+                    const assigned = if (walk.estimate)
+                        try self.estimatedAssignmentFlowType(node, clause_start, walk)
                     else
                         try self.assignedIdentifierFlowType(node);
                     if (assigned) |t| flow = try self.joinReachableIdentifierFlows(flow, t);
@@ -141135,8 +141543,8 @@ pub const Checker = struct {
             else => {},
         }
         const children = self.flowChildren(node);
-        for (children.fixed[0..children.fixed_len]) |child| flow = try self.joinNestedAssignmentFlows(child, name, flow, estimate);
-        for (children.rest) |child| flow = try self.joinNestedAssignmentFlows(child, name, flow, estimate);
+        for (children.fixed[0..children.fixed_len]) |child| flow = try self.joinNestedAssignmentFlows(child, name, flow, clause_start, walk);
+        for (children.rest) |child| flow = try self.joinNestedAssignmentFlows(child, name, flow, clause_start, walk);
         return flow;
     }
 
@@ -141203,7 +141611,7 @@ pub const Checker = struct {
     ) CheckError!void {
         var iterator = incoming.iterator();
         while (iterator.next()) |entry| {
-            const flowed = (try self.tryClauseStartFlow(try_block, catch_block, entry.key_ptr.*, entry.value_ptr.*, false)) orelse continue;
+            const flowed = (try self.tryClauseStartFlow(try_block, catch_block, entry.key_ptr.*, entry.value_ptr.*, .{})) orelse continue;
             try self.recordJoinedIdentifierFlow(entry.key_ptr.*, entry.value_ptr.*, flowed);
         }
     }
@@ -141219,20 +141627,65 @@ pub const Checker = struct {
         defer heads.deinit(self.gpa);
         var iterator = incoming.iterator();
         while (iterator.next()) |entry| {
-            const loop_flow = try self.loopJoinFlow(node, entry.key_ptr.*, entry.value_ptr.*, .{ .estimate = true });
+            const loop_flow = try self.loopJoinFlow(node, entry.key_ptr.*, entry.value_ptr.*, .{
+                .estimate = true,
+                .loop_node = node,
+                .loop_names = &incoming,
+            });
             const head = loop_flow.head orelse continue;
             if (head == types.Primitive.never or self.sameFlowType(head, entry.value_ptr.*)) continue;
             try heads.append(self.gpa, .{ .name = entry.key_ptr.*, .t = head });
         }
         if (heads.items.len == 0) {
-            try self.checkLoopStatement(node);
+            try self.checkLoopBodyFlow(node);
         } else {
             try self.pushNarrowScope();
             defer self.popNarrowScope();
             for (heads.items) |head| try self.recordNarrow(head.name, head.t);
-            try self.checkLoopStatement(node);
+            try self.checkLoopBodyFlow(node);
         }
         try self.finishStatementAssignmentJoin(node, &incoming);
+    }
+
+    const LoopFlowEntry = struct {
+        loop: NodeId,
+        body_scope_depth: usize,
+    };
+
+    fn checkLoopBodyFlow(self: *Checker, node: NodeId) CheckError!void {
+        try self.loop_flow_entries.append(self.gpa, .{ .loop = node, .body_scope_depth = self.narrow_scopes.items.len });
+        defer _ = self.loop_flow_entries.pop();
+        try self.checkLoopStatement(node);
+    }
+
+    /// Whether the narrow a read of `name` at `node` would find was recorded
+    /// inside the outermost loop it enters: by a loop condition, a guard or a
+    /// write in the body. A narrow from before that loop may be stale (#1027).
+    fn narrowRecordedInsideLoop(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const index = self.narrowScopeIndex(name) orelse return false;
+        const decl = self.enclosingVariableDeclaration(node, name) orelse return false;
+        const decl_start = self.hir.spanOf(decl).start;
+        const function = self.enclosingFunctionLike(node);
+        for (self.loop_flow_entries.items) |entry| {
+            if (self.enclosingFunctionLike(entry.loop) != function) continue;
+            const loop_span = self.hir.spanOf(entry.loop);
+            if (decl_start >= loop_span.start) continue;
+            const use_span = self.hir.spanOf(node);
+            if (use_span.start < loop_span.start or use_span.end > loop_span.end) continue;
+            return index >= entry.body_scope_depth;
+        }
+        return false;
+    }
+
+    /// The index of the narrow scope `lookupNarrow` would read `name` from.
+    fn narrowScopeIndex(self: *Checker, name: hir_mod.StringId) ?usize {
+        var i = self.narrow_scopes.items.len;
+        const floor = @min(self.narrow_lookup_floor, i);
+        while (i > floor) {
+            i -= 1;
+            if (self.narrow_scopes.items[i].contains(name)) return i;
+        }
+        return null;
     }
 
     /// Whether an expression assigns an identifier on only some of its
@@ -146189,13 +146642,18 @@ pub const Checker = struct {
                 self.nodeIsInsideSameFunctionLoop(node))
             {
                 if (active_annotation_t) |declared_t| {
-                    if (self.annotatedLoopFlowTypeAt(node, id.name) catch null) |flow_t| {
-                        if (flow_t != types.Primitive.none and
-                            flow_t != types.Primitive.any and
-                            flow_t != types.Primitive.unknown and
-                            (self.checkerAssignableTo(flow_t, declared_t) catch false))
-                        {
-                            return flow_t;
+                    // A narrow the loop itself recorded, such as a
+                    // `while (node)` guard, is current; only one from before
+                    // the loop gives way to the loop's flow (#1027).
+                    if (!self.narrowRecordedInsideLoop(node, id.name)) {
+                        if (self.annotatedLoopFlowTypeAt(node, id.name) catch null) |flow_t| {
+                            if (flow_t != types.Primitive.none and
+                                flow_t != types.Primitive.any and
+                                flow_t != types.Primitive.unknown and
+                                (self.checkerAssignableTo(flow_t, declared_t) catch false))
+                            {
+                                return flow_t;
+                            }
                         }
                     }
                 }
@@ -304939,4 +305397,38 @@ test "checker: loops, switch, logical expressions and try join assignment narrow
     // A `try` completes through either block.
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '\"b\" | \"c\"' is not assignable to type '\"q\"'."));
     try T.expectEqual(@as(usize, 9), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: a loop head joins computed values assigned in the body (#1027)" {
+    const s = try newSetup(
+        \\declare const items: number[];
+        \\declare function maybe(): string | undefined;
+        \\declare function str(): string;
+        \\interface Item { next: Item | undefined; value: number }
+        \\declare const first: Item;
+        \\declare function use(item: Item): void;
+        \\function f(other: string | undefined) {
+        \\  let a: string | undefined = "a";
+        \\  for (const i of items) { a.length; a = maybe(); }
+        \\  let b: string | undefined = "b";
+        \\  for (const i of items) { b.length; b = str(); }
+        \\  let c: Item | undefined = first;
+        \\  for (const i of items) { c.value; c = c.next; }
+        \\  let d: string | undefined = "d";
+        \\  for (const i of items) { d.length; if (other) d = other; }
+        \\  let e: Item | undefined = first;
+        \\  while (e) { use(e); e = e.next; }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    // `maybe()` and `c.next` may be `undefined` at the next iteration's
+    // head, so `a.length`, `c.value` and `c.next` report; `str()` and a
+    // guarded `other` may not.
+    try T.expectEqual(@as(usize, 1), checkerCountCodeAndMessage(s, TsCodes.object_possibly_undefined_18048, "'a' is possibly 'undefined'."));
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.object_possibly_undefined_18048, "'c' is possibly 'undefined'."));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+    // The `while (e)` guard holds in the body.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
