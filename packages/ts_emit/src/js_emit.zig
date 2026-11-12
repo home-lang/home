@@ -28,6 +28,7 @@ const std = @import("std");
 const hir_mod = @import("hir");
 const string_interner = @import("string_interner");
 const string_literal = @import("ts_checker").string_literal;
+const js_identifiers = @import("js_identifiers");
 
 pub const Hir = hir_mod.Hir;
 pub const NodeId = hir_mod.NodeId;
@@ -305,20 +306,16 @@ fn bestQuoteChar(cooked: []const u8, allow_template: bool) u8 {
     return '"';
 }
 
-fn isIdentStartByte(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$';
-}
-
-/// Whether `name` can be emitted as an unquoted property key. Mirrors Bun's
-/// `js_lexer.isIdentifier` over the ASCII range; any byte ≥0x80 is treated as an
-/// identifier char (approximating Unicode ID_Start/ID_Continue), which keeps
-/// valid Unicode identifier keys unquoted like Bun while still quoting ASCII
-/// non-identifiers such as `a-b`.
+/// ECMA-262 IdentifierName uses Unicode ID_Start/ID_Continue, with $, _ and
+/// join controls. A non-ASCII byte alone does not make a valid identifier.
 fn isValidPropertyIdentifier(name: []const u8) bool {
-    if (name.len == 0) return false;
-    if (name[0] < 0x80 and !isIdentStartByte(name[0])) return false;
-    for (name[1..]) |c| {
-        if (c < 0x80 and !isIdentStartByte(c) and !(c >= '0' and c <= '9')) return false;
+    const view = std.unicode.Utf8View.init(name) catch return false;
+    var iterator = view.iterator();
+    const first = iterator.nextCodepoint() orelse return false;
+    if (!js_identifiers.isIdentifierStart(@intCast(first))) return false;
+    while (iterator.nextCodepoint()) |cp| {
+        if (cp == 0x200C or cp == 0x200D) continue;
+        if (!js_identifiers.isIdentifierPart(@intCast(cp))) return false;
     }
     return true;
 }
@@ -6636,7 +6633,7 @@ pub const Printer = struct {
                         if (op.is_computed) {
                             try self.printComputedPropertyName(op.key);
                         } else {
-                            try self.printExpression(op.key);
+                            try self.printObjectKey(op.key);
                         }
                         try self.printObjectMethodBody(op.value);
                     } else {
@@ -6644,7 +6641,7 @@ pub const Printer = struct {
                         if (op.is_computed) {
                             try self.printComputedPropertyName(op.key);
                         } else {
-                            try self.printExpression(op.key);
+                            try self.printObjectKey(op.key);
                         }
                         if (op.value != hir_mod.none_node_id) {
                             try self.write(" = ");
@@ -10346,10 +10343,29 @@ pub const Printer = struct {
     /// holding the raw key text, so `{ "a-b": 1 }` arrives as an identifier
     /// named `a-b` — which is NOT a valid identifier and must be emitted as
     /// `"a-b"` rather than the invalid bare `a-b`.
+    // String keys and bare source names share the HIR identifier shape. Keep
+    // malformed bare names bare so quoting never repairs invalid source into
+    // executable code. Synthetic names with no matching source can be quoted.
+    fn propertySourceIsBare(self: *Printer, key: NodeId, name: []const u8) !bool {
+        const source = self.source orelse return false;
+        const span = self.hir.spanOf(key);
+        if (span.end <= span.start or span.end > source.len) return false;
+        const raw = source[span.start..span.end];
+        if (raw[0] == '"' or raw[0] == '\'') return false;
+        if (std.mem.eql(u8, raw, name)) return true;
+        if (std.mem.indexOf(u8, raw, "\\u") == null) return false;
+        var decoded: std.ArrayListUnmanaged(u8) = .empty;
+        defer decoded.deinit(self.gpa);
+        try string_literal.appendCookedStringText(self.gpa, raw, &decoded);
+        return std.mem.eql(u8, decoded.items, name);
+    }
+
     fn printObjectKey(self: *Printer, key: NodeId) !void {
         if (self.hir.kindOf(key) == .identifier) {
             const name = self.interner.get(hir_mod.identifierOf(self.hir, key).name);
-            if (isValidPropertyIdentifier(name) or isNumericPropertyKey(name)) {
+            if (isValidPropertyIdentifier(name) or isNumericPropertyKey(name) or
+                try self.propertySourceIsBare(key, name))
+            {
                 try self.write(name);
             } else {
                 // ECMA-262 PropertyName permits StringLiteral, not a bare
@@ -17034,4 +17050,13 @@ test "commonjs host static imports preserve ordinary module emission" {
     defer std.testing.allocator.free(esm);
     try std.testing.expect(std.mem.indexOf(u8, esm, "console.log").? < std.mem.indexOf(u8, esm, "import").?);
     try std.testing.expect(std.mem.indexOf(u8, esm, "__host_import") == null);
+}
+
+test "emit: Unicode property identifiers use codepoints" {
+    for ([_][]const u8{ "Ω", "é", "e\u{0301}", "漢字", "℘", "a·b", "a\u{200c}b", "a\u{200d}b", "a١", "𐐀", "default", "$_9" }) |name| {
+        try T.expect(isValidPropertyIdentifier(name));
+    }
+    for ([_][]const u8{ "", "€", "😀", "£", "©", "a€", "\u{0301}start", "١first", "\u{2028}", "a-b", "a b", "\xED\xA0\x80" }) |name| {
+        try T.expect(!isValidPropertyIdentifier(name));
+    }
 }

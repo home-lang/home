@@ -9360,3 +9360,18 @@ test "driver: runtime defaults preserve assignment expression boundaries" {
         try T.expect(std.mem.indexOf(u8, js, boundary) != null);
     }
 }
+
+test "driver: runtime Unicode property literals retain string keys" {
+    const source = "const values={\"€\":42,\"😀\":17,\"Ω\":23}; class Value { \"€\"=42; }";
+    var prepared = try prepareSource(T.allocator, source, .{});
+    defer {
+        prepared.deinit();
+        T.allocator.destroy(prepared);
+    }
+    const js = try emitPreparedSource(prepared, .{});
+    defer T.allocator.free(js);
+    try T.expect(std.mem.indexOf(u8, js, "\"€\": 42") != null);
+    try T.expect(std.mem.indexOf(u8, js, "\"😀\": 17") != null);
+    try T.expect(std.mem.indexOf(u8, js, "Ω: 23") != null);
+    try T.expect(std.mem.indexOf(u8, js, "\"€\" = 42") != null);
+}

@@ -692,6 +692,9 @@ pub fn build(b: *std.Build) void {
     ts_emit_pkg.addImport("string_interner", string_interner_pkg);
     ts_emit_pkg.addImport("ts_lexer", ts_lexer_pkg);
     ts_emit_pkg.addImport("ts_parser", ts_parser_pkg);
+    // Reuse the owned pure-data ECMAScript classifier, without runtime/JSC imports.
+    const js_identifiers_pkg = createPackage(b, "packages/runtime/src/js_parser/lexer/identifier.zig", target, optimize, zig_test_framework);
+    ts_emit_pkg.addImport("js_identifiers", js_identifiers_pkg);
 
     // zig-dtsx fast-path .d.ts emitter — installed via pantry at
     // pantry/zig-dtsx/. `pantry add zig-dtsx` populates the directory;
@@ -863,6 +866,12 @@ pub fn build(b: *std.Build) void {
         run_setter_defaults.expectStdOutEqual("SETTER DEFAULT RESULTS {\"checks\":22,\"passed\":22,\"failures\":[]}\nSETTER DEFAULT TRANSPILE RESULTS {\"checks\":23,\"passed\":23,\"failures\":[]}\nSETTER DEFAULT 22 EXECUTED CHECKS OK\n");
         setter_defaults.dependOn(&run_setter_defaults.step);
         home_tool_smoke_step.dependOn(setter_defaults);
+        const unicode_property = b.step("home-tool-unicode-property", "Verify Unicode string keys remain valid JavaScript property names");
+        const run_unicode_property = b.addRunArtifact(home_tool_exe);
+        run_unicode_property.addArgs(&.{ "run", "packages/runtime/test/tool_modules/unicode_property.mjs", "--transpile" });
+        run_unicode_property.expectStdOutEqual("UNICODE PROPERTY RESULTS {\"vectors\":30,\"checks\":44,\"passed\":44,\"failures\":[]}\nUNICODE PROPERTY TRANSPILE RESULTS {\"checks\":46,\"passed\":46,\"failures\":[]}\nUNICODE PROPERTY 44 EXECUTED CHECKS OK\n");
+        unicode_property.dependOn(&run_unicode_property.step);
+        home_tool_smoke_step.dependOn(unicode_property);
         const deprecations_fixture = b.addSystemCommand(&.{"python3"});
         deprecations_fixture.addFileArg(b.path("packages/runtime/test/tool_deprecations_fixture.py"));
         deprecations_fixture.addArtifactArg(home_tool_exe);
