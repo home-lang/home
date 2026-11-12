@@ -10,7 +10,7 @@ function evaluate(source, expression) {
   const output = transpiler.transformSync(source);
   return Function(output + '\nreturn (' + expression + ');')();
 }
-test('global and module constructor identity', () => equal(Transpiler, Bun.Transpiler));
+test('global and module constructor identity', () => equal(Transpiler === Bun.Transpiler, true));
 test('typed parameters and locals execute', () => equal(evaluate('function sum(a: number, b: number): number { const value: number = a + b; return value; }', 'sum(20, 22)'), 42));
 test('generic function executes', () => equal(evaluate('function identity<T>(value: T): T { return value; }', 'identity("actual")'), 'actual'));
 test('interface erasure executes', () => equal(evaluate('interface Entry { value: number }; const entry: Entry = { value: 17 };', 'entry.value'), 17));
