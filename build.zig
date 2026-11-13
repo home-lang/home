@@ -879,6 +879,12 @@ pub fn build(b: *std.Build) void {
         run_unicode_property.expectStdOutEqual("UNICODE PROPERTY RESULTS {\"vectors\":30,\"checks\":44,\"passed\":44,\"failures\":[]}\nUNICODE PROPERTY TRANSPILE RESULTS {\"checks\":46,\"passed\":46,\"failures\":[]}\nUNICODE PROPERTY 44 EXECUTED CHECKS OK\n");
         unicode_property.dependOn(&run_unicode_property.step);
         home_tool_smoke_step.dependOn(unicode_property);
+        const builtin_modules = b.step("home-tool-builtin-modules", "Verify builtin discovery against real module loads and unsupported namespace refusals");
+        const run_builtin_modules = b.addRunArtifact(home_tool_exe);
+        run_builtin_modules.addArgs(&.{ "run", "packages/runtime/test/tool_modules/node_builtin_modules.mjs", "--home-profile" });
+        run_builtin_modules.expectStdOutEqual("NODE BUILTIN MODULES 42 CHECKS OK\nESM BUILTIN MODULES 7 CHECKS OK\nHOME BUILTIN INVENTORY ALL REAL NAMES LOADED; REFUSALS OK\n");
+        builtin_modules.dependOn(&run_builtin_modules.step);
+        home_tool_smoke_step.dependOn(builtin_modules);
         const deprecations_fixture = b.addSystemCommand(&.{"python3"});
         deprecations_fixture.addFileArg(b.path("packages/runtime/test/tool_deprecations_fixture.py"));
         deprecations_fixture.addArtifactArg(home_tool_exe);

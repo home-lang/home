@@ -63,10 +63,20 @@
     return load(moduleId(request), this, false);
   };
   Object.assign(Module, moduleApi);
+  // Inventory the namespaces this host actually owns, rather than advertising
+  // Node's unavailable modules. Prefer bare aliases; retain prefix-only names.
+  // https://nodejs.org/api/module.html#modulebuiltinmodules
+  Module.builtinModules = Object.freeze(Object.keys(builtins).filter(function(name) {
+    return name.startsWith('node:');
+  }).map(function(name) {
+    const bare = name.slice(5);
+    return isBuiltin(bare) && builtins[bare] === builtins[name] ? bare : name;
+  }).sort());
   // Report the Node namespaces actually registered in this host. Missing
   // modules stay absent; Bun-only namespaces are not Node builtins.
   Module.isBuiltin = function(request) {
-    return typeof request === 'string' && !request.startsWith('bun:') && isBuiltin(request);
+    return typeof request === 'string' && isBuiltin(request)
+      && (request.startsWith('node:') || isBuiltin(`node:${request}`));
   };
   Module.Module = Module;
   Module._cache = Object.create(null);
