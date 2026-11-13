@@ -146573,6 +146573,14 @@ pub const Checker = struct {
             self.reportFieldInitializerConstructorLocalOnce(node, info, id.name) catch {};
             return types.Primitive.any;
         }
+        // A read inside the variable's own initializer, or its `for...in` /
+        // `for...of` source, sees the binding in its temporal dead zone,
+        // whatever an outer scope binds to the name (#1036).
+        if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type)) {
+            if (self.selfInitializerBinding(node, id.name) catch null) |binding| {
+                if (self.reportSelfInitializerReference(node, id.name, binding) catch null) |self_t| return self_t;
+            }
+        }
         if (is_this and
             self.sourceHasStrictFalseDirective() and
             this_rebound_plain_function and
@@ -207077,6 +207085,170 @@ pub const Checker = struct {
             return;
         }
         _ = try self.reportMissingIndexForComputedBindingKey(node, source_t, key_t, true);
+    }
+
+    const SelfInitializerBinding = struct {
+        kind: hir_mod.NodeKind,
+        name_node: NodeId,
+        name_pos: ?u32,
+        type_annotation: NodeId,
+        /// The read is in a class body inside the initializer. It is still
+        /// in the dead zone, but the class type does not depend on it.
+        in_class: bool,
+    };
+
+    /// The binding whose own initializer `node` reads, when the read is not
+    /// deferred: `let x = x`, `for (let a = a;;)`, `for (let k in k)` and
+    /// `for (const [g] of g)`. A read inside a function runs later and is
+    /// not one. A destructuring declaration (`reportCircularDestructuringBindings`)
+    /// and a simple `for...of` binding (`checkForOfVarSelfReferenceDiagnostics`)
+    /// are reported elsewhere.
+    fn selfInitializerBinding(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!?SelfInitializerBinding {
+        var child = node;
+        var cur = self.hir.parentOf(node);
+        var in_class = false;
+        while (cur != hir_mod.none_node_id) : ({
+            child = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
+            switch (self.hir.kindOf(cur)) {
+                .fn_decl, .fn_expr, .arrow_fn, .block_stmt => return null,
+                .class_decl, .class_expr => in_class = true,
+                .var_decl, .let_decl, .const_decl => {
+                    const v = hir_mod.varDeclOf(self.hir, cur);
+                    if (child != v.init or v.is_using or v.is_await_using) return null;
+                    if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return null;
+                    if (hir_mod.identifierOf(self.hir, v.name).name != name) return null;
+                    if (self.hir.kindOf(cur) == .var_decl and self.varSelfReferenceIsRedeclaration(cur, name)) return null;
+                    return .{
+                        .kind = self.hir.kindOf(cur),
+                        .name_node = v.name,
+                        .name_pos = null,
+                        .type_annotation = v.type_annotation,
+                        .in_class = in_class,
+                    };
+                },
+                .for_in_stmt, .for_of_stmt => {
+                    const loop = hir_mod.forInOf(self.hir, cur);
+                    if (child != loop.source or loop.target == hir_mod.none_node_id) return null;
+                    const target_kind = self.hir.kindOf(loop.target);
+                    if (target_kind != .var_decl and target_kind != .let_decl and target_kind != .const_decl) return null;
+                    const v = hir_mod.varDeclOf(self.hir, loop.target);
+                    if (v.name == hir_mod.none_node_id or v.is_using or v.is_await_using) return null;
+                    const is_for_of = self.hir.kindOf(cur) == .for_of_stmt;
+                    if (target_kind == .var_decl and self.varSelfReferenceIsRedeclaration(loop.target, name)) return null;
+                    if (self.hir.kindOf(v.name) == .identifier) {
+                        if (is_for_of or hir_mod.identifierOf(self.hir, v.name).name != name) return null;
+                        return .{
+                            .kind = target_kind,
+                            .name_node = v.name,
+                            .name_pos = null,
+                            .type_annotation = v.type_annotation,
+                            .in_class = in_class,
+                        };
+                    }
+                    // A `for...in` pattern is TS2491 instead.
+                    if (!is_for_of) return null;
+                    var occurrences: std.ArrayListUnmanaged(DestructuringBindingOccurrence) = .empty;
+                    defer occurrences.deinit(self.gpa);
+                    try self.collectDestructuringBindingOccurrences(v.name, &occurrences);
+                    for (occurrences.items) |occurrence| {
+                        if (occurrence.name != name) continue;
+                        return .{
+                            .kind = target_kind,
+                            .name_node = occurrence.node,
+                            .name_pos = occurrence.pos,
+                            .type_annotation = v.type_annotation,
+                            .in_class = in_class,
+                        };
+                    }
+                    return null;
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    /// A `var` that redeclares a parameter or an earlier `var` of its
+    /// function is not the symbol's value declaration. The symbol's type
+    /// comes from that first declaration, so reading it in this initializer
+    /// is not circular: `var b: number | string; var b = baz(b);`.
+    fn varSelfReferenceIsRedeclaration(self: *Checker, decl: NodeId, name: hir_mod.StringId) bool {
+        const scope = self.enclosingVarDeclScope(decl);
+        if (scope == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(scope)) {
+            .fn_decl, .fn_expr, .arrow_fn => for (hir_mod.fnParams(self.hir, scope)) |param| {
+                if (self.hir.kindOf(param) != .parameter) continue;
+                const p = hir_mod.parameterOf(self.hir, param);
+                if (p.name == hir_mod.none_node_id or self.hir.kindOf(p.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, p.name).name == name) return true;
+            },
+            else => {},
+        }
+        const start = self.hir.spanOf(decl).start;
+        var other: NodeId = 1;
+        while (other < self.hir.nodeCount()) : (other += 1) {
+            if (other == decl or self.hir.kindOf(other) != .var_decl) continue;
+            if (self.hir.spanOf(other).start >= start) continue;
+            const v = hir_mod.varDeclOf(self.hir, other);
+            if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, v.name).name != name) continue;
+            if (self.enclosingVarDeclScope(other) == scope) return true;
+        }
+        return false;
+    }
+
+    /// tsc's dead-zone read of a binding in its own initializer. A `let` or
+    /// `const` reports TS2448 at the read. An unannotated binding is
+    /// circular: TS7022 at its name under `noImplicitAny`, and the read is
+    /// `any`. An annotated `let` or `const` reads as declared, and reports
+    /// TS2454 when that type has no `undefined`. Null when the normal
+    /// lookup should type the read.
+    fn reportSelfInitializerReference(self: *Checker, node: NodeId, name: hir_mod.StringId, binding: SelfInitializerBinding) CheckError!?TypeId {
+        const name_text = self.string_interner.get(name);
+        if (binding.kind != .var_decl and !self.diagnosticExists(node, TsCodes.block_scoped_used_before_decl)) {
+            const message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Block-scoped variable '{s}' used before its declaration.",
+                .{name_text},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.block_scoped_used_before_decl,
+                .message = message,
+                .related = try self.declaredHereRelated(binding.name_node, name_text),
+            });
+        }
+        if (binding.type_annotation != hir_mod.none_node_id) {
+            if (binding.kind != .var_decl and
+                self.strict_flags.strict_null_checks and
+                !self.diagnosticExists(node, TsCodes.used_before_assignment))
+            {
+                const declared_t = self.lowerValueTypeAnnotation(name, binding.type_annotation) catch types.Primitive.any;
+                if (!self.typeIsAnyLike(declared_t) and !self.typeIncludesUndefined(declared_t)) {
+                    try self.reportUsedBeforeAssignmentSimple(node, name);
+                }
+            }
+            return null;
+        }
+        if (!binding.in_class and
+            self.strict_flags.no_implicit_any and
+            !self.diagnosticExists(binding.name_node, TsCodes.variable_self_reference_implicitly_any))
+        {
+            const message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
+                .{name_text},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = binding.name_node,
+                .pos = binding.name_pos,
+                .code = TsCodes.variable_self_reference_implicitly_any,
+                .message = message,
+            });
+        }
+        return types.Primitive.any;
     }
 
     fn checkForOfVarSelfReferenceDiagnostics(self: *Checker, for_node: NodeId, target: NodeId, source: NodeId) CheckError!void {
@@ -305749,4 +305921,46 @@ test "checker: a compound narrow reads past a literal union annotation (#1035)" 
     // A later plain assignment narrows again.
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1' is not assignable to type '\"q\"'."));
     try T.expect(!checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '0 | 1' is not assignable to type '\"q\"'."));
+}
+
+test "checker: a read in a binding's own initializer is in its dead zone (#1036)" {
+    const s = try newSetup(
+        \\function f() {
+        \\  for (let a = a; a; ) { }
+        \\  for (let k in k) { }
+        \\  var w = w;
+        \\  let outer = 1;
+        \\  {
+        \\    let outer = outer + 1;
+        \\  }
+        \\  let n: number = n;
+        \\  let later = function () { return later; };
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    // `a`, `k`, the inner `outer` and the annotated `n`; a `var` is not
+    // block-scoped and a function body runs later.
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.block_scoped_used_before_decl));
+    // `a`, `k`, `w` and the inner `outer`; `n` is annotated.
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.variable_self_reference_implicitly_any));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.used_before_assignment, "Variable 'n' is used before being assigned."));
+}
+
+test "checker: a var redeclaration reads its first declaration's type, not its own (#1036)" {
+    const s = try newSetup(
+        \\declare function pick(v: number | string): number;
+        \\function f(p?: number) {
+        \\  var p = p || 0;
+        \\  var b: number | string;
+        \\  var b = pick(b);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_self_reference_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
 }
