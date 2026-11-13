@@ -120831,13 +120831,28 @@ pub const Checker = struct {
                             {
                                 assignment_target_diag_fired = try self.reportInvalidAssignmentReference(a.target, false);
                             }
-                            if (left_operand_ok and right_operand_ok) {
-                                const left_base = self.widenLiteralType(compound_operand_t);
-                                const right_base = self.widenLiteralType(compound_value_t);
-                                compound_result_t = if (left_base == types.Primitive.bigint_t and right_base == types.Primitive.bigint_t and op != .shr_unsigned)
-                                    types.Primitive.bigint_t
-                                else
-                                    types.Primitive.number_t;
+                            if (is_synth_update) {
+                                // `x++` and `x--` are typed after this switch.
+                                if (left_operand_ok and right_operand_ok) compound_result_t = types.Primitive.number_t;
+                            } else if (!assignment_target_diag_fired) {
+                                const op_text: []const u8 = switch (op) {
+                                    .sub => "-=",
+                                    .mul => "*=",
+                                    .div => "/=",
+                                    .mod => "%=",
+                                    .pow => "**=",
+                                    .bit_and => "&=",
+                                    .bit_or => "|=",
+                                    .bit_xor => "^=",
+                                    .shl => "<<=",
+                                    .shr => ">>=",
+                                    .shr_unsigned => ">>>=",
+                                    else => unreachable,
+                                };
+                                compound_result_t = try self.arithmeticResultType(node, op_text, a.target, compound_operand_t, a.value, compound_value_t, op == .shr_unsigned);
+                                if (op == .pow and compound_result_t == types.Primitive.bigint_t and self.targetExplicitlyBelowEs2016()) {
+                                    try self.report(node, TsCodes.bigint_exponentiation_below_es2016, "Exponentiation cannot be performed on 'bigint' values unless the 'target' option is set to 'es2016' or later.");
+                                }
                             }
                             if (target_shift_ok and value_shift_ok) {
                                 try self.reportSimplifiableShiftCount(node, a.target, a.value, op);
@@ -166261,6 +166276,17 @@ pub const Checker = struct {
         const result_t: TypeId = blk: {
             if (self.typeIsAnyLike(operand_t) or self.typeIsAnyLike(value_t)) break :blk types.Primitive.any;
             if (self.typeMaybeStringLike(apparent_operand_t) or self.typeMaybeStringLike(value_t)) break :blk types.Primitive.string_t;
+            // `bigint += bigint` is `bigint`; mixing it with `number` is TS2365
+            // and the error type (#1037).
+            if ((self.typeMaybeBigintLike(apparent_operand_t) or self.typeMaybeBigintLike(value_t)) and
+                self.typeMaybeNumericLike(apparent_operand_t) and self.typeMaybeNumericLike(value_t))
+            {
+                if (self.typeAssignableToBigIntKind(apparent_operand_t, true) and self.typeAssignableToBigIntKind(value_t, true)) {
+                    break :blk types.Primitive.bigint_t;
+                }
+                try self.reportOperatorCannotBeApplied(node, "+=", target, operand_t, value, value_t, .raw);
+                return types.Primitive.any;
+            }
             if (self.isArithmeticOperandAllowed(apparent_operand_t) and self.isArithmeticOperandAllowed(value_t)) break :blk types.Primitive.number_t;
             // Prefer tsc's type-rich form
             // `Operator '+=' cannot be applied to types 'A' and 'B'.`
@@ -169395,6 +169421,140 @@ pub const Checker = struct {
         return false;
     }
 
+    /// tsc's `isTypeAssignableToKind(t, BigIntLike)` (#1037): `bigint`, a
+    /// bigint literal, a union of them or `never`, and `any` unless
+    /// `strict`. Union flags are OR'd, so `typeIsBigIntLike` alone accepts
+    /// `number | bigint`.
+    fn typeAssignableToBigIntKind(self: *Checker, t: TypeId, strict: bool) bool {
+        if (t == types.Primitive.never or t == types.Primitive.bigint_t) return true;
+        if (t == types.Primitive.none or t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_any) return !strict;
+        if (f.is_unknown) return false;
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.typeAssignableToBigIntKind(member, strict)) return false;
+            }
+            return true;
+        }
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeAssignableToBigIntKind(member, strict)) return true;
+            }
+            return false;
+        }
+        if (f.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.typeAssignableToBigIntKind(constraint, strict);
+        }
+        return f.is_bigint;
+    }
+
+    /// tsc's `maybeTypeOfKind(t, BigIntLike)`: `t`, or a member of its union
+    /// or intersection, is bigint-like. Unlike `typeMaybeBigintLike`, a type
+    /// parameter's constraint does not count, so `t * t` on a
+    /// `T extends bigint` is `number` (#1037).
+    fn typeMaybeOfBigIntKind(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.none or t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeMaybeOfBigIntKind(member)) return true;
+            }
+            return false;
+        }
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeMaybeOfBigIntKind(member)) return true;
+            }
+            return false;
+        }
+        if (f.is_type_parameter) return false;
+        return f.is_bigint;
+    }
+
+    const OperatorErrorDisplay = enum {
+        /// The operand types as they are: `'bigint'` and `'1n'`.
+        raw,
+        /// Their base types, unless those are both bigint-like or awaiting
+        /// both operands would make them so: `'bigint'` and `'number'`.
+        base_unless_bigint,
+    };
+
+    /// tsc's result for `-`, `*`, `/`, `%`, `**`, the bitwise operators and
+    /// the shifts, from operands already through `checkNonNullType`
+    /// (#1037). With both any-like, or neither possibly a bigint, it is
+    /// `number`. With both bigint-like it is `bigint`, and `>>>` reports
+    /// TS2365. A mix reports TS2365 and reads as `any`, tsc's error type.
+    fn arithmeticResultType(
+        self: *Checker,
+        error_node: NodeId,
+        op_text: []const u8,
+        lhs_node: NodeId,
+        lhs_t: TypeId,
+        rhs_node: NodeId,
+        rhs_t: TypeId,
+        unsigned_shift: bool,
+    ) CheckError!TypeId {
+        if ((self.typeIsAnyLike(lhs_t) and self.typeIsAnyLike(rhs_t)) or
+            (!self.typeMaybeOfBigIntKind(lhs_t) and !self.typeMaybeOfBigIntKind(rhs_t)))
+        {
+            return types.Primitive.number_t;
+        }
+        if (self.typeAssignableToBigIntKind(lhs_t, false) and self.typeAssignableToBigIntKind(rhs_t, false)) {
+            if (unsigned_shift) try self.reportOperatorCannotBeApplied(error_node, op_text, lhs_node, lhs_t, rhs_node, rhs_t, .raw);
+            return types.Primitive.bigint_t;
+        }
+        try self.reportOperatorCannotBeApplied(error_node, op_text, lhs_node, lhs_t, rhs_node, rhs_t, .base_unless_bigint);
+        return types.Primitive.any;
+    }
+
+    /// tsc's `reportOperatorError` for TS2365 (#1037). A literal operand is
+    /// checked as its widened type, so its literal is read from the node.
+    fn reportOperatorCannotBeApplied(
+        self: *Checker,
+        error_node: NodeId,
+        op_text: []const u8,
+        lhs_node: NodeId,
+        lhs_t: TypeId,
+        rhs_node: NodeId,
+        rhs_t: TypeId,
+        display: OperatorErrorDisplay,
+    ) CheckError!void {
+        var left = try self.valueNodeLiteralType(lhs_node, lhs_t);
+        var right = try self.valueNodeLiteralType(rhs_node, rhs_t);
+        if (display == .base_unless_bigint) {
+            const awaited_left = self.evalAwaited(left);
+            const awaited_right = self.evalAwaited(right);
+            const would_work_with_await = (awaited_left != left or awaited_right != right) and
+                self.typeAssignableToBigIntKind(awaited_left, false) and
+                self.typeAssignableToBigIntKind(awaited_right, false);
+            if (!would_work_with_await) {
+                const left_base = try self.baseTypeOfLiterals(left);
+                const right_base = try self.baseTypeOfLiterals(right);
+                if (!(self.typeAssignableToBigIntKind(left_base, false) and self.typeAssignableToBigIntKind(right_base, false))) {
+                    left = left_base;
+                    right = right_base;
+                }
+            }
+        }
+        const left_name = (try self.addOperatorDiagnosticTypeName(lhs_node, left)) orelse
+            (try self.allocSimpleTypeName(left)) orelse "unknown";
+        const right_name = (try self.addOperatorDiagnosticTypeName(rhs_node, right)) orelse
+            (try self.allocSimpleTypeName(right)) orelse "unknown";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Operator '{s}' cannot be applied to types '{s}' and '{s}'.",
+            .{ op_text, left_name, right_name },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = error_node,
+            .code = TsCodes.operator_cannot_be_applied,
+            .message = msg,
+        });
+    }
+
     /// `maybeTypeOfKind(t, NumberLike)`: `number`, a numeric literal or a
     /// numeric enum member, alone or as a member of `t`.
     fn typeMaybeNumberLike(self: *Checker, t: TypeId) bool {
@@ -170018,9 +170178,18 @@ pub const Checker = struct {
                     break :blk types.Primitive.any;
                 }
                 if (self.typeMaybeNumericLike(lhs_eff) and self.typeMaybeNumericLike(rhs_eff)) {
-                    if (self.typeIsBigIntLike(lhs_eff) and self.typeIsBigIntLike(rhs_eff))
+                    // `number` with `number` and `bigint` with `bigint`. A mix
+                    // is TS2365, shown as the operands' own types, and the
+                    // error type (#1037).
+                    if (!self.typeMaybeBigintLike(lhs_eff) and !self.typeMaybeBigintLike(rhs_eff))
+                        break :blk types.Primitive.number_t;
+                    if (self.typeAssignableToBigIntKind(lhs_eff, true) and self.typeAssignableToBigIntKind(rhs_eff, true))
                         break :blk types.Primitive.bigint_t;
-                    break :blk types.Primitive.number_t;
+                    // tsc names a type parameter, not its apparent type.
+                    const lhs_display = if (lhs_eff == lhs_app) lhs else lhs_eff;
+                    const rhs_display = if (rhs_eff == rhs_app) rhs else rhs_eff;
+                    try self.reportOperatorCannotBeApplied(node, "+", b.lhs, lhs_display, b.rhs, rhs_display, .raw);
+                    break :blk types.Primitive.any;
                 }
                 if (!self.typeIsAnyLike(lhs_eff) and !self.typeIsAnyLike(rhs_eff)) {
                     try self.reportAddOperatorCannotBeApplied(node, b.lhs, lhs_eff, b.rhs, rhs_eff);
@@ -170046,12 +170215,19 @@ pub const Checker = struct {
                 // TS2791 — exponentiation (`**`) on two bigint operands
                 // is not emittable below ES2016. Mirrors tsgo's
                 // `checkBinaryLikeExpression` bigint branch.
-                if (b.op == .pow and self.typeIsBigIntLike(lhs_nn) and self.typeIsBigIntLike(rhs_nn) and self.targetExplicitlyBelowEs2016()) {
+                const op_text: []const u8 = switch (b.op) {
+                    .sub => "-",
+                    .mul => "*",
+                    .div => "/",
+                    .mod => "%",
+                    .pow => "**",
+                    else => unreachable,
+                };
+                const result_t = try self.arithmeticResultType(node, op_text, b.lhs, lhs_nn, b.rhs, rhs_nn, false);
+                if (b.op == .pow and result_t == types.Primitive.bigint_t and self.targetExplicitlyBelowEs2016()) {
                     try self.report(node, TsCodes.bigint_exponentiation_below_es2016, "Exponentiation cannot be performed on 'bigint' values unless the 'target' option is set to 'es2016' or later.");
                 }
-                if (self.typeIsBigIntLike(lhs_nn) and self.typeIsBigIntLike(rhs_nn))
-                    break :blk types.Primitive.bigint_t;
-                break :blk types.Primitive.number_t;
+                break :blk result_t;
             },
             .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => blk: {
                 // `checkNonNullType` runs on both operands before the boolean
@@ -170106,7 +170282,16 @@ pub const Checker = struct {
                 if (!lhs_literal_nullish and !rhs_literal_nullish and lhs_allowed and rhs_allowed) {
                     try self.reportSimplifiableShiftCount(node, b.lhs, b.rhs, b.op);
                 }
-                break :blk types.Primitive.number_t;
+                const op_text: []const u8 = switch (b.op) {
+                    .bit_and => "&",
+                    .bit_or => "|",
+                    .bit_xor => "^",
+                    .shl => "<<",
+                    .shr => ">>",
+                    .shr_unsigned => ">>>",
+                    else => unreachable,
+                };
+                break :blk try self.arithmeticResultType(node, op_text, b.lhs, lhs_nn, b.rhs, rhs_nn, b.op == .shr_unsigned);
             },
             .eq, .neq, .eq_strict, .neq_strict => blk: {
                 if (try self.reportNaNEqualityComparison(node, b.op, b.lhs, b.rhs)) {
@@ -305963,4 +306148,29 @@ test "checker: a var redeclaration reads its first declaration's type, not its o
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_self_reference_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: mixing bigint and number in arithmetic is TS2365 (#1037)" {
+    const s = try newSetup(
+        \\declare const bb: bigint;
+        \\declare const nb: number | bigint;
+        \\const a = bb - 1;
+        \\const b = bb >>> 1n;
+        \\const c = bb + 1;
+        \\const r1: string = 1n & 2n;
+        \\const r2: string = nb - nb;
+        \\let n = 1;
+        \\n *= 2n;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.operator_cannot_be_applied, "Operator '-' cannot be applied to types 'bigint' and 'number'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.operator_cannot_be_applied, "Operator '>>>' cannot be applied to types 'bigint' and '1n'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.operator_cannot_be_applied, "Operator '+' cannot be applied to types 'bigint' and '1'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.operator_cannot_be_applied, "Operator '-' cannot be applied to types 'number | bigint' and 'number | bigint'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.operator_cannot_be_applied, "Operator '*=' cannot be applied to types 'number' and 'bigint'."));
+    // `1n & 2n` is `bigint`; a mix is the error type, so `r2` reports nothing.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'bigint' is not assignable to type 'string'."));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
