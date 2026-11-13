@@ -1167,6 +1167,7 @@
   const execApi = execFactory(globalThis.__home_tool_child, bufferApi.Buffer, childProcess.execFileSync);
   childProcess.execFileSync = execApi.execFileSync;
   childProcess.execSync = execApi.execSync;
+  childProcess.spawnSync = execApi.spawnSync;
   const accountHomedir = globalThis.__home_tool_account_homedir;
   delete globalThis.__home_tool_account_homedir;
   const nativeParallelism = globalThis.__home_tool_available_parallelism;

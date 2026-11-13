@@ -1103,6 +1103,13 @@ pub fn build(b: *std.Build) void {
         exec_capture_fixture.addFileArg(b.path("packages/runtime/test/tool_exec_child.py"));
         home_tool_smoke_step.dependOn(&exec_capture_fixture.step);
         b.step("home-tool-exec-capture-smoke", "Verify genuine binary child input/output and explicit unsupported modes").dependOn(&exec_capture_fixture.step);
+        const spawn_sync_fixture = b.addSystemCommand(&.{"python3"});
+        spawn_sync_fixture.addFileArg(b.path("packages/runtime/test/tool_spawn_sync_fixture.py"));
+        spawn_sync_fixture.addArtifactArg(home_tool_exe);
+        spawn_sync_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_spawn_sync.cjs"));
+        spawn_sync_fixture.addArg("--home-profile");
+        home_tool_smoke_step.dependOn(&spawn_sync_fixture.step);
+        b.step("home-tool-spawn-sync-smoke", "Verify actual Node synchronous child transport, results and native descriptor ownership").dependOn(&spawn_sync_fixture.step);
         const exec_shell_fixture = b.addSystemCommand(&.{"python3"});
         exec_shell_fixture.addFileArg(b.path("packages/runtime/test/tool_exec_shell_fixture.py"));
         exec_shell_fixture.addArtifactArg(home_tool_exe);

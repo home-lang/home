@@ -67,24 +67,63 @@ fn writePipe(io: std.Io, input: *Input) std.Io.Cancelable!void {
     };
 }
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: ?[]const u8, env: *const std.process.Environ.Map, input: []const u8, limit: usize) !Result {
-    if (argv.len == 0 or input.len > max_bytes or limit > max_bytes) return error.UnsupportedCapture;
-    var child = try std.process.spawn(io, .{
-        .exe = .{ .explicit = .{ .dir = .cwd(), .path = argv[0] } },
+pub const Stdio = enum { pipe, ignore, inherit };
+pub const Options = struct {
+    stdio: [3]Stdio = .{ .pipe, .pipe, .pipe },
+    search_path: bool = false,
+};
+
+fn mode(value: Stdio) std.process.SpawnOptions.StdIo {
+    return switch (value) {
+        .pipe => .pipe,
+        .ignore => .ignore,
+        .inherit => .inherit,
+    };
+}
+
+fn spawnPath(io: std.Io, path: []const u8, argv: []const []const u8, cwd: ?[]const u8, env: *const std.process.Environ.Map, options: Options) !std.process.Child {
+    return std.process.spawn(io, .{
+        .exe = .{ .explicit = .{ .dir = .cwd(), .path = path } },
         .argv = argv,
-        .cwd = if (cwd) |path| .{ .path = path } else .inherit,
+        .cwd = if (cwd) |path_name| .{ .path = path_name } else .inherit,
         .environ_map = env,
-        .stdin = .pipe,
-        .stdout = .pipe,
-        .stderr = .pipe,
+        .stdin = mode(options.stdio[0]),
+        .stdout = mode(options.stdio[1]),
+        .stderr = mode(options.stdio[2]),
     });
+}
+
+pub fn run(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: ?[]const u8, env: *const std.process.Environ.Map, input: []const u8, limit: usize) !Result {
+    return runOptions(allocator, io, argv, cwd, env, input, limit, .{});
+}
+
+pub fn runOptions(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: ?[]const u8, env: *const std.process.Environ.Map, input: []const u8, limit: usize, options: Options) !Result {
+    if (argv.len == 0 or input.len > max_bytes or limit > max_bytes) return error.UnsupportedCapture;
+    var child = if (!options.search_path or std.mem.indexOfScalar(u8, argv[0], '/') != null)
+        try spawnPath(io, argv[0], argv, cwd, env, options)
+    else search: {
+        // Node uses the supplied environment's PATH, or the POSIX default when
+        // it is absent. Zig's .search uses the parent environment instead.
+        var directories = std.mem.splitScalar(u8, env.get("PATH") orelse "/usr/bin:/bin", ':');
+        var denied = false;
+        while (directories.next()) |directory| {
+            const candidate = try std.fs.path.join(allocator, &.{ if (directory.len == 0) "." else directory, argv[0] });
+            defer allocator.free(candidate);
+            if (spawnPath(io, candidate, argv, cwd, env, options)) |started| break :search started else |err| switch (err) {
+                error.FileNotFound, error.NotDir => continue,
+                error.AccessDenied => denied = true,
+                else => return err,
+            }
+        }
+        return if (denied) error.AccessDenied else error.FileNotFound;
+    };
     const pid = child.id.?;
     var group: std.Io.Group = .init;
-    var stdout: Stream = .{ .allocator = allocator, .file = child.stdout.?, .pid = pid, .limit = limit };
+    var stdout: Stream = .{ .allocator = allocator, .file = child.stdout orelse undefined, .pid = pid, .limit = limit };
     defer stdout.bytes.deinit(allocator);
-    var stderr: Stream = .{ .allocator = allocator, .file = child.stderr.?, .pid = pid, .limit = limit };
+    var stderr: Stream = .{ .allocator = allocator, .file = child.stderr orelse undefined, .pid = pid, .limit = limit };
     defer stderr.bytes.deinit(allocator);
-    var stdin: Input = .{ .file = child.stdin.?, .pid = pid, .bytes = input };
+    var stdin: Input = .{ .file = child.stdin orelse undefined, .pid = pid, .bytes = input };
     defer {
         if (child.id != null) stop(pid);
         group.cancel(io);
@@ -93,12 +132,18 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, c
 
     // Transfer each descriptor only after its task is guaranteed to run.
     // On scheduling/OOM failure the child still owns every untransferred fd.
-    try group.concurrent(io, readPipe, .{ io, &stdout });
-    child.stdout = null;
-    try group.concurrent(io, readPipe, .{ io, &stderr });
-    child.stderr = null;
-    try group.concurrent(io, writePipe, .{ io, &stdin });
-    child.stdin = null;
+    if (options.stdio[1] == .pipe) {
+        try group.concurrent(io, readPipe, .{ io, &stdout });
+        child.stdout = null;
+    }
+    if (options.stdio[2] == .pipe) {
+        try group.concurrent(io, readPipe, .{ io, &stderr });
+        child.stderr = null;
+    }
+    if (options.stdio[0] == .pipe) {
+        try group.concurrent(io, writePipe, .{ io, &stdin });
+        child.stdin = null;
+    }
     try group.await(io);
     const term = try child.wait(io);
     const out = try stdout.bytes.toOwnedSlice(allocator);
@@ -170,4 +215,37 @@ test "early stdin closure retains final output and normal exit before reporting 
     try std.testing.expectEqual(error.BrokenPipe, result.io_error.?);
     try std.testing.expectEqual(@as(u8, 0), result.term.exited);
     try std.testing.expectEqualStrings("done", result.stdout);
+}
+
+test "PATH lookup uses supplied environment and ignored stdin is an actual character device" {
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("PATH", "/bin");
+    var result = try runOptions(allocator, threaded.io(), &.{ "sh", "-c", "test -c /dev/fd/0 && printf native-ignore" }, null, &env, "", 1024, .{ .stdio = .{ .ignore, .pipe, .ignore }, .search_path = true });
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(u8, 0), result.term.exited);
+    try std.testing.expectEqualStrings("native-ignore", result.stdout);
+    try std.testing.expectEqual(@as(usize, 0), result.stderr.len);
+    var status: c_int = 0;
+    try std.testing.expect(std.c.waitpid(result.pid, &status, std.c.W.NOHANG) < 0 and std.posix.errno(-1) == .CHILD);
+    try env.put("PATH", "/ecosystem-no-such-path");
+    try std.testing.expectError(error.FileNotFound, runOptions(allocator, threaded.io(), &.{"sh"}, null, &env, "", 1024, .{ .search_path = true }));
+}
+
+test "ignored outputs stay native null devices and nonzero child exit is reaped" {
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    var result = try runOptions(allocator, threaded.io(), &.{ "/bin/sh", "-c", "printf ignored-output; printf ignored-error >&2; exit 7" }, null, &env, "", 1024, .{ .stdio = .{ .ignore, .ignore, .ignore } });
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(u8, 7), result.term.exited);
+    try std.testing.expectEqual(@as(usize, 0), result.stdout.len);
+    try std.testing.expectEqual(@as(usize, 0), result.stderr.len);
+    var status: c_int = 0;
+    try std.testing.expect(std.c.waitpid(result.pid, &status, std.c.W.NOHANG) < 0 and std.posix.errno(-1) == .CHILD);
 }

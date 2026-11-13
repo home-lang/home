@@ -29,7 +29,7 @@ pub const Host = struct {
 };
 
 const Request = struct {
-    op: enum { spawn, poll, kill, close, exec_file },
+    op: enum { spawn, poll, kill, close, exec_file, spawn_sync },
     argv: []const []const u8 = &.{},
     cwd: ?[]const u8 = null,
     keys: []const []const u8 = &.{},
@@ -39,6 +39,7 @@ const Request = struct {
     signal: []const u8 = "TERM",
     max_buffer: usize = 1024 * 1024,
     mirror_stderr: bool = false,
+    stdio: [3]@import("tool_exec_capture.zig").Stdio = .{ .pipe, .pipe, .pipe },
 };
 
 fn validString(value: []const u8) bool {
@@ -74,10 +75,10 @@ fn outputBytes(ctx: *types.JSContextRef, object: *types.JSObject, name: [:0]cons
 fn perform(host: *Host, request: Request, result: *types.JSObject, input_value: ?*types.JSValue, exception: api.ExceptionRef) !void {
     const c = host.ctx;
     switch (request.op) {
-        .exec_file => {
+        .exec_file, .spawn_sync => {
             const capture = @import("tool_exec_capture.zig");
             if (request.argv.len == 0 or request.argv.len > 4096 or request.keys.len != request.values.len or request.keys.len > 4096) return error.InvalidRequest;
-            if (!std.fs.path.isAbsolute(request.argv[0]) or request.max_buffer > capture.max_bytes) return error.UnsupportedCapture;
+            if ((request.op == .exec_file and !std.fs.path.isAbsolute(request.argv[0])) or request.max_buffer > capture.max_bytes) return error.UnsupportedCapture;
             for (request.argv) |arg| if (!validString(arg)) return error.InvalidRequest;
             if (request.cwd) |cwd| if (!validString(cwd)) return error.InvalidRequest;
             var env = std.process.Environ.Map.init(host.allocator);
@@ -88,13 +89,13 @@ fn perform(host: *Host, request: Request, result: *types.JSObject, input_value: 
             }
             const input = try inputBytes(c, input_value, host.allocator, exception);
             defer host.allocator.free(input);
-            var captured = try capture.run(host.allocator, host.pool.threaded.io(), request.argv, request.cwd, &env, input, request.max_buffer);
+            var captured = try capture.runOptions(host.allocator, host.pool.threaded.io(), request.argv, request.cwd, &env, input, request.max_buffer, .{ .stdio = if (request.op == .spawn_sync) request.stdio else .{ .pipe, .pipe, .pipe }, .search_path = request.op == .spawn_sync });
             defer captured.deinit(host.allocator);
             // execFileSync's default captures stderr and forwards the actual
             // bytes afterwards. Explicit 'pipe' leaves forwarding to the caller.
             if (request.mirror_stderr) try std.Io.File.stderr().writeStreamingAll(host.pool.threaded.io(), captured.stderr);
-            try outputBytes(c, result, "stdoutBytes", captured.stdout, exception);
-            try outputBytes(c, result, "stderrBytes", captured.stderr, exception);
+            if (request.op == .exec_file or request.stdio[1] == .pipe) try outputBytes(c, result, "stdoutBytes", captured.stdout, exception);
+            if (request.op == .exec_file or request.stdio[2] == .pipe) try outputBytes(c, result, "stderrBytes", captured.stderr, exception);
             fs.set(c, result, "pid", api.JSValueMakeNumber(c, @floatFromInt(captured.pid)));
             fs.set(c, result, "status", switch (captured.term) {
                 .exited => |code| api.JSValueMakeNumber(c, @floatFromInt(code)),
@@ -166,7 +167,8 @@ fn operation(ctx: ?*types.JSContextRef, function: ?*types.JSObject, this: ?*type
     defer host.allocator.free(source);
     const parsed = std.json.parseFromSlice(Request, host.allocator, source, .{}) catch return fs.failure(c, result, error.Unsupported);
     defer parsed.deinit();
-    if ((parsed.value.op == .exec_file and count != 2) or (parsed.value.op != .exec_file and count != 1)) return fs.failure(c, result, error.Unsupported);
+    const captured = parsed.value.op == .exec_file or parsed.value.op == .spawn_sync;
+    if ((captured and count != 2) or (!captured and count != 1)) return fs.failure(c, result, error.Unsupported);
     perform(host, parsed.value, result, if (count == 2) args[1] else null, exception) catch |err| {
         const code: []const u8 = switch (err) {
             error.FileNotFound => "ENOENT",
@@ -179,6 +181,14 @@ fn operation(ctx: ?*types.JSContextRef, function: ?*types.JSObject, this: ?*type
         };
         fs.set(c, result, "error", fs.text(c, code));
         fs.set(c, result, "detail", fs.text(c, @errorName(err)));
+        const number: ?std.posix.E = switch (err) {
+            error.FileNotFound => .NOENT,
+            error.NotDir => .NOTDIR,
+            error.AccessDenied => .ACCES,
+            error.OutOfMemory, error.SystemResources => .NOMEM,
+            else => null,
+        };
+        if (number) |value| fs.set(c, result, "errno", api.JSValueMakeNumber(c, -@as(f64, @floatFromInt(@backingInt(value)))));
     };
     return @ptrCast(result);
 }
