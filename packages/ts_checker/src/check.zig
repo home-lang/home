@@ -92622,7 +92622,8 @@ pub const Checker = struct {
                 if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier or
                     hir_mod.identifierOf(self.hir, assignment.target).name != name)
                 {
-                    break :blk incoming;
+                    // `r[0] = (v = a) & 1;` writes `v` in its value (#1038).
+                    break :blk try self.nestedAssignmentFlow(stmt, name, incoming, widen_assignments, null);
                 }
                 const cached_t = self.hir.typeOf(assignment.value);
                 if (cached_t == types.Primitive.none) break :blk types.Primitive.any;
@@ -92640,19 +92641,122 @@ pub const Checker = struct {
             },
             .if_stmt => blk: {
                 const conditional = hir_mod.ifOf(self.hir, stmt);
-                const then_t = try self.identifierFlowTypeAfterStatement(conditional.then_branch, name, incoming, widen_assignments);
+                // A write in the condition runs before either branch (#1038).
+                const after_cond = try self.nestedAssignmentFlow(conditional.cond, name, incoming, widen_assignments, null);
+                const then_t = try self.identifierFlowTypeAfterStatement(conditional.then_branch, name, after_cond, widen_assignments);
                 const else_t = if (conditional.else_branch != hir_mod.none_node_id)
-                    try self.identifierFlowTypeAfterStatement(conditional.else_branch, name, incoming, widen_assignments)
+                    try self.identifierFlowTypeAfterStatement(conditional.else_branch, name, after_cond, widen_assignments)
                 else
-                    incoming;
+                    after_cond;
                 break :blk try self.mergeDefiniteEvolvingAnyFlowTypes(then_t, else_t);
             },
             .for_stmt => try self.identifierFlowTypeAfterStatement(hir_mod.forStmtOf(self.hir, stmt).body, name, incoming, widen_assignments),
             .for_in_stmt, .for_of_stmt => try self.identifierFlowTypeAfterStatement(hir_mod.forInOf(self.hir, stmt).body, name, incoming, widen_assignments),
             .while_stmt => try self.identifierFlowTypeAfterStatement(hir_mod.whileOf(self.hir, stmt).body, name, incoming, widen_assignments),
             .do_while_stmt => try self.identifierFlowTypeAfterStatement(hir_mod.doWhileOf(self.hir, stmt).body, name, incoming, widen_assignments),
-            else => incoming,
+            .switch_stmt, .try_stmt, .labeled_stmt => incoming,
+            // Any other statement: the writes nested in it that always run
+            // (#1038).
+            else => try self.nestedAssignmentFlow(stmt, name, incoming, widen_assignments, null),
         };
+    }
+
+    fn offsetIsInside(self: *Checker, offset: ?u32, node: NodeId) bool {
+        const pos = offset orelse return false;
+        if (node == hir_mod.none_node_id) return false;
+        const span = self.hir.spanOf(node);
+        return span.start <= pos and pos <= span.end;
+    }
+
+    /// The flow of `name` after the plain assignments to it nested in
+    /// `node`, in evaluation order, for a variable whose type evolves. With
+    /// `before`, only writes that end by that offset count (#1038). A write
+    /// that may not run (on the right of `&&`, `||` or `??`, in a branch of
+    /// `?:`, after an optional chain) is joined with the path that skips it.
+    /// A nested function's writes are left out.
+    fn nestedAssignmentFlow(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+        incoming: ?TypeId,
+        widen_assignments: bool,
+        before: ?u32,
+    ) CheckError!?TypeId {
+        if (node == hir_mod.none_node_id) return incoming;
+        switch (self.hir.kindOf(node)) {
+            .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => return incoming,
+            // The right of `&&`, `||` and `??` may not run: a read after the
+            // expression joins both paths, one inside it sees its own path.
+            .logical_op => {
+                const logical = hir_mod.logicalOf(self.hir, node);
+                const after_lhs = try self.nestedAssignmentFlow(logical.lhs, name, incoming, widen_assignments, before);
+                if (self.offsetIsInside(before, logical.rhs)) {
+                    return try self.nestedAssignmentFlow(logical.rhs, name, after_lhs, widen_assignments, before);
+                }
+                const after_rhs = try self.nestedAssignmentFlow(logical.rhs, name, after_lhs, widen_assignments, before);
+                return try self.mergeDefiniteEvolvingAnyFlowTypes(after_lhs, after_rhs);
+            },
+            .conditional => {
+                const conditional = hir_mod.conditionalOf(self.hir, node);
+                const after_cond = try self.nestedAssignmentFlow(conditional.cond, name, incoming, widen_assignments, before);
+                if (self.offsetIsInside(before, conditional.then_branch)) {
+                    return try self.nestedAssignmentFlow(conditional.then_branch, name, after_cond, widen_assignments, before);
+                }
+                if (self.offsetIsInside(before, conditional.else_branch)) {
+                    return try self.nestedAssignmentFlow(conditional.else_branch, name, after_cond, widen_assignments, before);
+                }
+                const then_flow = try self.nestedAssignmentFlow(conditional.then_branch, name, after_cond, widen_assignments, before);
+                const else_flow = try self.nestedAssignmentFlow(conditional.else_branch, name, after_cond, widen_assignments, before);
+                return try self.mergeDefiniteEvolvingAnyFlowTypes(then_flow, else_flow);
+            },
+            .call_expr, .member_access, .element_access => {
+                const optional = switch (self.hir.kindOf(node)) {
+                    .call_expr => hir_mod.callOf(self.hir, node).optional,
+                    .member_access => hir_mod.memberOf(self.hir, node).optional,
+                    else => hir_mod.elementOf(self.hir, node).optional,
+                };
+                if (optional) {
+                    // An optional chain may stop before its arguments run.
+                    const children = self.flowChildren(node);
+                    var flow = incoming;
+                    for (children.fixed[0..children.fixed_len]) |child| {
+                        flow = try self.nestedAssignmentFlow(child, name, flow, widen_assignments, before);
+                    }
+                    for (children.rest) |child| {
+                        flow = try self.nestedAssignmentFlow(child, name, flow, widen_assignments, before);
+                    }
+                    return try self.mergeDefiniteEvolvingAnyFlowTypes(incoming, flow);
+                }
+            },
+            .assignment => {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                var flow = try self.nestedAssignmentFlow(assignment.value, name, incoming, widen_assignments, before);
+                if (assignment.op == null and
+                    self.hir.kindOf(assignment.target) == .identifier and
+                    hir_mod.identifierOf(self.hir, assignment.target).name == name and
+                    (before == null or self.hir.spanOf(node).end <= before.?))
+                {
+                    const cached_t = self.hir.typeOf(assignment.value);
+                    flow = if (cached_t == types.Primitive.none)
+                        types.Primitive.any
+                    else if (widen_assignments)
+                        self.widenLiteralType(try self.flowTypeForAssignmentValue(assignment.value, cached_t))
+                    else
+                        cached_t;
+                }
+                return flow;
+            },
+            else => {},
+        }
+        const children = self.flowChildren(node);
+        var flow = incoming;
+        for (children.fixed[0..children.fixed_len]) |child| {
+            flow = try self.nestedAssignmentFlow(child, name, flow, widen_assignments, before);
+        }
+        for (children.rest) |child| {
+            flow = try self.nestedAssignmentFlow(child, name, flow, widen_assignments, before);
+        }
+        return flow;
     }
 
     fn identifierFlowTypeBeforeNode(
@@ -92681,17 +92785,22 @@ pub const Checker = struct {
             },
             .if_stmt => blk: {
                 const conditional = hir_mod.ifOf(self.hir, container);
+                const cond_span = self.hir.spanOf(conditional.cond);
+                if (cond_span.start <= use_span.start and use_span.start <= cond_span.end) {
+                    break :blk try self.nestedAssignmentFlow(conditional.cond, name, incoming, widen_assignments, use_span.start);
+                }
+                const after_cond = try self.nestedAssignmentFlow(conditional.cond, name, incoming, widen_assignments, null);
                 const then_span = self.hir.spanOf(conditional.then_branch);
                 if (then_span.start <= use_span.start and use_span.start <= then_span.end) {
-                    break :blk try self.identifierFlowTypeBeforeNode(conditional.then_branch, node, name, incoming, widen_assignments);
+                    break :blk try self.identifierFlowTypeBeforeNode(conditional.then_branch, node, name, after_cond, widen_assignments);
                 }
                 if (conditional.else_branch != hir_mod.none_node_id) {
                     const else_span = self.hir.spanOf(conditional.else_branch);
                     if (else_span.start <= use_span.start and use_span.start <= else_span.end) {
-                        break :blk try self.identifierFlowTypeBeforeNode(conditional.else_branch, node, name, incoming, widen_assignments);
+                        break :blk try self.identifierFlowTypeBeforeNode(conditional.else_branch, node, name, after_cond, widen_assignments);
                     }
                 }
-                break :blk incoming;
+                break :blk after_cond;
             },
             .for_stmt => blk: {
                 const body = hir_mod.forStmtOf(self.hir, container).body;
@@ -92717,7 +92826,9 @@ pub const Checker = struct {
                 const loop_entry = try self.mergeDefiniteEvolvingAnyFlowTypes(incoming, backedge);
                 break :blk try self.identifierFlowTypeBeforeNode(body, node, name, loop_entry orelse backedge, widen_assignments);
             },
-            else => incoming,
+            .switch_stmt, .try_stmt, .labeled_stmt => incoming,
+            // The writes earlier in the same statement (#1038).
+            else => try self.nestedAssignmentFlow(container, name, incoming, widen_assignments, use_span.start),
         };
     }
 
@@ -96301,6 +96412,40 @@ pub const Checker = struct {
         if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .expression_stmt) parent = self.hir.parentOf(parent);
         if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .block_stmt) return null;
         return parent;
+    }
+
+    /// Whether a plain `name = value` always runs when its statement does,
+    /// and that statement sits directly in a block. `x = v;` does, and so do
+    /// `f(x = v);`, `const t = (x = v) & 1;`, `return (x = v);` and
+    /// `if ((x = v) > 0)` (#1038). A write on the right of `&&`, `||` or `??`,
+    /// in a branch of `?:`, after an optional chain, in a loop head or in a
+    /// nested function is joined by its statement instead (#1023).
+    fn assignmentRunsWithItsStatement(self: *Checker, assignment: NodeId) bool {
+        if (self.straightLineAssignmentBlock(assignment) != null) return true;
+        if (hir_mod.assignmentOf(self.hir, assignment).op != null) return false;
+        var child = assignment;
+        var cur = self.hir.parentOf(assignment);
+        while (cur != hir_mod.none_node_id) : ({
+            child = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
+            switch (self.hir.kindOf(cur)) {
+                .block_stmt => return true,
+                .expression_stmt, .var_decl, .let_decl, .const_decl, .return_stmt, .throw_stmt => {},
+                .if_stmt => if (child != hir_mod.ifOf(self.hir, cur).cond) return false,
+                .switch_stmt => if (child != hir_mod.switchOf(self.hir, cur).discriminant) return false,
+                .logical_op => if (child != hir_mod.logicalOf(self.hir, cur).lhs) return false,
+                .conditional => if (child != hir_mod.conditionalOf(self.hir, cur).cond) return false,
+                .call_expr => if (hir_mod.callOf(self.hir, cur).optional) return false,
+                .member_access => if (hir_mod.memberOf(self.hir, cur).optional) return false,
+                .element_access => if (hir_mod.elementOf(self.hir, cur).optional) return false,
+                .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => return false,
+                .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt => return false,
+                .labeled_stmt, .try_stmt, .switch_case => return false,
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn noteIdentifierWrite(self: *Checker, name: hir_mod.StringId, modeled: bool) CheckError!void {
@@ -120600,7 +120745,7 @@ pub const Checker = struct {
                         // An untyped declaration without an initializer has
                         // an evolving type, which takes each assigned type.
                         if (target_is_untyped_uninitialized_var) break :blk_straight null;
-                        if (self.straightLineAssignmentBlock(node) == null) break :blk_straight null;
+                        if (!self.assignmentRunsWithItsStatement(node)) break :blk_straight null;
                         if (assignment_result_t == types.Primitive.none or assignment_result_t == types.Primitive.unknown) break :blk_straight null;
                         const target_id = hir_mod.identifierOf(self.hir, a.target);
                         const decl = self.findLocalValueDeclBeforeExpression(a.target, target_id.name) orelse break :blk_straight null;
@@ -306173,4 +306318,29 @@ test "checker: mixing bigint and number in arithmetic is TS2365 (#1037)" {
     // `1n & 2n` is `bigint`; a mix is the error type, so `r2` reports nothing.
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'bigint' is not assignable to type 'string'."));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: an assignment nested in an expression narrows its target (#1038)" {
+    const s = try newSetup(
+        \\declare const a: number;
+        \\declare const c: boolean;
+        \\declare const r: number[];
+        \\function f() {
+        \\  let w: number | undefined;
+        \\  r[0] = (w = a) & 1;
+        \\  const s1: "q" = w;
+        \\  let v;
+        \\  const t = (v = a) & 1;
+        \\  const s2: "q" = v;
+        \\  let m;
+        \\  const u = c && (m = a);
+        \\  const s3: "q" = m;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '\"q\"'."));
+    // A write that may not run joins with the path that skips it.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number | undefined' is not assignable to type '\"q\"'."));
 }
