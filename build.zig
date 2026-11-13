@@ -1746,6 +1746,12 @@ pub fn build(b: *std.Build) void {
         util_inherits_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_util_inherits.mjs"));
         home_tool_smoke_step.dependOn(&util_inherits_fixture.step);
         b.step("home-tool-util-inherits-smoke", "Verify genuine legacy prototype inheritance and descriptor ordering").dependOn(&util_inherits_fixture.step);
+        const parse_args_fixture = b.addSystemCommand(&.{"python3"});
+        parse_args_fixture.addFileArg(b.path("packages/runtime/test/tool_parse_args_fixture.py"));
+        parse_args_fixture.addArtifactArg(home_tool_exe);
+        parse_args_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/util_parse_args.cjs"));
+        home_tool_smoke_step.dependOn(&parse_args_fixture.step);
+        b.step("home-tool-parse-args-smoke", "Verify real Node-oracle argv parsing, tokens, validation and module identity").dependOn(&parse_args_fixture.step);
         const run_home_tool_fs = b.addRunArtifact(home_tool_exe);
         run_home_tool_fs.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_fs.addArgs(&.{ "run", "node_fs_entry.cjs" });

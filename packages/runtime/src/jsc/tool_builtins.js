@@ -1469,7 +1469,10 @@
     }
     return deprecate;
   })();
+  const parseArgsFactory = globalThis.__home_tool_parse_args_factory;
+  delete globalThis.__home_tool_parse_args_factory;
   const utilApi = {
+    parseArgs: parseArgsFactory(process),
     deprecate,
     promisify,
     inherits,

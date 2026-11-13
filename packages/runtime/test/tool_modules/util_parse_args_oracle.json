@@ -1,0 +1,7345 @@
+{
+  "node": "v26.10.0",
+  "observation": {
+    "available": true,
+    "expectedCases": 220,
+    "executed": 220,
+    "records": [
+      {
+        "name": "argv-0-true-false",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-0-true-true",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-0-false-false",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-0-false-true",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-1-true-false",
+        "result": {
+          "values": {
+            "verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-1-true-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-1-false-false",
+        "result": {
+          "values": {
+            "verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-1-false-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-2-true-false",
+        "result": {
+          "values": {
+            "verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-2-true-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-2-false-false",
+        "result": {
+          "values": {
+            "verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-2-false-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-3-true-false",
+        "result": {
+          "values": {
+            "verbose": true,
+            "quiet": [
+              true
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "quiet",
+              "rawName": "-q",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "quiet",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-3-true-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "quiet": [
+              true
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "quiet",
+              "rawName": "-q",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "quiet",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-3-false-false",
+        "result": {
+          "values": {
+            "verbose": true,
+            "quiet": [
+              true
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "quiet",
+              "rawName": "-q",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "quiet",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-3-false-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "quiet": [
+              true
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "quiet",
+              "rawName": "-q",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "quiet",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-4-true-false",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "file",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-4-true-true",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "file",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-4-false-false",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "file",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-4-false-true",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "file",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-5-true-false",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-5-true-true",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-5-false-false",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-5-false-true",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-6-true-false",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-6-true-true",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-6-false-false",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-6-false-true",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-7-true-false",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-7-true-true",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-7-false-false",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-7-false-true",
+        "result": {
+          "values": {
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-8-true-false",
+        "result": {
+          "values": {
+            "verbose": true,
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-8-true-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-8-false-false",
+        "result": {
+          "values": {
+            "verbose": true,
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-8-false-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "output": "file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "file",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-9-true-false",
+        "result": {
+          "values": {
+            "output": "",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-9-true-true",
+        "result": {
+          "values": {
+            "output": "",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-9-false-false",
+        "result": {
+          "values": {
+            "output": "",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-9-false-true",
+        "result": {
+          "values": {
+            "output": "",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-10-true-false",
+        "result": {
+          "values": {
+            "output": "",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-10-true-true",
+        "result": {
+          "values": {
+            "output": "",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-10-false-false",
+        "result": {
+          "values": {
+            "output": "",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-10-false-true",
+        "result": {
+          "values": {
+            "output": "",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-11-true-false",
+        "result": {
+          "values": {
+            "output": "-",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "-",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-11-true-true",
+        "result": {
+          "values": {
+            "output": "-",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "-",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-11-false-false",
+        "result": {
+          "values": {
+            "output": "-",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "-",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-11-false-true",
+        "result": {
+          "values": {
+            "output": "-",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "-",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-12-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-12-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-12-false-false",
+        "result": {
+          "values": {
+            "output": "-file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "-file",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-12-false-true",
+        "result": {
+          "values": {
+            "output": "-file",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "-file",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-13-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-13-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-13-false-false",
+        "result": {
+          "values": {
+            "output": "--verbose",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "--verbose",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-13-false-true",
+        "result": {
+          "values": {
+            "output": "--verbose",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "--verbose",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-14-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-14-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-14-false-false",
+        "result": {
+          "values": {
+            "output": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-14-false-true",
+        "result": {
+          "values": {
+            "output": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-15-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-15-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-15-false-false",
+        "result": {
+          "values": {
+            "output": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-15-false-true",
+        "result": {
+          "values": {
+            "output": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-16-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-16-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-16-false-false",
+        "result": {
+          "values": {
+            "verbose": "yes",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 0,
+              "value": "yes",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-16-false-true",
+        "result": {
+          "values": {
+            "verbose": "yes",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 0,
+              "value": "yes",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-17-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-17-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-17-false-false",
+        "result": {
+          "values": {
+            "verbose": true,
+            "=": true,
+            "y": true,
+            "e": true,
+            "s": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "=",
+              "rawName": "-=",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "y",
+              "rawName": "-y",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "e",
+              "rawName": "-e",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "s",
+              "rawName": "-s",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "=",
+          "y",
+          "e",
+          "s",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-17-false-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "=": true,
+            "y": true,
+            "e": true,
+            "s": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "-v",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "=",
+              "rawName": "-=",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "y",
+              "rawName": "-y",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "e",
+              "rawName": "-e",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "s",
+              "rawName": "-s",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "=",
+          "y",
+          "e",
+          "s",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-18-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-18-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-18-false-false",
+        "result": {
+          "values": {
+            "missing": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "missing",
+              "rawName": "--missing",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "missing",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-18-false-true",
+        "result": {
+          "values": {
+            "missing": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "missing",
+              "rawName": "--missing",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "missing",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-19-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-19-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-19-false-false",
+        "result": {
+          "values": {
+            "missing": "value",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "missing",
+              "rawName": "--missing",
+              "index": 0,
+              "value": "value",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "missing",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-19-false-true",
+        "result": {
+          "values": {
+            "missing": "value",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "missing",
+              "rawName": "--missing",
+              "index": 0,
+              "value": "value",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "missing",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-20-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-20-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-20-false-false",
+        "result": {
+          "values": {
+            "x": true,
+            "y": true,
+            "z": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "x",
+              "rawName": "-x",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "y",
+              "rawName": "-y",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "z",
+              "rawName": "-z",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "x",
+          "y",
+          "z",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-20-false-true",
+        "result": {
+          "values": {
+            "x": true,
+            "y": true,
+            "z": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "x",
+              "rawName": "-x",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "y",
+              "rawName": "-y",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "z",
+              "rawName": "-z",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "x",
+          "y",
+          "z",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-21-true-false",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option-terminator",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-21-true-true",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option-terminator",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-21-false-false",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option-terminator",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-21-false-true",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option-terminator",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-22-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-22-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-22-false-false",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            "-v",
+            "--output=x",
+            "file"
+          ],
+          "tokens": [
+            {
+              "kind": "option-terminator",
+              "index": 0
+            },
+            {
+              "kind": "positional",
+              "index": 1,
+              "value": "-v"
+            },
+            {
+              "kind": "positional",
+              "index": 2,
+              "value": "--output=x"
+            },
+            {
+              "kind": "positional",
+              "index": 3,
+              "value": "file"
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index"
+          ],
+          [
+            "kind",
+            "index",
+            "value"
+          ],
+          [
+            "kind",
+            "index",
+            "value"
+          ],
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-22-false-true",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            "-v",
+            "--output=x",
+            "file"
+          ],
+          "tokens": [
+            {
+              "kind": "option-terminator",
+              "index": 0
+            },
+            {
+              "kind": "positional",
+              "index": 1,
+              "value": "-v"
+            },
+            {
+              "kind": "positional",
+              "index": 2,
+              "value": "--output=x"
+            },
+            {
+              "kind": "positional",
+              "index": 3,
+              "value": "file"
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index"
+          ],
+          [
+            "kind",
+            "index",
+            "value"
+          ],
+          [
+            "kind",
+            "index",
+            "value"
+          ],
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-23-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-23-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-23-false-false",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            "file"
+          ],
+          "tokens": [
+            {
+              "kind": "positional",
+              "index": 0,
+              "value": "file"
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-23-false-true",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            "file"
+          ],
+          "tokens": [
+            {
+              "kind": "positional",
+              "index": 0,
+              "value": "file"
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-24-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-24-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-24-false-false",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            ""
+          ],
+          "tokens": [
+            {
+              "kind": "positional",
+              "index": 0,
+              "value": ""
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-24-false-true",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            ""
+          ],
+          "tokens": [
+            {
+              "kind": "positional",
+              "index": 0,
+              "value": ""
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-25-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-25-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-25-false-false",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            "-"
+          ],
+          "tokens": [
+            {
+              "kind": "positional",
+              "index": 0,
+              "value": "-"
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-25-false-true",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            "-"
+          ],
+          "tokens": [
+            {
+              "kind": "positional",
+              "index": 0,
+              "value": "-"
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-26-true-false",
+        "result": {
+          "values": {
+            "include": [
+              "a",
+              "b",
+              "c"
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "--include",
+              "index": 0,
+              "value": "a",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "-I",
+              "index": 1,
+              "value": "b",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "--include",
+              "index": 2,
+              "value": "c",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "include",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-26-true-true",
+        "result": {
+          "values": {
+            "include": [
+              "a",
+              "b",
+              "c"
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "--include",
+              "index": 0,
+              "value": "a",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "-I",
+              "index": 1,
+              "value": "b",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "--include",
+              "index": 2,
+              "value": "c",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "include",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-26-false-false",
+        "result": {
+          "values": {
+            "include": [
+              "a",
+              "b",
+              "c"
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "--include",
+              "index": 0,
+              "value": "a",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "-I",
+              "index": 1,
+              "value": "b",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "--include",
+              "index": 2,
+              "value": "c",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "include",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-26-false-true",
+        "result": {
+          "values": {
+            "include": [
+              "a",
+              "b",
+              "c"
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "--include",
+              "index": 0,
+              "value": "a",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "-I",
+              "index": 1,
+              "value": "b",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "--include",
+              "index": 2,
+              "value": "c",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "include",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-27-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-27-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-27-false-false",
+        "result": {
+          "values": {
+            "quiet": [
+              true,
+              true,
+              "false"
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "quiet",
+              "rawName": "--quiet",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "quiet",
+              "rawName": "-q",
+              "index": 1
+            },
+            {
+              "kind": "option",
+              "name": "quiet",
+              "rawName": "--quiet",
+              "index": 2,
+              "value": "false",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "quiet",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-27-false-true",
+        "result": {
+          "values": {
+            "quiet": [
+              true,
+              true,
+              "false"
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "quiet",
+              "rawName": "--quiet",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "quiet",
+              "rawName": "-q",
+              "index": 1
+            },
+            {
+              "kind": "option",
+              "name": "quiet",
+              "rawName": "--quiet",
+              "index": 2,
+              "value": "false",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "quiet",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-28-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-28-true-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--no-verbose",
+              "index": 1
+            },
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 2
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-28-false-false",
+        "result": {
+          "values": {
+            "verbose": true,
+            "no-verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "no-verbose",
+              "rawName": "--no-verbose",
+              "index": 1
+            },
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 2
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "no-verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-28-false-true",
+        "result": {
+          "values": {
+            "verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--no-verbose",
+              "index": 1
+            },
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--verbose",
+              "index": 2
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-29-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-29-true-true",
+        "result": {
+          "values": {
+            "verbose": false,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--no-verbose",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-29-false-false",
+        "result": {
+          "values": {
+            "no-verbose": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "no-verbose",
+              "rawName": "--no-verbose",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "no-verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-29-false-true",
+        "result": {
+          "values": {
+            "verbose": false,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "verbose",
+              "rawName": "--no-verbose",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-30-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-30-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-30-false-false",
+        "result": {
+          "values": {
+            "no-missing": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "no-missing",
+              "rawName": "--no-missing",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "no-missing",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-30-false-true",
+        "result": {
+          "values": {
+            "missing": false,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "missing",
+              "rawName": "--no-missing",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "missing",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-31-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-31-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-31-false-false",
+        "result": {
+          "values": {
+            "no-output": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "no-output",
+              "rawName": "--no-output",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "no-output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-31-false-true",
+        "result": {
+          "values": {
+            "output": false,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--no-output",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-32-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-32-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-32-false-false",
+        "result": {
+          "values": {
+            "no-verbose": "false",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "no-verbose",
+              "rawName": "--no-verbose",
+              "index": 0,
+              "value": "false",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "no-verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-32-false-true",
+        "result": {
+          "values": {
+            "no-verbose": "false",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "no-verbose",
+              "rawName": "--no-verbose",
+              "index": 0,
+              "value": "false",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "no-verbose",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-33-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-33-true-true",
+        "result": {
+          "values": {
+            "defaulted": false,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "defaulted",
+              "rawName": "--defaulted",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "defaulted",
+              "rawName": "--no-defaulted",
+              "index": 1
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-33-false-false",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "no-defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "defaulted",
+              "rawName": "--defaulted",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "no-defaulted",
+              "rawName": "--no-defaulted",
+              "index": 1
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "no-defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-33-false-true",
+        "result": {
+          "values": {
+            "defaulted": false,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "defaulted",
+              "rawName": "--defaulted",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "defaulted",
+              "rawName": "--no-defaulted",
+              "index": 1
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-34-true-false",
+        "result": {
+          "values": {
+            "paths": [
+              ""
+            ],
+            "defaulted": true
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "paths",
+              "rawName": "--paths",
+              "index": 0,
+              "value": "",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "paths",
+          "defaulted"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-34-true-true",
+        "result": {
+          "values": {
+            "paths": [
+              ""
+            ],
+            "defaulted": true
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "paths",
+              "rawName": "--paths",
+              "index": 0,
+              "value": "",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "paths",
+          "defaulted"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-34-false-false",
+        "result": {
+          "values": {
+            "paths": [
+              ""
+            ],
+            "defaulted": true
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "paths",
+              "rawName": "--paths",
+              "index": 0,
+              "value": "",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "paths",
+          "defaulted"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-34-false-true",
+        "result": {
+          "values": {
+            "paths": [
+              ""
+            ],
+            "defaulted": true
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "paths",
+              "rawName": "--paths",
+              "index": 0,
+              "value": "",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "paths",
+          "defaulted"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-35-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-35-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-35-false-false",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "__proto__",
+              "rawName": "--__proto__",
+              "index": 0,
+              "value": "safe",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-35-false-true",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "__proto__",
+              "rawName": "--__proto__",
+              "index": 0,
+              "value": "safe",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-36-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-36-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-36-false-false",
+        "result": {
+          "values": {
+            "constructor": "x",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "constructor",
+              "rawName": "--constructor",
+              "index": 0,
+              "value": "x",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "constructor",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-36-false-true",
+        "result": {
+          "values": {
+            "constructor": "x",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "constructor",
+              "rawName": "--constructor",
+              "index": 0,
+              "value": "x",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "constructor",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-37-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-37-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-37-false-false",
+        "result": {
+          "values": {
+            "=x": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "=x",
+              "rawName": "--=x",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "=x",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-37-false-true",
+        "result": {
+          "values": {
+            "=x": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "=x",
+              "rawName": "--=x",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "=x",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-38-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-38-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-38-false-false",
+        "result": {
+          "values": {
+            "-x": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "-x",
+              "rawName": "---x",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "-x",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-38-false-true",
+        "result": {
+          "values": {
+            "-x": true,
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "-x",
+              "rawName": "---x",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "-x",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-39-true-false",
+        "result": {
+          "values": {
+            "output": "--value",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "--value",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-39-true-true",
+        "result": {
+          "values": {
+            "output": "--value",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "--value",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-39-false-false",
+        "result": {
+          "values": {
+            "output": "--value",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "--value",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-39-false-true",
+        "result": {
+          "values": {
+            "output": "--value",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "-o",
+              "index": 0,
+              "value": "--value",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-40-true-false",
+        "result": {
+          "values": {
+            "output": "--",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "--",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-40-true-true",
+        "result": {
+          "values": {
+            "output": "--",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "--",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-40-false-false",
+        "result": {
+          "values": {
+            "output": "--",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "--",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-40-false-true",
+        "result": {
+          "values": {
+            "output": "--",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "--",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-41-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-41-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-41-false-false",
+        "result": {
+          "values": {
+            "output": "--",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "--",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-41-false-true",
+        "result": {
+          "values": {
+            "output": "--",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "output",
+              "rawName": "--output",
+              "index": 0,
+              "value": "--",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-42-true-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-42-true-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-42-false-false",
+        "result": {
+          "values": {
+            "include": [
+              "one",
+              "two"
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            "tail"
+          ],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "-I",
+              "index": 0,
+              "value": "one",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "--include",
+              "index": 1,
+              "value": "two",
+              "inlineValue": true
+            },
+            {
+              "kind": "positional",
+              "index": 2,
+              "value": "tail"
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "include",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "argv-42-false-true",
+        "result": {
+          "values": {
+            "include": [
+              "one",
+              "two"
+            ],
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            "tail"
+          ],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "-I",
+              "index": 0,
+              "value": "one",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "include",
+              "rawName": "--include",
+              "index": 1,
+              "value": "two",
+              "inlineValue": true
+            },
+            {
+              "kind": "positional",
+              "index": 2,
+              "value": "tail"
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "include",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-0",
+        "result": {
+          "values": {},
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-1",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-2",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-3",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-4",
+        "error": {
+          "name": "TypeError",
+          "code": null
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-5",
+        "result": {
+          "values": {},
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-6",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-7",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-8",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-9",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-10",
+        "result": {
+          "values": {},
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-11",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-12",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-13",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-14",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-15",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-16",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-17",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-18",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-19",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-20",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-21",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-22",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-23",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "invalid-24",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "no-tokens",
+        "result": {
+          "values": {
+            "verbose": true,
+            "output": "x",
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [
+          "verbose",
+          "output",
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "positionals",
+        "result": {
+          "values": {
+            "defaulted": true,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": [
+            "file",
+            "-",
+            "--verbose"
+          ],
+          "tokens": [
+            {
+              "kind": "positional",
+              "index": 0,
+              "value": "file"
+            },
+            {
+              "kind": "positional",
+              "index": 1,
+              "value": "-"
+            },
+            {
+              "kind": "option-terminator",
+              "index": 2
+            },
+            {
+              "kind": "positional",
+              "index": 3,
+              "value": "--verbose"
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "index",
+            "value"
+          ],
+          [
+            "kind",
+            "index",
+            "value"
+          ],
+          [
+            "kind",
+            "index"
+          ],
+          [
+            "kind",
+            "index",
+            "value"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "duplicate-short",
+        "result": {
+          "values": {
+            "first": true
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "first",
+              "rawName": "-x",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "first"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "negative-declared",
+        "result": {
+          "values": {
+            "flag": false
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "flag",
+              "rawName": "--no-flag",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "flag"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "special-names",
+        "result": {
+          "values": {
+            "constructor": "safe"
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "__proto__",
+              "rawName": "--__proto__",
+              "index": 0,
+              "value": "ok",
+              "inlineValue": true
+            },
+            {
+              "kind": "option",
+              "name": "constructor",
+              "rawName": "--constructor",
+              "index": 1,
+              "value": "safe",
+              "inlineValue": false
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "constructor"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "default-order",
+        "result": {
+          "values": {
+            "b": "x",
+            "a": "a",
+            "c": false
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "b",
+              "rawName": "--b",
+              "index": 0,
+              "value": "x",
+              "inlineValue": true
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "b",
+          "a",
+          "c"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "explicit-false",
+        "result": {
+          "values": {
+            "defaulted": false,
+            "paths": [
+              "fallback"
+            ]
+          },
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [
+          "defaulted",
+          "paths"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "unknown-config-field",
+        "result": {
+          "values": {},
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "consumer-runner-arguments",
+        "result": {
+          "values": {
+            "node-tests": true,
+            "exec-path": "/actual/tool",
+            "include": [
+              "a",
+              "b"
+            ],
+            "shard": "2",
+            "bail": false,
+            "max-shards": "1"
+          },
+          "positionals": [
+            "test/example.test.ts"
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [
+          "node-tests",
+          "exec-path",
+          "include",
+          "shard",
+          "bail",
+          "max-shards"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "nullable-args",
+        "result": {
+          "values": {},
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "nullable-options",
+        "result": {
+          "values": {},
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "nullable-strict",
+        "result": {
+          "values": {},
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "nullable-allowPositionals",
+        "result": {
+          "values": {},
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "nullable-allowNegative",
+        "result": {
+          "values": {},
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "nullable-tokens",
+        "result": {
+          "values": {},
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "negative-value-flag-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "negative-value-flag-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "negative-value-name-true",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "negative-value-name-false",
+        "error": {
+          "name": "TypeError",
+          "code": "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+        },
+        "inputUnchanged": true
+      },
+      {
+        "name": "empty-multiple-default",
+        "result": {
+          "values": {
+            "x": []
+          },
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [
+          "x"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "boolean-multiple-default",
+        "result": {
+          "values": {
+            "x": [
+              false,
+              true
+            ]
+          },
+          "positionals": []
+        },
+        "resultKeys": [
+          "values",
+          "positionals"
+        ],
+        "valueKeys": [
+          "x"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": null,
+        "inputUnchanged": true
+      },
+      {
+        "name": "boolean-multiple-explicit",
+        "result": {
+          "values": {
+            "x": [
+              true,
+              false
+            ]
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "x",
+              "rawName": "--x",
+              "index": 0
+            },
+            {
+              "kind": "option",
+              "name": "x",
+              "rawName": "--no-x",
+              "index": 1
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "x"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ],
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      },
+      {
+        "name": "unicode-short",
+        "result": {
+          "values": {
+            "enabled": true
+          },
+          "positionals": [],
+          "tokens": [
+            {
+              "kind": "option",
+              "name": "enabled",
+              "rawName": "-\u00e9",
+              "index": 0
+            }
+          ]
+        },
+        "resultKeys": [
+          "values",
+          "positionals",
+          "tokens"
+        ],
+        "valueKeys": [
+          "enabled"
+        ],
+        "nullPrototype": true,
+        "tokenKeys": [
+          [
+            "kind",
+            "name",
+            "rawName",
+            "index",
+            "value",
+            "inlineValue"
+          ]
+        ],
+        "inputUnchanged": true
+      }
+    ],
+    "controls": {
+      "functionName": "parseArgs",
+      "functionLength": 0,
+      "moduleIdentity": true,
+      "argvDefaults": {
+        "values": {
+          "value": "x"
+        },
+        "positionals": []
+      },
+      "defaultNullPrototype": true
+    }
+  },
+  "esm_stdout_hex": "7b2273616d65223a747275652c226e756c6c50726f746f74797065223a747275652c22706172736564223a7b2276616c756573223a7b22766572626f7365223a5b747275652c747275655d2c226e616d65223a227265616c227d2c22706f736974696f6e616c73223a5b222d2d69676e6f726564225d2c22746f6b656e73223a5b7b226b696e64223a226f7074696f6e222c226e616d65223a22766572626f7365222c227261774e616d65223a222d76222c22696e646578223a307d2c7b226b696e64223a226f7074696f6e222c226e616d65223a22766572626f7365222c227261774e616d65223a222d76222c22696e646578223a307d2c7b226b696e64223a226f7074696f6e222c226e616d65223a226e616d65222c227261774e616d65223a222d2d6e616d65222c22696e646578223a312c2276616c7565223a227265616c222c22696e6c696e6556616c7565223a747275657d2c7b226b696e64223a226f7074696f6e2d7465726d696e61746f72222c22696e646578223a327d2c7b226b696e64223a22706f736974696f6e616c222c22696e646578223a332c2276616c7565223a222d2d69676e6f726564227d5d7d7d0a"
+}

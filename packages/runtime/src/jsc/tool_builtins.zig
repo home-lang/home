@@ -67,6 +67,9 @@ pub fn install(allocator: std.mem.Allocator, ctx: *opaques.JSContextRef) void {
     const function_mocks = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_function_mocks.js"), "home:tool-function-mocks-factory-install", 1) catch return;
     defer function_mocks.deinit(allocator);
     if (function_mocks.exception != null) return;
+    const parse_args = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_parse_args.js"), "home:tool-parse-args-factory-install", 1) catch return;
+    defer parse_args.deinit(allocator);
+    if (parse_args.exception != null) return;
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, @embedFile("tool_builtins.js"), "home:tool-builtins-install", 1) catch return;
     result.deinit(allocator);
 }
