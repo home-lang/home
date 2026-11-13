@@ -84,6 +84,32 @@ fn cpuInformation(
     return api.JSValueMakeString(c, string);
 }
 
+fn userInformation(
+    ctx: ?*types.JSContextRef,
+    function: ?*types.JSObject,
+    this: ?*types.JSObject,
+    count: usize,
+    args: [*c]const ?*types.JSValue,
+    exception: api.ExceptionRef,
+) callconv(.c) ?*types.JSValue {
+    _ = function;
+    _ = this;
+    _ = count;
+    _ = args;
+    _ = exception;
+    const c = ctx orelse return null;
+    const allocator = std.heap.smp_allocator;
+    const account = @import("tool_user_info.zig").read(allocator) catch return api.JSValueMakeNull(c);
+    defer account.deinit(allocator);
+    const json = std.json.Stringify.valueAlloc(allocator, account, .{}) catch return api.JSValueMakeNull(c);
+    defer allocator.free(json);
+    const encoded = allocator.dupeSentinel(u8, json, 0) catch return api.JSValueMakeNull(c);
+    defer allocator.free(encoded);
+    const string = api.JSStringCreateWithUTF8CString(encoded.ptr) orelse return api.JSValueMakeNull(c);
+    defer api.JSStringRelease(string);
+    return api.JSValueMakeString(c, string);
+}
+
 fn kernelRelease(
     ctx: ?*types.JSContextRef,
     function: ?*types.JSObject,
@@ -145,6 +171,7 @@ fn installErrno(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
 
 pub fn install(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
     installErrno(ctx, global);
+    callback.registerCallback(ctx, global, "__home_tool_user_info", userInformation);
     callback.registerCallback(ctx, global, "__home_tool_kernel_release", kernelRelease);
     callback.registerCallback(ctx, global, "__home_tool_endianness", endianness);
     callback.registerCallback(ctx, global, "__home_tool_account_homedir", homedir);

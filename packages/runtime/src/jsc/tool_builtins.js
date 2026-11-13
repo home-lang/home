@@ -1189,7 +1189,54 @@
     return release;
   };
   getOSRelease[Symbol.toPrimitive] = () => getOSRelease();
+  const nativeUserInfo = globalThis.__home_tool_user_info;
+  delete globalThis.__home_tool_user_info;
+  const accountParse = JSON.parse;
+  const accountCreate = Object.create;
+  const accountFrom = bufferApi.Buffer.from;
+  const accountToString = bufferApi.Buffer.prototype.toString;
+  const accountChar = String.fromCharCode;
+  const accountApply = Reflect.apply;
+  const accountLower = String.prototype.toLowerCase;
+  // https://nodejs.org/api/os.html#osuserinfooptions
+  // Preserve passwd bytes until the requested encoding is known. These narrow
+  // account decoders do not expand the separate Buffer API's encoding profile.
+  function decodeAccount(hex, encoding) {
+    const bytes = accountFrom(hex, 'hex');
+    if (encoding === 'buffer') return bytes;
+    if (encoding === 'ascii' || encoding === 'latin1' || encoding === 'binary') {
+      let result = '';
+      for (let i = 0; i < bytes.length; i++) result += accountChar(bytes[i] & (encoding === 'ascii' ? 127 : 255));
+      return result;
+    }
+    if (encoding === 'ucs2' || encoding === 'ucs-2' || encoding === 'utf16le' || encoding === 'utf-16le') {
+      let result = '';
+      for (let i = 0; i + 1 < bytes.length; i += 2) result += accountChar(bytes[i] | bytes[i + 1] << 8);
+      return result;
+    }
+    if (encoding !== 'hex' && encoding !== 'base64' && encoding !== 'base64url') encoding = 'utf8';
+    return accountApply(accountToString, bytes, [encoding]);
+  }
+  function userInfo(options) {
+    let encoding = options !== null && typeof options === 'object' ? options.encoding : undefined;
+    encoding = typeof encoding === 'string' ? accountApply(accountLower, encoding, []) : 'utf8';
+    const information = nativeUserInfo();
+    if (information === null) {
+      const error = new Error('Cannot query the native effective account');
+      error.code = 'ERR_SYSTEM_ERROR';
+      throw error;
+    }
+    const account = accountParse(information);
+    const result = accountCreate(null);
+    result.uid = account.uid;
+    result.gid = account.gid;
+    result.username = decodeAccount(account.username, encoding);
+    result.homedir = decodeAccount(account.homedir, encoding);
+    result.shell = decodeAccount(account.shell, encoding);
+    return result;
+  }
   const osApi = {
+    userInfo,
     release: getOSRelease,
     // https://nodejs.org/api/os.html#osarch — initial process.arch comes from
     // native build metadata; Node continues to read that process object's field.

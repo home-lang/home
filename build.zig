@@ -1631,6 +1631,12 @@ pub fn build(b: *std.Build) void {
         kernel_release_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/os_release.cjs"));
         home_tool_smoke_step.dependOn(&kernel_release_fixture.step);
         b.step("home-tool-kernel-release-smoke", "Verify actual uname release and OS module/primitive identity").dependOn(&kernel_release_fixture.step);
+        const user_info_fixture = b.addSystemCommand(&.{"python3"});
+        user_info_fixture.addFileArg(b.path("packages/runtime/test/tool_os_user_info_fixture.py"));
+        user_info_fixture.addArtifactArg(home_tool_exe);
+        user_info_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/os_user_info.cjs"));
+        home_tool_smoke_step.dependOn(&user_info_fixture.step);
+        b.step("home-tool-user-info-smoke", "Verify native effective-account IDs and encoded bytes against Python pwd").dependOn(&user_info_fixture.step);
         const run_home_tool_os = b.addRunArtifact(home_tool_exe);
         run_home_tool_os.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_os.addArgs(&.{ "run", "node_os_entry.mjs" });
