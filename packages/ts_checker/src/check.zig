@@ -96287,6 +96287,10 @@ pub const Checker = struct {
     const IdentifierWrites = struct {
         /// A write the flow joins do not model: a destructuring assignment.
         unmodeled: bool,
+        /// A compound assignment or update (`x += 1`, `x++`). Its flow type is
+        /// the base type of the type before it, which can be wider than a
+        /// literal union annotation (#1035).
+        compound: bool = false,
     };
 
     /// The block a plain `name = value;` statement sits in, or null. The
@@ -96300,12 +96304,21 @@ pub const Checker = struct {
     }
 
     fn noteIdentifierWrite(self: *Checker, name: hir_mod.StringId, modeled: bool) CheckError!void {
+        return self.noteIdentifierWriteKind(name, modeled, false);
+    }
+
+    fn noteIdentifierWriteKind(self: *Checker, name: hir_mod.StringId, modeled: bool, compound: bool) CheckError!void {
         const gop = try self.identifier_writes.getOrPut(self.gpa, name);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = .{ .unmodeled = !modeled };
-        } else if (!modeled) {
-            gop.value_ptr.unmodeled = true;
-        }
+        if (!gop.found_existing) gop.value_ptr.* = .{ .unmodeled = false };
+        if (!modeled) gop.value_ptr.unmodeled = true;
+        if (compound) gop.value_ptr.compound = true;
+    }
+
+    /// Whether some write to `name` is a compound assignment or an update.
+    fn identifierHasCompoundWrite(self: *Checker, name: hir_mod.StringId) CheckError!bool {
+        const writes = try self.identifierWriteSummary();
+        const entry = writes.get(name) orelse return false;
+        return entry.compound;
     }
 
     /// Every identifier write in the file, by name. Names are not resolved
@@ -96325,11 +96338,19 @@ pub const Checker = struct {
                 else => continue,
             };
             if (target == hir_mod.none_node_id) continue;
+            const compound = switch (self.hir.kindOf(node)) {
+                .update_op => true,
+                .assignment => if (hir_mod.assignmentOf(self.hir, node).op) |op| switch (op) {
+                    .logical_or, .logical_and, .nullish_coalesce => false,
+                    else => true,
+                } else false,
+                else => false,
+            };
             switch (self.hir.kindOf(target)) {
                 .identifier => {
                     // Plain, compound and logical assignments, updates and
                     // loop targets are all joined (#1023, #1028).
-                    try self.noteIdentifierWrite(hir_mod.identifierOf(self.hir, target).name, true);
+                    try self.noteIdentifierWriteKind(hir_mod.identifierOf(self.hir, target).name, true, compound);
                 },
                 .array_literal, .object_literal, .array_pattern, .object_pattern => try pattern_spans.append(self.gpa, self.hir.spanOf(target)),
                 else => {},
@@ -146810,7 +146831,8 @@ pub const Checker = struct {
                             !self.unionContainsExactType(declared_t, t) and
                             !self.instanceofFallthroughUnionCoversIntersection(t, declared_t) and
                             !self.narrowedNamedTypeFitsDeclaredUnion(node, declared_t, t) and
-                            !self.flowTypeFitsDeclaredType(t, declared_t))
+                            !self.flowTypeFitsDeclaredType(t, declared_t) and
+                            !(self.compoundNarrowFitsDeclaredType(id.name, t, declared_t) catch false))
                         {
                             return declared_t;
                         }
@@ -148640,6 +148662,17 @@ pub const Checker = struct {
             }
         }
         return types.Primitive.any;
+    }
+
+    /// A compound write's narrow is the base type of the type before it, so
+    /// it can be wider than a literal union annotation. After
+    /// `let x: 0 | 1 = 0; x += 1;` x reads as `number` (#1035). Other
+    /// narrows that do not fit the annotation still read as declared.
+    fn compoundNarrowFitsDeclaredType(self: *Checker, name: hir_mod.StringId, flow_t: TypeId, declared_t: TypeId) CheckError!bool {
+        if (!try self.identifierHasCompoundWrite(name)) return false;
+        const base_t = try self.baseTypeOfLiterals(declared_t);
+        if (base_t == declared_t) return false;
+        return self.flowTypeFitsDeclaredType(flow_t, base_t);
     }
 
     fn flowTypeFitsDeclaredType(self: *Checker, flow_t: TypeId, declared_t: TypeId) bool {
@@ -305691,4 +305724,29 @@ test "checker: without strictNullChecks a null-typed arithmetic operand is repor
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.nullish_relational_operand, "The value 'null' cannot be used here."));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.nullish_relational_operand));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.arithmetic_left_operand_type));
+}
+
+test "checker: a compound narrow reads past a literal union annotation (#1035)" {
+    const s = try newSetup(
+        \\function f() {
+        \\  let x: 0 | 1 = 0;
+        \\  x += 1;
+        \\  const r1: "q" = x;
+        \\  let t: "a" | "b" = "a";
+        \\  t += "c";
+        \\  const r2: "q" = t;
+        \\  let y: 0 | 1 = 0;
+        \\  y += 1;
+        \\  y = 1;
+        \\  const r3: "q" = y;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '\"q\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string' is not assignable to type '\"q\"'."));
+    // A later plain assignment narrows again.
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '1' is not assignable to type '\"q\"'."));
+    try T.expect(!checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '0 | 1' is not assignable to type '\"q\"'."));
 }
