@@ -84,6 +84,28 @@ fn cpuInformation(
     return api.JSValueMakeString(c, string);
 }
 
+fn kernelRelease(
+    ctx: ?*types.JSContextRef,
+    function: ?*types.JSObject,
+    this: ?*types.JSObject,
+    count: usize,
+    args: [*c]const ?*types.JSValue,
+    exception: api.ExceptionRef,
+) callconv(.c) ?*types.JSValue {
+    _ = function;
+    _ = this;
+    _ = count;
+    _ = args;
+    _ = exception;
+    const c = ctx orelse return null;
+    const allocator = std.heap.smp_allocator;
+    const release = @import("tool_kernel_release.zig").read(allocator) catch return api.JSValueMakeNull(c);
+    defer allocator.free(release);
+    const string = api.JSStringCreateWithUTF8CString(release.ptr) orelse return api.JSValueMakeNull(c);
+    defer api.JSStringRelease(string);
+    return api.JSValueMakeString(c, string);
+}
+
 fn endianness(
     ctx: ?*types.JSContextRef,
     function: ?*types.JSObject,
@@ -123,6 +145,7 @@ fn installErrno(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
 
 pub fn install(ctx: *types.JSContextRef, global: *types.JSGlobalObject) void {
     installErrno(ctx, global);
+    callback.registerCallback(ctx, global, "__home_tool_kernel_release", kernelRelease);
     callback.registerCallback(ctx, global, "__home_tool_endianness", endianness);
     callback.registerCallback(ctx, global, "__home_tool_account_homedir", homedir);
     callback.registerCallback(ctx, global, "__home_tool_available_parallelism", availableParallelism);

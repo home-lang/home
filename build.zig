@@ -1625,6 +1625,12 @@ pub fn build(b: *std.Build) void {
         os_abi_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/node_os_abi.mjs"));
         home_tool_smoke_step.dependOn(&os_abi_fixture.step);
         b.step("home-tool-os-abi-smoke", "Verify real compiled architecture and endianness against the executable header").dependOn(&os_abi_fixture.step);
+        const kernel_release_fixture = b.addSystemCommand(&.{"python3"});
+        kernel_release_fixture.addFileArg(b.path("packages/runtime/test/tool_os_release_fixture.py"));
+        kernel_release_fixture.addArtifactArg(home_tool_exe);
+        kernel_release_fixture.addFileArg(b.path("packages/runtime/test/tool_modules/os_release.cjs"));
+        home_tool_smoke_step.dependOn(&kernel_release_fixture.step);
+        b.step("home-tool-kernel-release-smoke", "Verify actual uname release and OS module/primitive identity").dependOn(&kernel_release_fixture.step);
         const run_home_tool_os = b.addRunArtifact(home_tool_exe);
         run_home_tool_os.setCwd(b.path("packages/runtime/test/tool_modules"));
         run_home_tool_os.addArgs(&.{ "run", "node_os_entry.mjs" });

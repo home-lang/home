@@ -1178,7 +1178,19 @@
   const parseCpuInformation = JSON.parse;
   const osProcess = process;
   const osNativePlatform = osProcess.platform;
+  const nativeKernelRelease = globalThis.__home_tool_kernel_release;
+  delete globalThis.__home_tool_kernel_release;
+  // Node os.release reports the running kernel, independent of JS platform
+  // metadata. Keep the native function captured for unbound/primitive calls.
+  // https://nodejs.org/api/os.html#osrelease
+  const getOSRelease = () => {
+    const release = nativeKernelRelease();
+    if (release === null) throw new Error('Cannot query the native kernel release');
+    return release;
+  };
+  getOSRelease[Symbol.toPrimitive] = () => getOSRelease();
   const osApi = {
+    release: getOSRelease,
     // https://nodejs.org/api/os.html#osarch — initial process.arch comes from
     // native build metadata; Node continues to read that process object's field.
     arch: function() {
