@@ -96402,6 +96402,9 @@ pub const Checker = struct {
         /// the base type of the type before it, which can be wider than a
         /// literal union annotation (#1035).
         compound: bool = false,
+        /// Some occurrence of the name reads it: anything but a plain `=`
+        /// target, a declaration's name or a parameter's name (#1041).
+        read: bool = false,
     };
 
     /// The block a plain `name = value;` statement sits in, or null. The
@@ -96515,7 +96518,41 @@ pub const Checker = struct {
                 }
             }
         }
+        node = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .identifier) continue;
+            const entry = self.identifier_writes.getPtr(hir_mod.identifierOf(self.hir, node).name) orelse continue;
+            if (entry.read or self.identifierOccurrenceOnlyBinds(node)) continue;
+            entry.read = true;
+        }
         return &self.identifier_writes;
+    }
+
+    /// Whether this occurrence of a name only gives it a value: the target
+    /// of a plain `=`, or the name a declaration or a parameter binds.
+    fn identifierOccurrenceOnlyBinds(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(parent)) {
+            .assignment => blk: {
+                const a = hir_mod.assignmentOf(self.hir, parent);
+                break :blk a.target == node and a.op == null;
+            },
+            .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, parent).name == node,
+            .parameter => hir_mod.parameterOf(self.hir, parent).name == node,
+            else => false,
+        };
+    }
+
+    /// Whether anything reads the name `target` writes. tsc reduces a
+    /// variable's type by an assignment only when a later reference asks
+    /// for its flow type. Home narrows at the write, so it skips the
+    /// reduction when nothing could ask: relating a large union to another
+    /// can take a cross product of their members (`relationComplexityError`).
+    fn assignedIdentifierIsRead(self: *Checker, target: NodeId) CheckError!bool {
+        if (self.hir.kindOf(target) != .identifier) return true;
+        const entry = (try self.identifierWriteSummary()).get(hir_mod.identifierOf(self.hir, target).name) orelse return true;
+        return entry.read;
     }
 
     /// The block a `let` or `var` statement is declared in, or null.
@@ -96544,6 +96581,50 @@ pub const Checker = struct {
         _ = self.variableDeclarationBlock(decl) orelse return false;
         const writes = (try self.identifierWriteSummary()).get(name) orelse return true;
         return !writes.unmodeled;
+    }
+
+    /// The declared type a write to a parameter narrows from (#1041). tsc's
+    /// `getTypeAtFlowAssignment` treats a parameter like a `let`. The
+    /// parameter is the nearest enclosing function's that binds the name, so
+    /// a closure's write narrows its own reads; the narrow stays in the
+    /// closure's scope. It does not count when a declaration nearer the write
+    /// binds the name, or a destructuring assignment writes it.
+    fn parameterAssignmentSlot(self: *Checker, target: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.enclosingVariableDeclaration(target, name) != null) return null;
+        var function = self.enclosingFunctionLike(target) orelse return null;
+        const param_t = while (true) {
+            if (self.parameterBindingType(function, name)) |t| break t;
+            function = self.enclosingFunctionLike(function) orelse return null;
+        };
+        if (param_t == types.Primitive.none or param_t == types.Primitive.any or param_t == types.Primitive.unknown) return null;
+        if ((try self.identifierWriteSummary()).get(name)) |writes| {
+            if (writes.unmodeled) return null;
+        }
+        return param_t;
+    }
+
+    /// The type `function`'s body sees for the parameter binding `name`:
+    /// a plain parameter, or an element of a destructured one.
+    fn parameterBindingType(self: *Checker, function: NodeId, name: hir_mod.StringId) ?TypeId {
+        for (hir_mod.fnParams(self.hir, function)) |param| {
+            if (self.hir.kindOf(param) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, param);
+            if (p.name == hir_mod.none_node_id) continue;
+            switch (self.hir.kindOf(p.name)) {
+                .identifier => {
+                    if (hir_mod.identifierOf(self.hir, p.name).name != name) continue;
+                    const t = self.hir.typeOf(param);
+                    return if (t == types.Primitive.none) null else t;
+                },
+                .object_pattern, .array_pattern => {
+                    const container_t = self.hir.typeOf(param);
+                    if (container_t == types.Primitive.none) continue;
+                    if (self.typeOfPatternBinding(p.name, container_t, name)) |t| return t;
+                },
+                else => {},
+            }
+        }
+        return null;
     }
 
     /// `typeMaybeAssignableTo`: a union source fits when any member does.
@@ -120748,9 +120829,10 @@ pub const Checker = struct {
                         if (!self.assignmentRunsWithItsStatement(node)) break :blk_straight null;
                         if (assignment_result_t == types.Primitive.none or assignment_result_t == types.Primitive.unknown) break :blk_straight null;
                         const target_id = hir_mod.identifierOf(self.hir, a.target);
-                        const decl = self.findLocalValueDeclBeforeExpression(a.target, target_id.name) orelse break :blk_straight null;
-                        if (!try self.variableNarrowsByAssignment(decl, target_id.name)) break :blk_straight null;
-                        const slot_t = self.hir.typeOf(decl);
+                        const slot_t = if (self.findLocalValueDeclBeforeExpression(a.target, target_id.name)) |decl| blk_decl: {
+                            if (!try self.variableNarrowsByAssignment(decl, target_id.name)) break :blk_straight null;
+                            break :blk_decl self.hir.typeOf(decl);
+                        } else (try self.parameterAssignmentSlot(a.target, target_id.name)) orelse break :blk_straight null;
                         if (slot_t == types.Primitive.none or slot_t == types.Primitive.any or slot_t == types.Primitive.unknown) break :blk_straight null;
                         break :blk_straight slot_t;
                     };
@@ -141115,6 +141197,7 @@ pub const Checker = struct {
             // A rejected value does not narrow, as in `getAssignmentReducedType`.
             return if (try self.checkerAssignableTo(raw_flow, declared_t)) raw_flow else declared_t;
         }
+        if (!try self.assignedIdentifierIsRead(target)) return declared_t;
         return try self.assignmentReducedType(declared_t, raw_flow);
     }
 
@@ -141124,8 +141207,9 @@ pub const Checker = struct {
     fn recordCompoundAssignmentFlow(self: *Checker, target: NodeId, declared_t: TypeId) CheckError!void {
         if (self.identifierIsUntypedUninitializedVar(target)) return;
         const name = hir_mod.identifierOf(self.hir, target).name;
-        const decl = self.enclosingVariableDeclaration(target, name) orelse return;
-        if (!try self.variableNarrowsByAssignment(decl, name)) return;
+        if (self.enclosingVariableDeclaration(target, name)) |decl| {
+            if (!try self.variableNarrowsByAssignment(decl, name)) return;
+        } else if ((try self.parameterAssignmentSlot(target, name)) == null) return;
         const before_t = self.lookupNarrow(name) orelse declared_t;
         if (before_t == types.Primitive.none or before_t == types.Primitive.any or before_t == types.Primitive.unknown) return;
         const after_t = try self.baseTypeOfLiterals(before_t);
@@ -306343,4 +306427,23 @@ test "checker: an assignment nested in an expression narrows its target (#1038)"
     try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '\"q\"'."));
     // A write that may not run joins with the path that skips it.
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number | undefined' is not assignable to type '\"q\"'."));
+}
+
+test "checker: a parameter narrows by assignment like a let (#1041)" {
+    const s = try newSetup(
+        \\function f(p: number | string, q?: number, r: 0 | 1 = 0) {
+        \\  p = 1;
+        \\  const a: "q" = p;
+        \\  q = 1;
+        \\  const b: "q" = q;
+        \\  r += 1;
+        \\  const c: "q" = r;
+        \\  const g = () => { p = "s"; };
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '\"q\"'."));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
 }
