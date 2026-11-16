@@ -101,6 +101,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1037-bigint-number-mixing/') ||
   path.includes('/issue1038-nested-assignment-flow/') ||
   path.includes('/issue1041-parameter-assignment-flow/') ||
+  path.includes('/issue1042-captured-narrowing/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
@@ -175,6 +176,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue1037-bigint-number-mixing/tsconfig.json',
   'packages/ts_cli/testdata/issue1038-nested-assignment-flow/tsconfig.json',
   'packages/ts_cli/testdata/issue1041-parameter-assignment-flow/tsconfig.json',
+  'packages/ts_cli/testdata/issue1042-captured-narrowing/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
