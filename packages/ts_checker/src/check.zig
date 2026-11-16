@@ -143594,8 +143594,8 @@ pub const Checker = struct {
                 for (hir_mod.fnParams(self.hir, cur)) |p| {
                     if (self.hir.kindOf(p) != .parameter) continue;
                     const pp = hir_mod.parameterOf(self.hir, p);
-                    if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
-                    if (hir_mod.identifierOf(self.hir, pp.name).name == id.name) return true;
+                    if (pp.name != hir_mod.none_node_id and
+                        self.bindingPatternDeclaresName(pp.name, id.name)) return true;
                 }
             } else if (kind == .try_stmt) {
                 const ts = hir_mod.tryOf(self.hir, cur);
@@ -143630,8 +143630,7 @@ pub const Checker = struct {
                         .var_decl, .let_decl, .const_decl => {
                             const v = hir_mod.varDeclOf(self.hir, decl);
                             if (v.name != hir_mod.none_node_id and
-                                self.hir.kindOf(v.name) == .identifier and
-                                hir_mod.identifierOf(self.hir, v.name).name == id.name)
+                                self.bindingPatternDeclaresName(v.name, id.name))
                             {
                                 return true;
                             }
