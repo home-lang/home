@@ -92684,6 +92684,23 @@ pub const Checker = struct {
         };
     }
 
+    fn evolvingAnyAssignmentValueType(self: *Checker, value: NodeId) ?TypeId {
+        const checked = self.hir.typeOf(value);
+        if (checked != types.Primitive.none) return checked;
+        // A flow query may reach a write before checkExpression has filled
+        // its HIR type. Literal types are known already and must not be
+        // frozen as temporary `any` in an evolving-binding prefix (#1046).
+        return switch (self.hir.kindOf(value)) {
+            .literal_number => types.Primitive.number_t,
+            .literal_bigint => types.Primitive.bigint_t,
+            .literal_string => types.Primitive.string_t,
+            .literal_bool => types.Primitive.boolean_t,
+            .literal_null => types.Primitive.null_t,
+            .literal_undefined => types.Primitive.undefined_t,
+            else => null,
+        };
+    }
+
     fn mergeDefiniteEvolvingAnyFlowTypes(self: *Checker, lhs: ?TypeId, rhs: ?TypeId) CheckError!?TypeId {
         const left = lhs orelse return null;
         const right = rhs orelse return null;
@@ -92709,8 +92726,7 @@ pub const Checker = struct {
                     // `r[0] = (v = a) & 1;` writes `v` in its value (#1038).
                     break :blk try self.nestedAssignmentFlow(stmt, name, incoming, widen_assignments, null);
                 }
-                const cached_t = self.hir.typeOf(assignment.value);
-                if (cached_t == types.Primitive.none) break :blk types.Primitive.any;
+                const cached_t = self.evolvingAnyAssignmentValueType(assignment.value) orelse break :blk types.Primitive.any;
                 break :blk if (widen_assignments)
                     self.widenLiteralType(try self.flowTypeForAssignmentValue(assignment.value, cached_t))
                 else
@@ -92820,13 +92836,13 @@ pub const Checker = struct {
                     hir_mod.identifierOf(self.hir, assignment.target).name == name and
                     (before == null or self.hir.spanOf(node).end <= before.?))
                 {
-                    const cached_t = self.hir.typeOf(assignment.value);
-                    flow = if (cached_t == types.Primitive.none)
+                    const cached_t = self.evolvingAnyAssignmentValueType(assignment.value);
+                    flow = if (cached_t == null)
                         types.Primitive.any
                     else if (widen_assignments)
-                        self.widenLiteralType(try self.flowTypeForAssignmentValue(assignment.value, cached_t))
+                        self.widenLiteralType(try self.flowTypeForAssignmentValue(assignment.value, cached_t.?))
                     else
-                        cached_t;
+                        cached_t.?;
                 }
                 return flow;
             },
@@ -93006,8 +93022,7 @@ pub const Checker = struct {
                 continue;
             }
             if (flow != null and self.nodeContainsIdentifier(assignment.value, name)) continue;
-            const cached_value_t = self.hir.typeOf(assignment.value);
-            const value_t = if (cached_value_t == types.Primitive.none) types.Primitive.any else cached_value_t;
+            const value_t = self.evolvingAnyAssignmentValueType(assignment.value) orelse types.Primitive.any;
             flow = if (flow == null)
                 value_t
             else
@@ -93044,16 +93059,9 @@ pub const Checker = struct {
                 if (assignment.op == null and
                     self.hir.kindOf(assignment.target) == .identifier and
                     hir_mod.identifierOf(self.hir, assignment.target).name == name and
-                    self.hir.typeOf(assignment.value) == types.Primitive.none)
+                    self.evolvingAnyAssignmentValueType(assignment.value) == null)
                 {
-                    // Literal expressions have an intrinsic type even when
-                    // the HIR types column is left empty. A later check does
-                    // not change the raw type used by nestedAssignmentFlow.
-                    switch (self.hir.kindOf(assignment.value)) {
-                        .literal_number, .literal_bigint, .literal_string, .literal_bool,
-                        .literal_null, .literal_undefined => {},
-                        else => return true,
-                    }
+                    return true;
                 }
                 return self.evolvingAnyStatementHasUnresolvedWrite(assignment.value, name);
             },
@@ -307048,6 +307056,26 @@ test "checker: an assignment nested in an expression narrows its target (#1038)"
     try T.expectEqual(@as(usize, 2), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '\"q\"'."));
     // A write that may not run joins with the path that skips it.
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number | undefined' is not assignable to type '\"q\"'."));
+}
+
+test "checker: a literal write has its type before HIR caching (#1046)" {
+    const s = try newSetup(
+        \\declare const c: boolean;
+        \\function f() {
+        \\  let n;
+        \\  const first = c && (n = 0);
+        \\  const numberTarget: "q" = n;
+        \\  let text;
+        \\  const second = c && (text = "ok");
+        \\  const stringTarget: number = text;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number | undefined' is not assignable to type '\"q\"'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string | undefined' is not assignable to type 'number'."));
 }
 
 test "checker: a parameter narrows by assignment like a let (#1041)" {
