@@ -4619,6 +4619,15 @@ const GenericInterfaceRefreshKey = struct {
     instantiated: TypeId,
 };
 
+const EvolvingAnyBlockKey = struct { container: NodeId, name: hir_mod.StringId };
+const EvolvingAnyBlockCursor = struct {
+    declaration_pos: ?usize = null,
+    ordered: bool = true,
+    invalid: bool = false,
+    next_pos: usize = 0,
+    flow: ?TypeId = null,
+};
+
 pub const Checker = struct {
     gpa: std.mem.Allocator,
     hir: *Hir,
@@ -4647,6 +4656,12 @@ pub const Checker = struct {
     /// A function's lexical names do not change while its HIR is checked.
     /// Cache the set used by capture and class-field lookup (#1046).
     function_local_names: std.AutoHashMapUnmanaged(NodeId, std.AutoHashMapUnmanaged(hir_mod.StringId, void)) = .empty,
+    /// Direct function declarations in each lexical block, indexed once.
+    /// A duplicate name maps to none_node_id, preserving ambiguous lookups.
+    single_named_function_decls: std.AutoHashMapUnmanaged(NodeId, std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId)) = .empty,
+    /// Completed statement prefixes for an evolving binding. A read in the
+    /// current statement is still evaluated from the prefix at that point.
+    evolving_any_block_cursors: std.AutoHashMapUnmanaged(EvolvingAnyBlockKey, EvolvingAnyBlockCursor) = .empty,
     /// The functions being checked, innermost last, with the narrow-scope
     /// depth where each one's body begins (#1042).
     flow_containers: std.ArrayListUnmanaged(FlowContainerEntry) = .empty,
@@ -6452,6 +6467,12 @@ pub const Checker = struct {
         self.function_local_names.clearRetainingCapacity();
     }
 
+    fn clearSingleNamedFunctionDecls(self: *Checker) void {
+        var blocks = self.single_named_function_decls.valueIterator();
+        while (blocks.next()) |decls| decls.deinit(self.gpa);
+        self.single_named_function_decls.clearRetainingCapacity();
+    }
+
     /// Attach source bytes together with the exact marker index already
     /// computed by the driver during preparation.
     pub fn setSourceWithMarkers(
@@ -6460,6 +6481,8 @@ pub const Checker = struct {
         source_markers: source_markers_mod.Index,
     ) void {
         self.clearFunctionLocalNames();
+        self.clearSingleNamedFunctionDecls();
+        self.evolving_any_block_cursors.clearRetainingCapacity();
         self.clearProgramGenericInstances();
         self.program_schema_support.clearRetainingCapacity();
         self.program_module_namespace_types.clearRetainingCapacity();
@@ -6951,6 +6974,9 @@ pub const Checker = struct {
         self.identifier_writes.deinit(self.gpa);
         self.clearFunctionLocalNames();
         self.function_local_names.deinit(self.gpa);
+        self.clearSingleNamedFunctionDecls();
+        self.single_named_function_decls.deinit(self.gpa);
+        self.evolving_any_block_cursors.deinit(self.gpa);
         self.flow_containers.deinit(self.gpa);
         {
             var writes = self.identifier_write_nodes.valueIterator();
@@ -7389,6 +7415,9 @@ pub const Checker = struct {
     /// Check a complete source file. The HIR root must be a
     /// block_stmt of top-level statements.
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
+        self.clearSingleNamedFunctionDecls();
+        // Rechecking the same HIR may have changed cached expression types.
+        self.evolving_any_block_cursors.clearRetainingCapacity();
         for (self.program_global_types) |binding| {
             if (binding.own_interface_type != types.Primitive.none) {
                 try self.ordered_overload_types.put(self.gpa, binding.type, binding.own_interface_type);
@@ -92093,6 +92122,10 @@ pub const Checker = struct {
                 .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
                 else => continue,
             };
+            // A binding in this scope is only a captured automatic variable
+            // after a function or class-field boundary. Function-local names
+            // are checked at that boundary, including names in nested blocks.
+            if (!crosses_capture_boundary) continue;
             var match = hir_mod.none_node_id;
             for (statements) |stmt| {
                 const decl = if (self.hir.kindOf(stmt) == .export_decl)
@@ -92904,7 +92937,7 @@ pub const Checker = struct {
                 .namespace_decl => hir_mod.namespaceBody(self.hir, current),
                 else => continue,
             };
-            if (try self.definiteEvolvingAnyFlowTypeInStatements(node, child, name, statements)) |flow| return flow;
+            if (try self.definiteEvolvingAnyFlowTypeInStatements(current, node, child, name, statements)) |flow| return flow;
         }
 
         const use_span = self.hir.spanOf(node);
@@ -92920,7 +92953,7 @@ pub const Checker = struct {
                 hir_mod.blockStmts(self.hir, candidate)
             else
                 hir_mod.namespaceBody(self.hir, candidate);
-            if (try self.definiteEvolvingAnyFlowTypeInStatements(node, hir_mod.none_node_id, name, statements)) |_| {
+            if (try self.definiteEvolvingAnyFlowTypeInStatements(candidate, node, hir_mod.none_node_id, name, statements)) |_| {
                 const width = span.end - span.start;
                 if (width < best_width) {
                     best_width = width;
@@ -92934,7 +92967,7 @@ pub const Checker = struct {
                 hir_mod.blockStmts(self.hir, best_container)
             else
                 hir_mod.namespaceBody(self.hir, best_container);
-            return try self.definiteEvolvingAnyFlowTypeInStatements(node, hir_mod.none_node_id, name, statements);
+            return try self.definiteEvolvingAnyFlowTypeInStatements(best_container, node, hir_mod.none_node_id, name, statements);
         }
         return try self.recoveredEvolvingAnyFlowTypeAt(node, name);
     }
@@ -93002,40 +93035,151 @@ pub const Checker = struct {
         return flow;
     }
 
+    fn evolvingAnyStatementHasUnresolvedWrite(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => return false,
+            .assignment => {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (assignment.op == null and
+                    self.hir.kindOf(assignment.target) == .identifier and
+                    hir_mod.identifierOf(self.hir, assignment.target).name == name and
+                    self.hir.typeOf(assignment.value) == types.Primitive.none)
+                {
+                    // Literal expressions have an intrinsic type even when
+                    // the HIR types column is left empty. A later check does
+                    // not change the raw type used by nestedAssignmentFlow.
+                    switch (self.hir.kindOf(assignment.value)) {
+                        .literal_number, .literal_bigint, .literal_string, .literal_bool,
+                        .literal_null, .literal_undefined => {},
+                        else => return true,
+                    }
+                }
+                return self.evolvingAnyStatementHasUnresolvedWrite(assignment.value, name);
+            },
+            else => {},
+        }
+        const children = self.flowChildren(node);
+        for (children.fixed[0..children.fixed_len]) |child| {
+            if (self.evolvingAnyStatementHasUnresolvedWrite(child, name)) return true;
+        }
+        for (children.rest) |child| {
+            if (self.evolvingAnyStatementHasUnresolvedWrite(child, name)) return true;
+        }
+        return false;
+    }
+
     fn definiteEvolvingAnyFlowTypeInStatements(
         self: *Checker,
+        container: NodeId,
         node: NodeId,
         direct_child: NodeId,
         name: hir_mod.StringId,
         statements: []const NodeId,
     ) CheckError!?TypeId {
         const use_span = self.hir.spanOf(node);
-        var declaration_index: ?usize = null;
-        var use_index: ?usize = null;
-        for (statements, 0..) |raw, index| {
-            const span = self.hir.spanOf(raw);
-            if (raw == direct_child or
-                (span.start <= use_span.start and use_span.end <= span.end))
-            {
-                use_index = index;
+        const key: EvolvingAnyBlockKey = .{ .container = container, .name = name };
+        const slot = try self.evolving_any_block_cursors.getOrPut(self.gpa, key);
+        if (!slot.found_existing) {
+            slot.value_ptr.* = .{};
+            var previous_start: u32 = 0;
+            for (statements, 0..) |raw, index| {
+                const span = self.hir.spanOf(raw);
+                if (index > 0 and span.start < previous_start) slot.value_ptr.ordered = false;
+                previous_start = span.start;
+                const declaration = self.unwrapExportDecl(raw);
+                const kind = self.hir.kindOf(declaration);
+                if (kind != .var_decl and kind != .let_decl) continue;
+                const variable = hir_mod.varDeclOf(self.hir, declaration);
+                if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, variable.name).name != name) continue;
+                if (!self.varDeclIsUntypedEvolvingAnyCandidate(declaration)) {
+                    slot.value_ptr.invalid = true;
+                    break;
+                }
+                slot.value_ptr.declaration_pos = index;
             }
-            const declaration = self.unwrapExportDecl(raw);
-            const kind = self.hir.kindOf(declaration);
-            if (kind != .var_decl and kind != .let_decl) continue;
-            const variable = hir_mod.varDeclOf(self.hir, declaration);
-            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
-            if (hir_mod.identifierOf(self.hir, variable.name).name != name) continue;
-            if (!self.varDeclIsUntypedEvolvingAnyCandidate(declaration)) return null;
-            declaration_index = index;
+            if (slot.value_ptr.declaration_pos) |declaration_pos| {
+                const declaration = self.unwrapExportDecl(statements[declaration_pos]);
+                slot.value_ptr.flow = self.initialEvolvingAnyFlowType(hir_mod.varDeclOf(self.hir, declaration));
+                slot.value_ptr.next_pos = declaration_pos + 1;
+            }
         }
-        const declaration_pos = declaration_index orelse return null;
+        // Flow evaluation may recursively query another binding and grow the
+        // hash map. Copy the cursor before that work so no map pointer lives
+        // across a call that can reallocate its storage.
+        const cursor = slot.value_ptr.*;
+        if (cursor.invalid) return null;
+        const declaration_pos = cursor.declaration_pos orelse return null;
+        var use_index: ?usize = null;
+        if (cursor.ordered) {
+            var lo: usize = 0;
+            var hi = statements.len;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                if (self.hir.spanOf(statements[mid]).start <= use_span.start)
+                    lo = mid + 1
+                else
+                    hi = mid;
+            }
+            var index = lo;
+            while (index > 0) {
+                index -= 1;
+                const raw = statements[index];
+                const span = self.hir.spanOf(raw);
+                if (raw == direct_child or
+                    (span.start <= use_span.start and use_span.end <= span.end))
+                {
+                    use_index = index;
+                    break;
+                }
+                if (span.end < use_span.start) break;
+            }
+        }
+        if (use_index == null) {
+            // Synthetic HIR can have overlapping or out-of-order spans.
+            // Preserve the old last-containing-statement rule in that case.
+            for (statements, 0..) |raw, index| {
+                const span = self.hir.spanOf(raw);
+                if (raw == direct_child or
+                    (span.start <= use_span.start and use_span.end <= span.end))
+                {
+                    use_index = index;
+                }
+            }
+        }
         const use_pos = use_index orelse return null;
         if (declaration_pos >= use_pos) return null;
         const declaration = self.unwrapExportDecl(statements[declaration_pos]);
         const variable = hir_mod.varDeclOf(self.hir, declaration);
-        var flow: ?TypeId = self.initialEvolvingAnyFlowType(variable);
-        for (statements[declaration_pos + 1 .. use_pos]) |stmt| {
+        var flow = cursor.flow;
+        var next_pos = cursor.next_pos;
+        if (use_pos < next_pos) {
+            // Reads visited out of source order replay from the declaration;
+            // they must not move the forward cursor backwards.
+            flow = self.initialEvolvingAnyFlowType(variable);
+            next_pos = declaration_pos + 1;
+        }
+        var stable_end = next_pos;
+        var stable_flow = flow;
+        for (statements[next_pos..use_pos], next_pos..) |stmt, index| {
+            // An earlier query can reach a statement before its expression
+            // types are filled. Recompute from that statement on the next
+            // query instead of freezing the temporary `any` result (#1038).
+            const stable = !self.evolvingAnyStatementHasUnresolvedWrite(stmt, name);
             flow = try self.identifierFlowTypeAfterStatement(stmt, name, flow, false);
+            if (stable_end == index and stable) {
+                stable_end = index + 1;
+                stable_flow = flow;
+            }
+        }
+        if (stable_end >= cursor.next_pos) {
+            if (self.evolving_any_block_cursors.getPtr(key)) |latest| {
+                if (stable_end >= latest.next_pos) {
+                    latest.flow = stable_flow;
+                    latest.next_pos = stable_end;
+                }
+            }
         }
         return try self.identifierFlowTypeBeforeNode(statements[use_pos], node, name, flow, false);
     }
@@ -209217,7 +209361,7 @@ pub const Checker = struct {
                             }
                         }
                     }
-                    if (self.singleNamedFunctionDecl(items, name)) |decl| return decl;
+                    if (self.singleNamedFunctionDecl(cur, items, name)) |decl| return decl;
                 }
             }
             return null;
@@ -209234,6 +209378,39 @@ pub const Checker = struct {
     }
 
     fn singleNamedFunctionDecl(
+        self: *Checker,
+        container: NodeId,
+        statements: []const NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        if (self.single_named_function_decls.getPtr(container)) |decls| {
+            const decl = decls.get(name) orelse return null;
+            return if (decl == hir_mod.none_node_id) null else decl;
+        }
+        var decls: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        var cached = false;
+        defer if (!cached) decls.deinit(self.gpa);
+        for (statements) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            const kind = self.hir.kindOf(decl);
+            if (kind != .fn_decl and kind != .fn_expr) continue;
+            const function = hir_mod.fnDeclOf(self.hir, decl);
+            if (function.name == hir_mod.none_node_id or self.hir.kindOf(function.name) != .identifier) continue;
+            const decl_name = hir_mod.identifierOf(self.hir, function.name).name;
+            const entry = decls.getOrPut(self.gpa, decl_name) catch return self.singleNamedFunctionDeclUncached(statements, name);
+            if (entry.found_existing) {
+                entry.value_ptr.* = hir_mod.none_node_id;
+            } else {
+                entry.value_ptr.* = decl;
+            }
+        }
+        self.single_named_function_decls.put(self.gpa, container, decls) catch return self.singleNamedFunctionDeclUncached(statements, name);
+        cached = true;
+        const decl = decls.get(name) orelse return null;
+        return if (decl == hir_mod.none_node_id) null else decl;
+    }
+
+    fn singleNamedFunctionDeclUncached(
         self: *Checker,
         statements: []const NodeId,
         name: hir_mod.StringId,
