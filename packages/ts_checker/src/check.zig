@@ -4644,6 +4644,15 @@ pub const Checker = struct {
     /// narrowing (#1022). Built on first use by `identifierWriteSummary`.
     identifier_writes: std.AutoHashMapUnmanaged(hir_mod.StringId, IdentifierWrites) = .empty,
     identifier_writes_ready: bool = false,
+    /// The functions being checked, innermost last, with the narrow-scope
+    /// depth where each one's body begins (#1042).
+    flow_containers: std.ArrayListUnmanaged(FlowContainerEntry) = .empty,
+    /// Each name's write targets and local `export { name }` specifiers.
+    /// Built on first use by `identifierWriteNodes` (#1042).
+    identifier_write_nodes: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(NodeId)) = .empty,
+    identifier_write_nodes_ready: bool = false,
+    /// tsc's `lastAssignmentPos`, by declaration (#1042).
+    last_assignment_positions: std.AutoHashMapUnmanaged(NodeId, u32) = .empty,
     /// The loops being checked, with the narrow-scope depth where each one's
     /// body begins. A narrow at that depth or deeper was recorded in the
     /// loop itself (#1027).
@@ -6930,6 +6939,13 @@ pub const Checker = struct {
         }
         self.narrow_scopes.deinit(self.gpa);
         self.identifier_writes.deinit(self.gpa);
+        self.flow_containers.deinit(self.gpa);
+        {
+            var writes = self.identifier_write_nodes.valueIterator();
+            while (writes.next()) |list| list.deinit(self.gpa);
+            self.identifier_write_nodes.deinit(self.gpa);
+        }
+        self.last_assignment_positions.deinit(self.gpa);
         self.loop_flow_entries.deinit(self.gpa);
         self.program_module_namespace_types.deinit(self.gpa);
         self.program_import_resolutions.deinit(self.gpa);
@@ -21211,6 +21227,8 @@ pub const Checker = struct {
         const old_floor = self.narrow_lookup_floor;
         self.narrow_lookup_floor = self.narrow_scopes.items.len;
         defer self.narrow_lookup_floor = old_floor;
+        try self.flow_containers.append(self.gpa, .{ .node = node, .floor = self.narrow_lookup_floor });
+        defer _ = self.flow_containers.pop();
         const kind = self.hir.kindOf(node);
         if (self.sourceHasStrictFalseDirective() and kind != .arrow_fn) {
             const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
@@ -47005,6 +47023,8 @@ pub const Checker = struct {
                 const old_floor = self.narrow_lookup_floor;
                 self.narrow_lookup_floor = self.narrow_scopes.items.len;
                 errdefer self.narrow_lookup_floor = old_floor;
+                try self.flow_containers.append(self.gpa, .{ .node = m, .floor = self.narrow_lookup_floor });
+                errdefer _ = self.flow_containers.pop();
                 try self.pushNarrowScope();
                 errdefer self.popNarrowScope();
                 try self.recordNarrow(this_id, if (fn_p.flags.is_static) static_t else instance_this_t);
@@ -47071,6 +47091,7 @@ pub const Checker = struct {
                     try self.checkSuperCallPlacementInConstructor(m, node);
                 }
                 self.popNarrowScope();
+                _ = self.flow_containers.pop();
                 self.narrow_lookup_floor = old_floor;
             },
             .object_property => {
@@ -47081,6 +47102,8 @@ pub const Checker = struct {
                 const old_floor = self.narrow_lookup_floor;
                 self.narrow_lookup_floor = self.narrow_scopes.items.len;
                 errdefer self.narrow_lookup_floor = old_floor;
+                try self.flow_containers.append(self.gpa, .{ .node = op.value, .floor = self.narrow_lookup_floor });
+                errdefer _ = self.flow_containers.pop();
                 try self.pushNarrowScope();
                 errdefer self.popNarrowScope();
                 try self.recordNarrow(this_id, if (op.is_static) static_t else instance_this_t);
@@ -47093,6 +47116,7 @@ pub const Checker = struct {
                     try self.checkFnDecl(op.value);
                 }
                 self.popNarrowScope();
+                _ = self.flow_containers.pop();
                 self.narrow_lookup_floor = old_floor;
             },
             else => {},
@@ -68002,6 +68026,12 @@ pub const Checker = struct {
                     // A function body is decided by the function itself.
                     if ((owner_kind == .fn_decl or owner_kind == .fn_expr or owner_kind == .arrow_fn) and
                         hir_mod.fnDeclOf(self.hir, owner).body == cur) continue;
+                    // The parser wraps a multi-binding `for` initializer in
+                    // a synthetic block. Its let/const bindings belong to
+                    // the whole loop, including the condition and body.
+                    if (owner_kind == .for_stmt and
+                        hir_mod.forStmtOf(self.hir, owner).init == cur and
+                        variable != .function_scoped) return self.nodeIsAncestorOf(owner, anchor);
                     // A class static block is a variable environment of its own.
                     if (owner_kind == .class_decl or owner_kind == .class_expr) return self.nodeIsAncestorOf(cur, anchor);
                     if (variable != .function_scoped) return self.nodeIsAncestorOf(cur, anchor);
@@ -109673,7 +109703,7 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
         const id = hir_mod.identifierOf(self.hir, node);
         const declared = self.visibleAnnotatedIdentifierType(node) orelse self.typeOfIdentifierDeclared(node);
-        if (self.lookupNarrow(id.name)) |active| if (active != declared) return null;
+        if (self.lookupNarrowAt(node, id.name)) |active| if (active != declared) return null;
         if (declared >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(declared).is_union) return null;
         return declared;
     }
@@ -120594,7 +120624,7 @@ pub const Checker = struct {
                 var assignment_check_value_t = if (self.hir.kindOf(a.value) == .identifier) blk_assign_value: {
                     if (assignment_value_jsdoc_t) |declared_t| break :blk_assign_value declared_t;
                     const value_id = hir_mod.identifierOf(self.hir, a.value);
-                    if (self.lookupNarrow(value_id.name) != null and !self.identifierAnnotationIsNonNullable(a.target)) break :blk_assign_value value_t;
+                    if (self.lookupNarrowAt(a.value, value_id.name) != null and !self.identifierAnnotationIsNonNullable(a.target)) break :blk_assign_value value_t;
                     break :blk_assign_value self.typeOfIdentifierDeclared(a.value);
                 } else value_t;
                 if (a.op == null and target_kind == .element_access) {
@@ -135203,6 +135233,236 @@ pub const Checker = struct {
         return narrowed;
     }
 
+    /// `lookupNarrow`, then the narrowing a closure's read of a captured
+    /// binding takes from the function that creates the closure (#1042).
+    fn lookupNarrowAt(self: *Checker, node: NodeId, name: hir_mod.StringId) ?TypeId {
+        if (self.lookupNarrow(name)) |t| return t;
+        if (self.isDeclNameSlot(node) or self.isPlainAssignmentTarget(node)) return null;
+        return self.capturedFlowNarrow(node, name) catch null;
+    }
+
+    /// How a closure sees a captured binding's narrowing: always for a
+    /// `const` (tsc `isConstantVariable`), and past its last assignment for
+    /// a parameter, a catch variable or a `let` that is neither exported nor
+    /// global (`isParameterOrMutableLocalVariable`).
+    const CapturedNarrowing = enum { none, constant, mutable };
+
+    fn capturedBindingNarrowing(self: *Checker, decl: NodeId) CapturedNarrowing {
+        switch (self.hir.kindOf(decl)) {
+            .const_decl => return if (self.varDeclIsAutomaticArrayCandidate(decl)) .none else .constant,
+            .parameter => return .mutable,
+            .let_decl => {
+                if (self.declarationNodeIsExported(decl)) return .none;
+                const parent = self.hir.parentOf(decl);
+                if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .block_stmt and
+                    self.hir.parentOf(parent) == hir_mod.none_node_id and !self.sourceFileSectionIsModule(decl)) return .none;
+                return .mutable;
+            },
+            .identifier => {
+                const parent = self.hir.parentOf(decl);
+                if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .try_stmt and
+                    hir_mod.tryOf(self.hir, parent).catch_param == decl) return .mutable;
+                return .none;
+            },
+            else => return .none,
+        }
+    }
+
+    /// tsc's `getControlFlowContainer`: the nearest enclosing function (but
+    /// not a direct call Home checks inline), namespace, class field or
+    /// class static block, or none for the source file.
+    fn flowContainerOf(self: *Checker, node: NodeId) NodeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .fn_decl, .fn_expr, .arrow_fn => if (!self.isSynchronousDirectIife(cur)) return cur,
+                .namespace_decl, .module_decl => return cur,
+                .object_property, .block_stmt => {
+                    const owner = self.hir.parentOf(cur);
+                    if (owner == hir_mod.none_node_id) continue;
+                    const owner_kind = self.hir.kindOf(owner);
+                    if (owner_kind != .class_decl and owner_kind != .class_expr) continue;
+                    if (self.hir.kindOf(cur) == .block_stmt or !hir_mod.objectPropertyOf(self.hir, cur).is_method) return cur;
+                },
+                else => {},
+            }
+        }
+        return hir_mod.none_node_id;
+    }
+
+    /// Whether a closure's flow continues into its container's: a function
+    /// expression, an arrow, or a method or accessor of an object literal or
+    /// class expression.
+    fn flowContainerExtendsOutward(self: *Checker, container: NodeId) bool {
+        if (container == hir_mod.none_node_id) return false;
+        const kind = self.hir.kindOf(container);
+        if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return false;
+        var owner = self.hir.parentOf(container);
+        if (owner != hir_mod.none_node_id and self.hir.kindOf(owner) == .object_property) owner = self.hir.parentOf(owner);
+        if (owner != hir_mod.none_node_id) switch (self.hir.kindOf(owner)) {
+            .class_decl => return false,
+            .class_expr, .object_literal => return true,
+            else => {},
+        };
+        return kind != .fn_decl;
+    }
+
+    /// The narrowing a closure's read of a captured binding takes from the
+    /// function that creates the closure (#1042). tsc's `checkIdentifier`
+    /// moves the flow container outward through function expressions,
+    /// arrows and object-literal or class-expression methods while the
+    /// binding is a `const`, or a parameter, catch variable or local `let`
+    /// read past its last assignment. Home checks a closure where it is
+    /// created, so the narrow scopes under the closure's floor hold the flow
+    /// there.
+    fn capturedFlowNarrow(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.narrow_lookup_floor == 0 or self.declared_identifier_lookup or self.module == null) return null;
+        const containers = self.flow_containers.items;
+        if (containers.len == 0) return null;
+        const innermost = containers[containers.len - 1];
+        // Some other boundary, such as a declared-type lookup, set the floor.
+        if (innermost.floor != self.narrow_lookup_floor) return null;
+        const below = @min(self.narrow_lookup_floor, self.narrow_scopes.items.len);
+        const narrowed_outside = for (self.narrow_scopes.items[0..below]) |scope| {
+            if (scope.contains(name)) break true;
+        } else false;
+        if (!narrowed_outside) return null;
+        var container = self.flowContainerOf(node);
+        if (container != innermost.node) return null;
+        const decl = self.nearestScopedValueBinding(node, name) orelse return null;
+        const narrowing = self.capturedBindingNarrowing(decl);
+        if (narrowing == .none) return null;
+        const decl_container = self.flowContainerOf(decl);
+        if (container == decl_container or !self.flowContainerExtendsOutward(container)) return null;
+        if (narrowing == .mutable) {
+            const last = try self.lastAssignmentPosition(decl, name);
+            if (last != 0 and last >= self.hir.spanOf(node).start) return null;
+        }
+        while (container != decl_container and self.flowContainerExtendsOutward(container)) {
+            container = self.flowContainerOf(container);
+        }
+        // Every function checked since the container must enclose the read,
+        // or the scopes are not the flow where the closure was created.
+        var floor: usize = 0;
+        var i = containers.len;
+        while (i > 0) {
+            i -= 1;
+            if (!self.nodeIsAncestorOf(containers[i].node, node)) return null;
+            if (containers[i].node == container) {
+                floor = containers[i].floor;
+                break;
+            }
+        } else if (container != hir_mod.none_node_id) return null;
+        var scope = self.narrow_scopes.items.len;
+        while (scope > floor) {
+            scope -= 1;
+            if (self.narrow_scopes.items[scope].get(name)) |t| return t;
+        }
+        return null;
+    }
+
+    /// tsc's `lastAssignmentPos` for a parameter, catch variable or local
+    /// `let`: 0 when nothing assigns it, the largest extended assignment
+    /// position when only its own function does, and the maximum when a
+    /// nested function assigns it or `export { name }` exports it.
+    fn lastAssignmentPosition(self: *Checker, decl: NodeId, name: hir_mod.StringId) CheckError!u32 {
+        if (self.last_assignment_positions.get(decl)) |pos| return pos;
+        var last: u32 = 0;
+        const declaring = self.enclosingFunctionLike(decl) orelse hir_mod.none_node_id;
+        if (try self.identifierWriteNodes(name)) |writes| for (writes) |write| {
+            if (self.nearestScopedValueBinding(write, name) != decl) continue;
+            const writing = self.enclosingFunctionLike(write) orelse hir_mod.none_node_id;
+            if (writing != declaring or self.hir.kindOf(write) == .import_specifier) {
+                last = std.math.maxInt(u32);
+                break;
+            }
+            last = @max(last, self.extendedAssignmentPosition(write, decl));
+        };
+        try self.last_assignment_positions.put(self.gpa, decl, last);
+        return last;
+    }
+
+    /// tsc's `extendAssignmentPosition`: a write counts at the end of the
+    /// outermost declaration, expression, `if`, loop, `switch`, `try` or
+    /// class statement holding it after the declaration.
+    fn extendedAssignmentPosition(self: *Checker, target: NodeId, decl: NodeId) u32 {
+        const decl_start = self.hir.spanOf(decl).start;
+        var pos = self.hir.spanOf(target).start;
+        var node = target;
+        while (node != hir_mod.none_node_id and self.hir.spanOf(node).start > decl_start) : (node = self.hir.parentOf(node)) {
+            const extends = switch (self.hir.kindOf(node)) {
+                .var_decl, .let_decl, .const_decl, .expression_stmt, .if_stmt, .do_while_stmt, .while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .switch_stmt, .try_stmt, .class_decl => true,
+                // The parser puts an expression statement in its block directly.
+                else => blk: {
+                    const parent = self.hir.parentOf(node);
+                    if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .block_stmt) break :blk false;
+                    const tag = @tagName(self.hir.kindOf(node));
+                    break :blk !std.mem.endsWith(u8, tag, "_stmt") and !std.mem.endsWith(u8, tag, "_decl");
+                },
+            };
+            if (extends) pos = self.hir.spanOf(node).end;
+        }
+        return pos;
+    }
+
+    /// Each name's write targets: the identifier an assignment, an update or
+    /// a `for...in`/`for...of` head writes, every identifier inside a
+    /// destructuring assignment target, and a local `export { name }`.
+    fn identifierWriteNodes(self: *Checker, name: hir_mod.StringId) CheckError!?[]const NodeId {
+        if (!self.identifier_write_nodes_ready) {
+            self.identifier_write_nodes_ready = true;
+            var pattern_spans: std.ArrayListUnmanaged(hir_mod.Span) = .empty;
+            defer pattern_spans.deinit(self.gpa);
+            var node: NodeId = 0;
+            while (node < self.hir.nodeCount()) : (node += 1) {
+                const target = switch (self.hir.kindOf(node)) {
+                    .assignment => hir_mod.assignmentOf(self.hir, node).target,
+                    .update_op => self.hir.update_payloads.items[self.hir.payloads.items[node]].operand,
+                    .for_in_stmt, .for_of_stmt => hir_mod.forInOf(self.hir, node).target,
+                    .export_decl => {
+                        const ex = hir_mod.exportOf(self.hir, node);
+                        if (ex.is_type_only or self.string_interner.get(ex.module).len != 0) continue;
+                        for (hir_mod.exportNamed(self.hir, node)) |spec_node| {
+                            if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                            const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+                            if (spec.is_type_only or spec.imported_is_string_literal) continue;
+                            try self.appendIdentifierWriteNode(spec.imported, spec_node);
+                        }
+                        continue;
+                    },
+                    else => continue,
+                };
+                if (target == hir_mod.none_node_id) continue;
+                switch (self.hir.kindOf(target)) {
+                    .identifier => try self.appendIdentifierWriteNode(hir_mod.identifierOf(self.hir, target).name, target),
+                    .array_literal, .object_literal, .array_pattern, .object_pattern => try pattern_spans.append(self.gpa, self.hir.spanOf(target)),
+                    else => {},
+                }
+            }
+            if (pattern_spans.items.len != 0) {
+                node = 0;
+                while (node < self.hir.nodeCount()) : (node += 1) {
+                    if (self.hir.kindOf(node) != .identifier) continue;
+                    const span = self.hir.spanOf(node);
+                    for (pattern_spans.items) |pattern| {
+                        if (span.start >= pattern.start and span.end <= pattern.end) {
+                            try self.appendIdentifierWriteNode(hir_mod.identifierOf(self.hir, node).name, node);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        const list = self.identifier_write_nodes.getPtr(name) orelse return null;
+        return list.items;
+    }
+
+    fn appendIdentifierWriteNode(self: *Checker, name: hir_mod.StringId, node: NodeId) CheckError!void {
+        const gop = try self.identifier_write_nodes.getOrPut(self.gpa, name);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.gpa, node);
+    }
+
     fn lookupCallSiteMemberNarrow(self: *Checker, key: MemberKey) ?TypeId {
         var i = @min(self.narrow_lookup_floor, self.member_narrow_scopes.items.len);
         while (i > 0) {
@@ -142015,6 +142275,12 @@ pub const Checker = struct {
         body_scope_depth: usize,
     };
 
+    const FlowContainerEntry = struct {
+        node: NodeId,
+        /// The narrow-scope depth where the container's body begins.
+        floor: usize,
+    };
+
     fn checkLoopBodyFlow(self: *Checker, node: NodeId) CheckError!void {
         try self.loop_flow_entries.append(self.gpa, .{ .loop = node, .body_scope_depth = self.narrow_scopes.items.len });
         defer _ = self.loop_flow_entries.pop();
@@ -142261,7 +142527,7 @@ pub const Checker = struct {
         var assigned_t = self.hir.typeOf(value_node);
         if (assigned_t == types.Primitive.none) assigned_t = try self.checkExpression(value_node);
         if (assigned_t == types.Primitive.none or assigned_t == types.Primitive.any or assigned_t == types.Primitive.unknown) return;
-        const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifierDeclared(binary.lhs);
+        const current = self.lookupNarrowAt(binary.lhs, id.name) orelse self.typeOfIdentifierDeclared(binary.lhs);
         const false_t = try self.subtractTypeByDirectInstanceof(current, target);
         const narrowed = if (false_t == assigned_t or
             (self.engine.isIdenticalTo(false_t, assigned_t) catch false))
@@ -142308,7 +142574,7 @@ pub const Checker = struct {
         const binary = hir_mod.binopOf(self.hir, condition);
         if (binary.op != .instanceof or self.hir.kindOf(binary.lhs) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, binary.lhs);
-        const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifierDeclared(binary.lhs);
+        const current = self.lookupNarrowAt(binary.lhs, id.name) orelse self.typeOfIdentifierDeclared(binary.lhs);
         if (current >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(current).is_intersection) return;
         const target = (try self.directInstanceofTargetType(binary.rhs)) orelse return;
         if (self.classNameForInstanceType(target) == null) return;
@@ -143292,7 +143558,7 @@ pub const Checker = struct {
         if (!self.identifierHasNarrowableValueBinding(operand)) return true;
         const declared = self.visibleAnnotatedIdentifierType(operand) orelse
             self.typeOfIdentifierDeclared(operand);
-        const current = self.lookupNarrow(id.name) orelse declared;
+        const current = self.lookupNarrowAt(operand, id.name) orelse declared;
         if (self.strict_flags.strict_null_checks and
             !positive and
             current == declared and
@@ -146897,7 +147163,7 @@ pub const Checker = struct {
         // the whole catch block, including nested functions.
         if (!self.isDeclNameSlot(node)) {
             if (self.enclosingCatchBindingType(node, id.name)) |catch_t| {
-                return self.lookupNarrow(id.name) orelse catch_t;
+                return self.lookupNarrowAt(node, id.name) orelse catch_t;
             }
         }
 
@@ -146936,7 +147202,7 @@ pub const Checker = struct {
                     null;
                 if (recovered_annotation_t) |declared_t| {
                     const declared_non_null = self.subtractNullUndefined(declared_t) catch declared_t;
-                    const narrow_t = self.lookupNarrow(id.name);
+                    const narrow_t = self.lookupNarrowAt(node, id.name);
                     const has_incompatible_weak_narrow = if (narrow_t) |flow_t|
                         self.engine.weakTypeNoCommonProperties(flow_t, declared_t) or
                             self.engine.weakTypeNoCommonProperties(flow_t, declared_non_null)
@@ -146995,7 +147261,25 @@ pub const Checker = struct {
                 }
                 active_annotation_t = cached_visible_annotation_t orelse
                     self.visibleActiveAnnotatedIdentifierTypeInner(node, recovered_annotation_t, true);
-                if (!self.declared_identifier_lookup and active_annotation_t == null and may_have_evolving_any) {
+                // Evolving-any recovery belongs to the binding at this read.
+                // An earlier `let y;` must not supply `undefined` when a
+                // loop initializer declares a new, initialized `const y`.
+                const binding_can_evolve = blk: {
+                    if (!may_have_evolving_any) break :blk false;
+                    if (self.nearestScopedValueBinding(node, id.name)) |binding| {
+                        const binding_kind = self.hir.kindOf(binding);
+                        if (binding_kind == .var_decl or binding_kind == .let_decl or binding_kind == .const_decl) {
+                            const binding_name = hir_mod.varDeclOf(self.hir, binding).name;
+                            // Pattern elements still use the evolving-flow
+                            // recovery to resolve their bound identifiers.
+                            if (binding_name != hir_mod.none_node_id and
+                                self.hir.kindOf(binding_name) != .identifier) break :blk true;
+                        }
+                        break :blk self.varDeclIsUntypedEvolvingAnyCandidate(binding);
+                    }
+                    break :blk true;
+                };
+                if (!self.declared_identifier_lookup and active_annotation_t == null and binding_can_evolve) {
                     if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| {
                         if (self.lookupNarrow(id.name)) |narrow_t| {
                             if (narrow_t != types.Primitive.any and
@@ -147044,7 +147328,7 @@ pub const Checker = struct {
                     }
                 }
             }
-            if (self.lookupNarrow(id.name)) |t| {
+            if (self.lookupNarrowAt(node, id.name)) |t| {
                 // `this` is a receiver binding, not an ordinary identifier
                 // that can acquire annotations or expando properties. Once
                 // its active scope binding is found, return it directly so a
@@ -147430,22 +147714,28 @@ pub const Checker = struct {
                 const fr = hir_mod.forStmtOf(self.hir, cur);
                 if (fr.init != hir_mod.none_node_id) {
                     const init_kind = self.hir.kindOf(fr.init);
-                    if (init_kind == .var_decl or init_kind == .let_decl or init_kind == .const_decl) {
-                        const v = hir_mod.varDeclOf(self.hir, fr.init);
+                    const initializers: []const NodeId = if (init_kind == .block_stmt)
+                        hir_mod.blockStmts(self.hir, fr.init)
+                    else
+                        &.{fr.init};
+                    for (initializers) |initializer| {
+                        const initializer_kind = self.hir.kindOf(initializer);
+                        if (initializer_kind != .var_decl and initializer_kind != .let_decl and initializer_kind != .const_decl) continue;
+                        const v = hir_mod.varDeclOf(self.hir, initializer);
                         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
                             const vid = hir_mod.identifierOf(self.hir, v.name);
                             if (vid.name == id.name) {
                                 if (self.declared_identifier_lookup and v.type_annotation != hir_mod.none_node_id) {
                                     const declared_t = self.lowerVarDeclTypeAnnotationForIdentifierLookup(id.name, v) catch types.Primitive.any;
-                                    self.hir.setType(fr.init, declared_t);
+                                    self.hir.setType(initializer, declared_t);
                                     self.hir.setType(v.name, declared_t);
                                     return declared_t;
                                 }
-                                const t = self.hir.typeOf(fr.init);
+                                const t = self.hir.typeOf(initializer);
                                 if (t != types.Primitive.none) return t;
                                 if (v.type_annotation != hir_mod.none_node_id) {
                                     const declared_t = self.lowerVarDeclTypeAnnotationForIdentifierLookup(id.name, v) catch types.Primitive.any;
-                                    self.hir.setType(fr.init, declared_t);
+                                    self.hir.setType(initializer, declared_t);
                                     self.hir.setType(v.name, declared_t);
                                     return declared_t;
                                 }
@@ -147453,8 +147743,8 @@ pub const Checker = struct {
                         } else if (v.name != hir_mod.none_node_id) {
                             const vk = self.hir.kindOf(v.name);
                             if (vk == .object_pattern or vk == .array_pattern) {
-                                const container_t = if (self.hir.typeOf(fr.init) != types.Primitive.none)
-                                    self.hir.typeOf(fr.init)
+                                const container_t = if (self.hir.typeOf(initializer) != types.Primitive.none)
+                                    self.hir.typeOf(initializer)
                                 else
                                     types.Primitive.any;
                                 if (self.typeOfPatternBinding(v.name, container_t, id.name)) |bt| {
@@ -165165,7 +165455,7 @@ pub const Checker = struct {
     fn narrowOptionalReceiver(self: *Checker, receiver: NodeId) CheckError!void {
         var current = if (self.hir.kindOf(receiver) == .identifier) blk: {
             const id = hir_mod.identifierOf(self.hir, receiver);
-            break :blk self.lookupNarrow(id.name) orelse self.typeOfIdentifierDeclared(receiver);
+            break :blk self.lookupNarrowAt(receiver, id.name) orelse self.typeOfIdentifierDeclared(receiver);
         } else self.hir.typeOf(receiver);
         if (current == types.Primitive.none) current = try self.checkExpression(receiver);
         const non_nullish = self.subtractNullUndefined(current) catch current;
@@ -306446,4 +306736,41 @@ test "checker: a parameter narrows by assignment like a let (#1041)" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 3), checkerCountCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type '\"q\"'."));
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: a closure keeps a captured binding's narrowing past its last assignment (#1042)" {
+    const b = try newBoundSetup(
+        \\function f(c: string | undefined, p: string | number) {
+        \\  if (c) { const g = () => c.length; }
+        \\  let x: string | number = 1;
+        \\  x = "a";
+        \\  const h = () => { const r: "q" = x; };
+        \\  const k = () => { const r: "q" = p; };
+        \\  p = 1;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.object_possibly_undefined_18048));
+    try T.expectEqual(@as(usize, 1), checkerCountCodeAndMessage(b.base, TsCodes.type_not_assignable, "Type 'string' is not assignable to type '\"q\"'."));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+}
+
+test "checker: loop initializer bindings shadow earlier evolving variables in captures (#1042)" {
+    const b = try newBoundSetup(
+        \\function f(x: any) {
+        \\  let y;
+        \\  for (const x = 0, y = 1; x < 1;) {
+        \\    const a = 1;
+        \\    (function() { return x + y + a });
+        \\    (() => x + y + a);
+        \\  }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.object_possibly_undefined_18048));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
 }
