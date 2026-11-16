@@ -102,6 +102,9 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1038-nested-assignment-flow/') ||
   path.includes('/issue1041-parameter-assignment-flow/') ||
   path.includes('/issue1042-captured-narrowing/') ||
+  path.includes('/issue1043-return-binding/') ||
+  path.includes('/issue1044-destructuring-default/') ||
+  path.includes('/issue1045-constrained-arithmetic/') ||
   path.includes('/issue1047-destructured-narrowing/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
