@@ -11382,6 +11382,15 @@ pub const Checker = struct {
                 try self.checkForOfTarget(fr.target);
                 try self.reportUniqueSymbolNotInVariableStatement(fr.target);
                 try self.checkForOfVarSelfReferenceDiagnostics(node, fr.target, fr.source);
+                if (self.hir.kindOf(fr.target) == .var_decl or
+                    self.hir.kindOf(fr.target) == .let_decl or
+                    self.hir.kindOf(fr.target) == .const_decl)
+                {
+                    try self.reportCircularDestructuringDefaults(
+                        hir_mod.varDeclOf(self.hir, fr.target).name,
+                        self.hir.kindOf(fr.target) != .var_decl,
+                    );
+                }
                 const es5_for_of = self.target_emit_es5 or self.target_es5_baseline;
                 const es5_rejected_union_member = if (es5_for_of)
                     self.es5ForOfNonArrayUnionMember(src_t)
@@ -94556,9 +94565,11 @@ pub const Checker = struct {
         decl_node: NodeId,
         variable: hir_mod.VarDeclPayload,
     ) CheckError!void {
-        if (variable.name == hir_mod.none_node_id or variable.init == hir_mod.none_node_id) return;
+        if (variable.name == hir_mod.none_node_id) return;
         const name_kind = self.hir.kindOf(variable.name);
         if (name_kind != .object_pattern and name_kind != .array_pattern) return;
+        try self.reportCircularDestructuringDefaults(variable.name, false);
+        if (variable.init == hir_mod.none_node_id) return;
 
         var occurrences: std.ArrayListUnmanaged(DestructuringBindingOccurrence) = .empty;
         defer occurrences.deinit(self.gpa);
@@ -94628,6 +94639,62 @@ pub const Checker = struct {
                     });
                 }
             }
+        }
+    }
+
+    fn reportCircularDestructuringDefaults(self: *Checker, pattern: NodeId, report_tdz: bool) CheckError!void {
+        if (pattern == hir_mod.none_node_id) return;
+        const kind = self.hir.kindOf(pattern);
+        if (kind != .object_pattern and kind != .array_pattern) return;
+        for (hir_mod.patternElements(self.hir, pattern)) |element| {
+            if (self.hir.kindOf(element) != .parameter) continue;
+            const binding = hir_mod.parameterOf(self.hir, element);
+            if (binding.flags.is_computed_binding_key or binding.name == hir_mod.none_node_id) continue;
+            const name_kind = self.hir.kindOf(binding.name);
+            if (name_kind == .object_pattern or name_kind == .array_pattern) {
+                try self.reportCircularDestructuringDefaults(binding.name, report_tdz);
+                continue;
+            }
+            if (name_kind != .identifier or binding.default_value == hir_mod.none_node_id) continue;
+            const name = hir_mod.identifierOf(self.hir, binding.name).name;
+            const reference = self.firstIdentifierReferenceNoNested(binding.default_value, name);
+            if (report_tdz and reference != null and
+                !self.diagnosticExists(reference.?, TsCodes.block_scoped_used_before_decl))
+            {
+                const message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Block-scoped variable '{s}' used before its declaration.",
+                    .{self.string_interner.get(name)},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = reference.?,
+                    .code = TsCodes.block_scoped_used_before_decl,
+                    .message = message,
+                    .related = try self.declaredHereRelated(binding.name, self.string_interner.get(name)),
+                });
+            }
+            if (!self.strict_flags.no_implicit_any) continue;
+            // An assertion supplies its own type; passing the binding as an
+            // argument to an independently typed function does not make the
+            // default's result depend on the binding's inferred type.
+            const default_kind = self.hir.kindOf(binding.default_value);
+            if (default_kind == .as_expr or default_kind == .type_assertion) continue;
+            const search_root = if (default_kind == .call_expr)
+                hir_mod.callOf(self.hir, binding.default_value).callee
+            else
+                binding.default_value;
+            if (self.firstIdentifierReferenceNoNested(search_root, name) == null or
+                self.diagnosticExists(binding.name, TsCodes.variable_self_reference_implicitly_any)) continue;
+            const message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
+                .{self.string_interner.get(name)},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = binding.name,
+                .code = TsCodes.variable_self_reference_implicitly_any,
+                .message = message,
+            });
         }
     }
 
@@ -121141,6 +121208,35 @@ pub const Checker = struct {
                         types.Primitive.number_t;
                 }
                 if (compound_result_t) |result_t| assignment_result_t = result_t;
+                // A compound operation produces the widened numeric kind, not
+                // necessarily the caller's instantiation of a type parameter.
+                // `T extends number` may be a narrower numeric subtype, so
+                // assigning the result back to `T` is still unsound. Updates
+                // (`x++`) only read the operand and do not take this path.
+                if (compound_result_t) |result_t| {
+                    if (!is_synth_update and
+                        !assignment_target_diag_fired and
+                        try self.typeParameterAssignmentNeedsInstantiationCheck(result_t, target_t))
+                    {
+                        const source_name = (try self.allocSimpleTypeName(result_t)) orelse "unknown";
+                        const target_name = (try self.allocSimpleTypeName(target_t)) orelse "unknown";
+                        const message = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Type '{s}' is not assignable to type '{s}'.",
+                            .{ source_name, target_name },
+                        );
+                        var chain: []const DiagnosticChainEntry = &.{};
+                        if (try self.assignmentTypeParameterInstantiationChainEntry(result_t, target_t)) |entry| {
+                            chain = try self.diag_arena.allocator().dupe(DiagnosticChainEntry, &.{entry});
+                        }
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = a.target,
+                            .code = TsCodes.type_not_assignable,
+                            .message = message,
+                            .chain = chain,
+                        });
+                    }
+                }
                 if (compound_identifier) try self.recordCompoundAssignmentFlow(a.target, compound_declared_t);
                 if (a.op == null and self.hir.kindOf(a.target) == .array_literal) {
                     const source_is_annotated_tuple_union = self.annotatedTupleUnionForIdentifier(a.value) != null;
@@ -166719,6 +166815,11 @@ pub const Checker = struct {
             }
             return false;
         }
+        if (f.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.isArithmeticOperandAllowed(constraint);
+        }
         if (!self.strict_flags.strict_null_checks and (f.is_null or f.is_undefined)) return true;
         return f.is_number or f.is_bigint;
     }
@@ -208095,6 +208196,12 @@ pub const Checker = struct {
         // void recursion) without TS7023. Expression-bodied arrows still
         // participate directly in the variable initializer's return cycle.
         if (self.hir.kindOf(function.body) == .block_stmt) return;
+        // Reading the function binding itself yields its function type; the
+        // return type is only needed when the expression uses that result
+        // (for example by calling the function). `let g = () => g` therefore
+        // has no return-type inference cycle.
+        if (self.hir.kindOf(function.body) == .identifier and
+            hir_mod.identifierOf(self.hir, function.body).name == name) return;
         if (self.firstIdentifierReferenceNoNested(function.body, name) == null) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -208282,6 +208389,27 @@ pub const Checker = struct {
             if (self.firstIdentifierReferenceNoNested(expression, name) != null) return true;
         }
         return false;
+    }
+
+    fn objectLiteralFunctionOnlyReturnsBinding(self: *Checker, fn_node: NodeId, body: NodeId, name: hir_mod.StringId) CheckError!bool {
+        const property = self.hir.parentOf(fn_node);
+        if (property == hir_mod.none_node_id or self.hir.kindOf(property) != .object_property) return false;
+        const object = self.hir.parentOf(property);
+        if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .object_literal) return false;
+        if (self.hir.kindOf(body) != .block_stmt) {
+            return self.hir.kindOf(body) == .identifier and hir_mod.identifierOf(self.hir, body).name == name;
+        }
+        var returns: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer returns.deinit(self.gpa);
+        try self.collectReturnExpressions(body, &returns);
+        var saw_binding = false;
+        for (returns.items) |expression| {
+            if (self.firstIdentifierReferenceNoNested(expression, name) == null) continue;
+            if (self.hir.kindOf(expression) != .identifier or
+                hir_mod.identifierOf(self.hir, expression).name != name) return false;
+            saw_binding = true;
+        }
+        return saw_binding;
     }
 
     fn findTopLevelClassDecl(self: *Checker, from_node: NodeId, class_name: hir_mod.StringId) ?NodeId {
@@ -208547,7 +208675,8 @@ pub const Checker = struct {
                     if (f.name == hir_mod.none_node_id and
                         f.return_type == hir_mod.none_node_id and
                         !self.functionParametersDeclareName(node, name) and
-                        try self.functionReturnExpressionsReferenceName(f.body, name))
+                        try self.functionReturnExpressionsReferenceName(f.body, name) and
+                        !(try self.objectLiteralFunctionOnlyReturnsBinding(node, f.body, name)))
                     {
                         const contextual_ret = self.contextualReturnTypeForFunction(node);
                         if (contextual_ret == null or !self.typeIsAnyLike(contextual_ret.?)) {
