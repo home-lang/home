@@ -4644,6 +4644,9 @@ pub const Checker = struct {
     /// narrowing (#1022). Built on first use by `identifierWriteSummary`.
     identifier_writes: std.AutoHashMapUnmanaged(hir_mod.StringId, IdentifierWrites) = .empty,
     identifier_writes_ready: bool = false,
+    /// A function's lexical names do not change while its HIR is checked.
+    /// Cache the set used by capture and class-field lookup (#1046).
+    function_local_names: std.AutoHashMapUnmanaged(NodeId, std.AutoHashMapUnmanaged(hir_mod.StringId, void)) = .empty,
     /// The functions being checked, innermost last, with the narrow-scope
     /// depth where each one's body begins (#1042).
     flow_containers: std.ArrayListUnmanaged(FlowContainerEntry) = .empty,
@@ -6443,6 +6446,12 @@ pub const Checker = struct {
         self.forward_overload_groups_by_root.clearRetainingCapacity();
     }
 
+    fn clearFunctionLocalNames(self: *Checker) void {
+        var locals = self.function_local_names.valueIterator();
+        while (locals.next()) |names| names.deinit(self.gpa);
+        self.function_local_names.clearRetainingCapacity();
+    }
+
     /// Attach source bytes together with the exact marker index already
     /// computed by the driver during preparation.
     pub fn setSourceWithMarkers(
@@ -6450,6 +6459,7 @@ pub const Checker = struct {
         source: []const u8,
         source_markers: source_markers_mod.Index,
     ) void {
+        self.clearFunctionLocalNames();
         self.clearProgramGenericInstances();
         self.program_schema_support.clearRetainingCapacity();
         self.program_module_namespace_types.clearRetainingCapacity();
@@ -6939,6 +6949,8 @@ pub const Checker = struct {
         }
         self.narrow_scopes.deinit(self.gpa);
         self.identifier_writes.deinit(self.gpa);
+        self.clearFunctionLocalNames();
+        self.function_local_names.deinit(self.gpa);
         self.flow_containers.deinit(self.gpa);
         {
             var writes = self.identifier_write_nodes.valueIterator();
@@ -136071,6 +136083,10 @@ pub const Checker = struct {
 
     fn sourceUseIsInsideTruthyIdentifierGuard(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
         const source = self.source orelse return false;
+        // With no `if` anywhere in the source, no read can be inside a
+        // truthy identifier guard. The marker index makes this a constant-
+        // time check rather than rescanning every prefix of a long function.
+        if (self.sourceMarkerPosition("if") == null) return false;
         const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
         const use_start = @min(raw_use_start, source.len);
         const name_text = self.string_interner.get(name);
@@ -146892,9 +146908,6 @@ pub const Checker = struct {
             cur = self.hir.parentOf(cur);
         }) {
             const cur_kind = self.hir.kindOf(cur);
-            if (cur_kind == .fn_decl or cur_kind == .fn_expr or cur_kind == .arrow_fn) {
-                if (self.functionLocalsContain(cur, name)) return null;
-            }
             if (cur_kind != .object_property) continue;
             const class_node = self.hir.parentOf(cur);
             if (class_node == hir_mod.none_node_id) continue;
@@ -146909,6 +146922,16 @@ pub const Checker = struct {
             // valid even when there's no initializer.
             const in_type = op.type_annotation != hir_mod.none_node_id and prev == op.type_annotation;
             if (!in_type and op.value == hir_mod.none_node_id) return null;
+            // Only a class field can observe constructor locals. Checking
+            // each enclosing function before finding one rebuilds its full
+            // local-name set for every ordinary identifier read (#1046).
+            var function_ancestor = self.hir.parentOf(node);
+            while (function_ancestor != cur) : (function_ancestor = self.hir.parentOf(function_ancestor)) {
+                const kind = self.hir.kindOf(function_ancestor);
+                if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) {
+                    if (self.functionLocalsContain(function_ancestor, name)) return null;
+                }
+            }
             const field_name = (self.classMemberNameFromPropertyKey(op.key, op.is_computed) catch null) orelse return null;
             const local_kind = self.classConstructorLocalKind(class_node, name) orelse return null;
             // A parameter property is also an instance member. In a value
@@ -146946,16 +146969,19 @@ pub const Checker = struct {
     }
 
     fn functionLocalsContain(self: *Checker, fn_node: NodeId, name: hir_mod.StringId) bool {
+        if (self.function_local_names.getPtr(fn_node)) |locals| return locals.contains(name);
         var locals: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer locals.deinit(self.gpa);
+        var cached = false;
+        defer if (!cached) locals.deinit(self.gpa);
         for (hir_mod.fnParams(self.hir, fn_node)) |param| {
             if (self.hir.kindOf(param) != .parameter) continue;
             const p = hir_mod.parameterOf(self.hir, param);
             self.collectBindingNames(p.name, &locals) catch return false;
         }
-        if (locals.contains(name)) return true;
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         self.collectConstructorLocalNames(f.body, &locals) catch return false;
+        self.function_local_names.put(self.gpa, fn_node, locals) catch return false;
+        cached = true;
         return locals.contains(name);
     }
 

@@ -7,7 +7,7 @@ pub const patterns = &[_][]const u8{
     "@filename:",                                            "@Filename:",       "export",                           "namespace",        "as",                    "declare",         "var",                                    ":",              "any",
     "import",                                                "=",                "@import",                          "require",          "module",                "global",          "class",                                  "enum",           "type",
     "prototype",                                             "[",                "{",                                ".prototype",       "protected",             "@",               "@noLib",                                 "@nolib",         "@ts-check",
-    "@check",                                                "@allow",           "@lib",                             "import.meta",      "?",                     "/**",             "<reference",                             "@strict: false", "@strict:false",
+    "@check",                                                "@allow",           "@lib",                             "import.meta",      "?",                     "/**",             "<reference",                             "@strict: false", "@strict:false", "if",
     "@noImplicitThis",                                       "instanceof",       "interface",                        "exports",
     // Every exact diagnostic-reconciliation branch requires at least one of
     // these sentinels. Keeping them in the shared index avoids another scan.
