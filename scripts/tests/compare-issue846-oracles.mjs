@@ -120,6 +120,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1047-destructured-narrowing/') ||
   path.includes('/issue1048-readonly-mapped-array/') ||
   path.includes('/issue1049-tuple-array-elaboration/') ||
+  path.includes('/issue1050-tuple-union-witness/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
@@ -203,6 +204,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue1047-destructured-narrowing/tsconfig.json',
   'packages/ts_cli/testdata/issue1048-readonly-mapped-array/tsconfig.json',
   'packages/ts_cli/testdata/issue1049-tuple-array-elaboration/tsconfig.json',
+  'packages/ts_cli/testdata/issue1050-tuple-union-witness/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
@@ -245,6 +247,9 @@ const nativeOrderConfigs = new Map([
   // differs from the sorted one, so 5.7.3 and native 7 report the same
   // diagnostics and spell 47 of the 67 output lines differently.
   ['packages/ts_cli/testdata/issue975-union-member-order/tsconfig.json', '#975'],
+  // A tuple's array-index union follows native 7's deterministic order when
+  // choosing the failing constituent; 5.7.3 uses allocation order (#1050).
+  ['packages/ts_cli/testdata/issue1050-tuple-union-witness/tsconfig.json', '#1050'],
 ])
 const native7 = resolve(repo, 'bench/vs_tsgo/.tools/tsgo/node_modules/.bin/tsc')
 if (nativeOrderConfigs.size > 0) {
