@@ -200358,6 +200358,31 @@ pub const Checker = struct {
         else
             source_elem;
         var entry = try self.typeNotAssignableChainEntry(display_source_elem, target_elem, false);
+        // Widening can collapse a tuple's indexed union to one primitive:
+        // `[1 | 2]` has a `number` element when related to `boolean[]`.
+        // The relation still visited the original union's members, so its
+        // failing constituent remains a child of the widened element error.
+        // A complete boolean union is already the primitive `boolean` in
+        // TypeScript's relation and has no such constituent explanation.
+        if (source_is_tuple and depth < 3 and entry.code == TsCodes.type_not_assignable and
+            source_elem >= types.Primitive.first_dynamic and
+            source_elem < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(source_elem).is_union and
+            (display_source_elem == types.Primitive.number_t or
+                display_source_elem == types.Primitive.string_t or
+                display_source_elem == types.Primitive.bigint_t))
+        {
+            const members = try self.diag_arena.allocator().dupe(TypeId, self.interner.unionMembers(source_elem));
+            self.sortUnionMembersForDisplay(members);
+            for (members) |member| {
+                if (self.engine.isAssignableTo(member, target_elem) catch true) continue;
+                const witness = try self.widenFreshLiteralType(member);
+                const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                children[0] = try self.typeNotAssignableChainEntry(witness, target_elem, false);
+                entry.children = children;
+                break;
+            }
+        }
         // The element pair carries its own explanation: a tuple element names
         // the position that failed, a nested array its own element type.
         // Readonly-to-mutable states its own reason and is not expanded.
@@ -305889,6 +305914,28 @@ test "checker: an array element mismatch elaborates through its own chain" {
     try T.expectEqual(@as(usize, 1), array_chain.len);
     try T.expectEqual(@as(usize, 1), array_chain[0].children.len);
     try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", array_chain[0].children[0].message);
+}
+
+test "checker: a tuple literal union retains its widened relation witness" {
+    const s = try newSetup(
+        \\declare const numbers: [1 | 2];
+        \\declare const strings: ["a" | "b"];
+        \\const a: boolean[] = numbers;
+        \\const b: number[] = strings;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    const numeric = s.checker.diagnostics.items[0].chain;
+    try T.expectEqual(@as(usize, 1), numeric.len);
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'boolean'.", numeric[0].message);
+    try T.expectEqual(@as(usize, 1), numeric[0].children.len);
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'boolean'.", numeric[0].children[0].message);
+    const string = s.checker.diagnostics.items[1].chain;
+    try T.expectEqual(@as(usize, 1), string.len);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", string[0].message);
+    try T.expectEqual(@as(usize, 1), string[0].children.len);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", string[0].children[0].message);
 }
 
 test "checker: an argument's inner mismatch owns the diagnostic" {
