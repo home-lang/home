@@ -120473,12 +120473,16 @@ pub const Checker = struct {
                     std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, a.target).name), "arguments") and
                     !self.immediateFunctionLocalsContain(a.target, hir_mod.identifierOf(self.hir, a.target).name) and
                     self.hasNonArrowFunctionAncestor(a.target);
+                const catch_target_t = if (target_kind == .identifier)
+                    self.enclosingCatchBindingType(a.target, hir_mod.identifierOf(self.hir, a.target).name)
+                else
+                    null;
                 var target_t = if (target_is_eval)
                     types.Primitive.any
                 else if (target_is_implicit_arguments)
                     try self.argumentsObjectType()
                 else if (target_kind == .identifier)
-                    self.typeOfIdentifierDeclared(a.target)
+                    catch_target_t orelse self.typeOfIdentifierDeclared(a.target)
                 else if (target_kind == .array_literal or target_kind == .object_literal)
                     types.Primitive.none
                 else blk_target: {
@@ -120524,7 +120528,7 @@ pub const Checker = struct {
                         try self.commonjs_whole_export_declared_types.put(self.gpa, node, declared_t);
                     }
                 }
-                if (target_kind == .identifier and !target_is_implicit_arguments) {
+                if (target_kind == .identifier and !target_is_implicit_arguments and catch_target_t == null) {
                     if (self.visibleActiveAnnotatedIdentifierType(a.target)) |annotated_t| {
                         target_t = annotated_t;
                     } else if (self.visibleAnnotatedIdentifierType(a.target)) |annotated_t| {
@@ -193752,12 +193756,43 @@ pub const Checker = struct {
             }
             try inner_arg_types.append(self.gpa, inner_t);
         }
-        const retry_diag_start = self.diagnostics.items.len;
-        try self.checkArgsAgainstSignature(arg_node, inner_args, inner_arg_types.items, checking_sig);
-        if (self.diagnostics.items.len != retry_diag_start) {
-            self.diagnostics.shrinkRetainingCapacity(retry_diag_start);
-            return false;
+        // The retry can remove diagnostics emitted by the first pass as well
+        // as append new ones. Give it a private list so either outcome leaves
+        // all earlier diagnostics intact, even when it fails partway through.
+        var trial: std.ArrayListUnmanaged(Diagnostic) = .empty;
+        trial.appendSlice(self.gpa, self.diagnostics.items) catch |err| {
+            trial.deinit(self.gpa);
+            return err;
+        };
+        const prior = self.diagnostics;
+        var retry_reported_new = false;
+        {
+            self.diagnostics = trial;
+            defer {
+                self.diagnostics.deinit(self.gpa);
+                self.diagnostics = prior;
+            }
+            try self.checkArgsAgainstSignature(arg_node, inner_args, inner_arg_types.items, checking_sig);
+            for (self.diagnostics.items) |diagnostic| {
+                var was_present = false;
+                for (prior.items) |existing| {
+                    if (existing.node == diagnostic.node and
+                        existing.pos == diagnostic.pos and
+                        existing.code == diagnostic.code and
+                        existing.code_prefix == diagnostic.code_prefix and
+                        std.mem.eql(u8, existing.message, diagnostic.message))
+                    {
+                        was_present = true;
+                        break;
+                    }
+                }
+                if (!was_present) {
+                    retry_reported_new = true;
+                    break;
+                }
+            }
         }
+        if (retry_reported_new) return false;
         self.clearContextualCallShapeDiagnostics(arg_node, inner_args);
         return true;
     }
