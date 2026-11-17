@@ -541,17 +541,14 @@ pub const Interner = struct {
             }
         }
         var has_boolean = false;
-        var has_true = false;
-        var has_false = false;
         for (expanded.items) |member| {
             if (member == Primitive.boolean_t) has_boolean = true;
-            if (member == Primitive.true_lit) has_true = true;
-            if (member == Primitive.false_lit) has_false = true;
         }
-        if (has_boolean or (has_true and has_false)) {
-            // A broad boolean absorbs either literal, and true | false is
-            // itself boolean. Canonicalize before hashing the union so every
-            // caller observes the same type identity and display (#1025).
+        if (has_boolean) {
+            // A broad boolean absorbs either literal. Keep a union of only
+            // `true` and `false` here: its literal constituents are needed
+            // by contextual checks such as JSX discriminant props (#1025).
+            // Canonicalize before hashing the union.
             var retained: usize = 0;
             for (expanded.items) |member| {
                 if (member == Primitive.boolean_t or member == Primitive.true_lit or member == Primitive.false_lit) continue;

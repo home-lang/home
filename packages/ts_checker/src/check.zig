@@ -203351,6 +203351,20 @@ pub const Checker = struct {
         const empty: []const DiagnosticChainEntry = &.{};
         if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return empty;
 
+        // TypeScript treats the `false | true` pair as one boolean type for
+        // assignment elaboration. The header already names the source (or
+        // its alias); explaining one literal constituent adds a spurious
+        // nested diagnostic.
+        if (self.interner.pool.flagsOf(source).is_union) {
+            const members = self.interner.unionMembers(source);
+            if (members.len == 2 and
+                ((members[0] == types.Primitive.false_lit and members[1] == types.Primitive.true_lit) or
+                    (members[0] == types.Primitive.true_lit and members[1] == types.Primitive.false_lit)))
+            {
+                return empty;
+            }
+        }
+
         // A readonly array or tuple reaching a mutable one is explained by
         // the modifier, not by its element type; the shared entry carries
         // TypeScript's wording.
