@@ -84,6 +84,9 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1002-keyof-display/') ||
   path.includes('/issue975-union-member-order/') ||
   path.includes('/issue1005-bigint-literal/') ||
+  path.includes('/issue1004-returned-literals/') ||
+  path.includes('/issue1008-union-unit-collapse/') ||
+  path.includes('/issue1009-literal-union-widening/') ||
   path.includes('/issue1011-template-placeholder/') ||
   path.includes('/issue1012-signed-numeric-literal/') ||
   path.includes('/issue1014-number-literal-display/') ||
@@ -205,6 +208,9 @@ for (const config of [
   'packages/ts_cli/testdata/issue1048-readonly-mapped-array/tsconfig.json',
   'packages/ts_cli/testdata/issue1049-tuple-array-elaboration/tsconfig.json',
   'packages/ts_cli/testdata/issue1050-tuple-union-witness/tsconfig.json',
+  'packages/ts_cli/testdata/issue1004-returned-literals/tsconfig.json',
+  'packages/ts_cli/testdata/issue1008-union-unit-collapse/tsconfig.json',
+  'packages/ts_cli/testdata/issue1009-literal-union-widening/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
@@ -250,6 +256,10 @@ const nativeOrderConfigs = new Map([
   // A tuple's array-index union follows native 7's deterministic order when
   // choosing the failing constituent; 5.7.3 uses allocation order (#1050).
   ['packages/ts_cli/testdata/issue1050-tuple-union-witness/tsconfig.json', '#1050'],
+  // Complete boolean/enum runs and widened literal unions have the same
+  // diagnostics in 5.7.3, but native 7 owns their displayed member order.
+  ['packages/ts_cli/testdata/issue1008-union-unit-collapse/tsconfig.json', '#1008'],
+  ['packages/ts_cli/testdata/issue1009-literal-union-widening/tsconfig.json', '#1009'],
 ])
 const native7 = resolve(repo, 'bench/vs_tsgo/.tools/tsgo/node_modules/.bin/tsc')
 if (nativeOrderConfigs.size > 0) {
