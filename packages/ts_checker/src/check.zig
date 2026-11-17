@@ -11024,7 +11024,16 @@ pub const Checker = struct {
                         !(try self.literalExpressionAssignableToTarget(r.value, declared)) and
                         !(try self.checkerAssignableTo(ret_t, declared)))
                     {
-                        try self.reportTypeNotAssignable(node, ret_t, declared, "Type is not assignable to function return type.");
+                        // Expression checking widens a returned literal for
+                        // inference, but a literal return annotation relates
+                        // the expression's own value. Keep that value in the
+                        // diagnostic; broad primitive return types continue
+                        // to use the inferred (widened) source.
+                        const report_t = if (self.declaredReturnNeedsLiteralAssignabilityCheck(declared))
+                            try self.expressionLiteralType(r.value, ret_t)
+                        else
+                            ret_t;
+                        try self.reportTypeNotAssignable(node, report_t, declared, "Type is not assignable to function return type.");
                         if (self.current_function_return_sig) |sig| {
                             try self.attachExpectedTypeFromSignatureReturnRelated(sig);
                         }
@@ -184082,6 +184091,54 @@ pub const Checker = struct {
 
     /// `CompareTypes` for two types reached through a type-argument or
     /// constituent list, where no display name has been rendered yet.
+    /// Collapse the complete boolean or enum runs of a sorted union, as
+    /// TypeScript's `formatUnionTypes` does. Both simple and structural type
+    /// printers use this rule; a partial enum stays spelled out.
+    fn collapseCompleteUnionDisplayEntries(self: *Checker, entries: anytype) void {
+        var index: usize = 0;
+        while (index < entries.items.len) : (index += 1) {
+            const member = entries.items[index].sort.member;
+            if (index + 1 < entries.items.len and
+                ((member == types.Primitive.false_lit and
+                    entries.items[index + 1].sort.member == types.Primitive.true_lit) or
+                    (member == types.Primitive.true_lit and
+                        entries.items[index + 1].sort.member == types.Primitive.false_lit)))
+            {
+                entries.items[index].name = "boolean";
+                _ = entries.orderedRemove(index + 1);
+                continue;
+            }
+            const info = self.interner.enumLiteralInfo(member) orelse continue;
+            const decl = self.enumDeclForName(info.enum_name) orelse continue;
+            const declared = hir_mod.enumMembers(self.hir, decl);
+            var declared_count: usize = 0;
+            for (declared) |decl_member| {
+                if (self.enumMemberNameFromProperty(decl_member) != null) declared_count += 1;
+            }
+            if (declared_count < 2 or index + declared_count > entries.items.len) continue;
+            const run = entries.items[index .. index + declared_count];
+            var complete = true;
+            for (declared) |decl_member| {
+                const expected = self.enumMemberNameFromProperty(decl_member) orelse continue;
+                var found = false;
+                for (run) |entry| {
+                    const actual = self.interner.enumLiteralInfo(entry.sort.member) orelse continue;
+                    if (actual.enum_name == info.enum_name and actual.member_name == expected) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    complete = false;
+                    break;
+                }
+            }
+            if (!complete) continue;
+            entries.items[index].name = self.string_interner.get(info.enum_name);
+            for (1..declared_count) |_| _ = entries.orderedRemove(index + 1);
+        }
+    }
+
     fn unionMemberOrder(self: *Checker, a: TypeId, b: TypeId, depth: u8) std.math.Order {
         if (a == b) return .eq;
         const ka = self.unionMemberSortKey(a, "");
@@ -184415,6 +184472,7 @@ pub const Checker = struct {
                             }
                         }
                     }
+                    self.collapseCompleteUnionDisplayEntries(&entries);
                     var all_numeric_literal_names = entries.items.len > 1;
                     for (entries.items) |entry| {
                         _ = std.fmt.parseFloat(f64, entry.name) catch {
@@ -197324,6 +197382,29 @@ pub const Checker = struct {
         return self.widenLiteralType(t);
     }
 
+    /// TypeScript's `isLiteralType` treats `boolean` as a unit and a union
+    /// as literal only when every constituent is a unit. A union containing
+    /// broad `string`, `number`, or `symbol` must retain its written members
+    /// in relation diagnostics rather than widening its literal siblings.
+    fn sourceIsLiteralUnion(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return false;
+        for (self.interner.unionMembers(t)) |member| {
+            switch (member) {
+                types.Primitive.boolean_t,
+                types.Primitive.true_lit,
+                types.Primitive.false_lit,
+                types.Primitive.null_t,
+                types.Primitive.undefined_t,
+                => continue,
+                else => {},
+            }
+            if (member >= self.interner.pool.typeCount()) return false;
+            const flags = self.interner.pool.flagsOf(member);
+            if (!flags.is_literal and !flags.is_enum_literal and !flags.is_unique_symbol) return false;
+        }
+        return true;
+    }
+
     fn inferArrayLiteralElementType(self: *Checker, elems: []const TypeId) CheckError!TypeId {
         var has_direct_this = false;
         for (elems) |elem| {
@@ -199484,6 +199565,31 @@ pub const Checker = struct {
         return .{ .code = TsCodes.type_not_assignable, .message = msg };
     }
 
+    /// When all members of a source union widen to one primitive, the
+    /// displayed source is that primitive but the failed union relation
+    /// still contributes its first incompatible constituent. Complete
+    /// boolean unions are canonical `boolean` relations and have no child.
+    fn widenedLiteralUnionWitnessEntry(
+        self: *Checker,
+        source: TypeId,
+        widened: TypeId,
+        target: TypeId,
+    ) CheckError!?DiagnosticChainEntry {
+        if (widened != types.Primitive.string_t and
+            widened != types.Primitive.number_t and
+            widened != types.Primitive.bigint_t) return null;
+        if (source >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(source).is_union) return null;
+        const members = try self.diag_arena.allocator().dupe(TypeId, self.interner.unionMembers(source));
+        self.sortUnionMembersForDisplay(members);
+        for (members) |member| {
+            if (self.engine.isAssignableTo(member, target) catch true) continue;
+            const witness = try self.widenFreshLiteralType(member);
+            return try self.typeNotAssignableChainEntry(witness, target, false);
+        }
+        return null;
+    }
+
     fn allocSignatureNoMatchName(self: *Checker, sig_t: TypeId) CheckError!?[]const u8 {
         const sig_name = (try self.allocCallableSignatureName(sig_t)) orelse return null;
         const arrow = std.mem.indexOf(u8, sig_name, ") => ") orelse return sig_name;
@@ -200364,23 +200470,11 @@ pub const Checker = struct {
         // failing constituent remains a child of the widened element error.
         // A complete boolean union is already the primitive `boolean` in
         // TypeScript's relation and has no such constituent explanation.
-        if (source_is_tuple and depth < 3 and entry.code == TsCodes.type_not_assignable and
-            source_elem >= types.Primitive.first_dynamic and
-            source_elem < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(source_elem).is_union and
-            (display_source_elem == types.Primitive.number_t or
-                display_source_elem == types.Primitive.string_t or
-                display_source_elem == types.Primitive.bigint_t))
-        {
-            const members = try self.diag_arena.allocator().dupe(TypeId, self.interner.unionMembers(source_elem));
-            self.sortUnionMembersForDisplay(members);
-            for (members) |member| {
-                if (self.engine.isAssignableTo(member, target_elem) catch true) continue;
-                const witness = try self.widenFreshLiteralType(member);
+        if (source_is_tuple and depth < 3 and entry.code == TsCodes.type_not_assignable) {
+            if (try self.widenedLiteralUnionWitnessEntry(source_elem, display_source_elem, target_elem)) |witness| {
                 const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
-                children[0] = try self.typeNotAssignableChainEntry(witness, target_elem, false);
+                children[0] = witness;
                 entry.children = children;
-                break;
             }
         }
         // The element pair carries its own explanation: a tuple element names
@@ -202744,12 +202838,18 @@ pub const Checker = struct {
             self.subtractType(target, types.Primitive.undefined_t) catch target
         else
             self.singleNonUndefinedAssignmentDiagnosticTarget(related_source, target) orelse target;
-        const diagnostic_source = if (diagnostic_target != target and self.shouldWidenForArgDiagnostic(source, diagnostic_target))
+        const widen_literal_union = self.sourceIsLiteralUnion(source) and
+            diagnostic_target != types.Primitive.never and
+            !self.typeCouldHaveTopLevelSingletonTypes(diagnostic_target, 0);
+        const diagnostic_source = if (widen_literal_union)
+            try self.widenFreshLiteralType(source)
+        else if (diagnostic_target != target and self.shouldWidenForArgDiagnostic(source, diagnostic_target))
             self.widenLiteralType(source)
         else
             source;
         const source_name = explicit_function_source_name orelse
             contextual_async_source_name orelse
+            (if (widen_literal_union) try self.allocAssignmentDiagnosticTypeName(diagnostic_source) else null) orelse
             (try self.allocVisibleSignatureExpandingIndexedMethodAliases(value_node)) orelse
             (try self.assignmentExpressionPredicateTypeName(value_node, source)) orelse
             (try self.normalizedKeyofIdentifierAnnotationName(value_node)) orelse
@@ -202810,7 +202910,7 @@ pub const Checker = struct {
             "Type '{s}' is not assignable to type '{s}'.",
             .{ source_name, target_name },
         );
-        const chain = (try self.buildAssignmentExpressionPredicateElaborationChain(
+        var chain = (try self.buildAssignmentExpressionPredicateElaborationChain(
             value_node,
             target_node,
             source,
@@ -202818,7 +202918,17 @@ pub const Checker = struct {
             null,
         )) orelse (try self.symbolicTupleIdentifierMismatchChain(value_node, target_node)) orelse
             (try self.missingEcmaPrivateMemberAssignmentChainForNodes(source, value_node, target_node)) orelse
-            (self.buildAssignmentAssignabilityElaborationChain(source, target) catch &.{});
+            (self.buildAssignmentAssignabilityElaborationChain(
+                if (widen_literal_union) diagnostic_source else source,
+                target,
+            ) catch &.{});
+        if (chain.len == 0 and widen_literal_union and diagnostic_target == target) {
+            if (try self.widenedLiteralUnionWitnessEntry(source, diagnostic_source, target)) |witness| {
+                const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                children[0] = witness;
+                chain = children;
+            }
+        }
         const related = try self.sourceTypeParameterConstraintHintRelated(source, target);
         try self.diagnostics.append(self.gpa, .{
             .node = node,
@@ -206155,6 +206265,7 @@ pub const Checker = struct {
                             }
                         }
                     }
+                    self.collapseCompleteUnionDisplayEntries(&entries);
                     var all_numeric_literal_names = entries.items.len > 1;
                     for (entries.items) |entry| {
                         _ = std.fmt.parseFloat(f64, entry.name) catch {
