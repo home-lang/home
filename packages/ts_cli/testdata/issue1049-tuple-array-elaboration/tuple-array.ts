@@ -1,0 +1,13 @@
+const one: readonly [1] = [1];
+const a: readonly boolean[] = one;
+const two: [1] = [1];
+const b: readonly boolean[] = two;
+const c: boolean[] = two;
+const str: readonly ["x"] = ["x"];
+const d: readonly number[] = str;
+const broad: readonly [number] = [1];
+const e: readonly boolean[] = broad;
+const singleton: readonly null[] = two;
+const readonlyToMutable: number[] = one;
+void a; void b; void c; void d; void e; void singleton; void readonlyToMutable;
+export {};

@@ -118,6 +118,8 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1045-constrained-arithmetic/') ||
   path.includes('/issue1046-literal-flow/') ||
   path.includes('/issue1047-destructured-narrowing/') ||
+  path.includes('/issue1048-readonly-mapped-array/') ||
+  path.includes('/issue1049-tuple-array-elaboration/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
@@ -199,6 +201,8 @@ for (const config of [
   'packages/ts_cli/testdata/issue1041-parameter-assignment-flow/tsconfig.json',
   'packages/ts_cli/testdata/issue1042-captured-narrowing/tsconfig.json',
   'packages/ts_cli/testdata/issue1047-destructured-narrowing/tsconfig.json',
+  'packages/ts_cli/testdata/issue1048-readonly-mapped-array/tsconfig.json',
+  'packages/ts_cli/testdata/issue1049-tuple-array-elaboration/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
