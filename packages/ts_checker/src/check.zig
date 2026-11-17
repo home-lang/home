@@ -93007,16 +93007,28 @@ pub const Checker = struct {
         return try self.recoveredEvolvingAnyFlowTypeAt(node, name);
     }
 
+    fn recoveredFlowOwnerEnclosesRead(self: *Checker, candidate: NodeId, node: NodeId) bool {
+        const owner = self.enclosingFunctionLike(candidate) orelse return true;
+        if (self.nodeIsAncestorOf(owner, node)) return true;
+        // Some class-field HIR paths do not retain the outer function in
+        // their parent chain. Source containment still distinguishes that
+        // function from a previous sibling with the same local name.
+        const owner_span = self.hir.spanOf(owner);
+        const read_span = self.hir.spanOf(node);
+        return owner_span.start <= read_span.start and read_span.end <= owner_span.end;
+    }
+
     fn recoveredEvolvingAnyFlowTypeAt(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
         const use_start = self.hir.spanOf(node).start;
-        const containing_function = self.enclosingFunctionLike(node);
         var declaration = hir_mod.none_node_id;
         var declaration_start: u32 = 0;
         var candidate: NodeId = 1;
         while (candidate < self.hir.nodeCount()) : (candidate += 1) {
             const kind = self.hir.kindOf(candidate);
             if (kind != .var_decl and kind != .let_decl) continue;
-            if (self.enclosingFunctionLike(candidate) != containing_function) continue;
+            // A captured declaration may be in an outer function. A same-name
+            // declaration in another function must not supply its flow.
+            if (!self.recoveredFlowOwnerEnclosesRead(candidate, node)) continue;
             const span = self.hir.spanOf(candidate);
             if (span.start >= use_start or span.start < declaration_start) continue;
             const variable = hir_mod.varDeclOf(self.hir, candidate);
@@ -93026,14 +93038,32 @@ pub const Checker = struct {
             declaration = candidate;
             declaration_start = span.start;
         }
-        if (declaration == hir_mod.none_node_id) return null;
+        if (declaration == hir_mod.none_node_id) {
+            // An instance field runs when the class is constructed. It can
+            // capture an outer `let` declared later in the same function;
+            // this is a real binding, unlike a same-name local in a previous
+            // function. Static fields run at class definition and do not use
+            // this forward-flow path.
+            if (self.memberAccessClassFieldStaticness(node) == false) {
+                const binding = self.nearestScopedValueBinding(node, name) orelse return null;
+                const kind = self.hir.kindOf(binding);
+                if ((kind == .var_decl or kind == .let_decl) and
+                    self.hir.spanOf(binding).start > use_start and
+                    self.varDeclIsUntypedEvolvingAnyCandidate(binding) and
+                    self.recoveredFlowOwnerEnclosesRead(binding, node))
+                {
+                    return self.initialEvolvingAnyFlowType(hir_mod.varDeclOf(self.hir, binding));
+                }
+            }
+            return null;
+        }
 
         const recovered_variable = hir_mod.varDeclOf(self.hir, declaration);
         var flow: ?TypeId = self.initialEvolvingAnyFlowType(recovered_variable);
         candidate = 1;
         while (candidate < self.hir.nodeCount()) : (candidate += 1) {
             if (self.hir.kindOf(candidate) != .assignment) continue;
-            if (self.enclosingFunctionLike(candidate) != containing_function) continue;
+            if (!self.recoveredFlowOwnerEnclosesRead(candidate, node)) continue;
             const span = self.hir.spanOf(candidate);
             if (span.start <= declaration_start or span.start >= use_start) continue;
             const assignment = hir_mod.assignmentOf(self.hir, candidate);
