@@ -4626,6 +4626,9 @@ const EvolvingAnyBlockCursor = struct {
     invalid: bool = false,
     next_pos: usize = 0,
     flow: ?TypeId = null,
+    /// Flow before each statement in the stable prefix, starting just after
+    /// the declaration. Checker visits can run in reverse source order.
+    prefix_flows: std.ArrayListUnmanaged(?TypeId) = .empty,
 };
 
 pub const Checker = struct {
@@ -6473,6 +6476,12 @@ pub const Checker = struct {
         self.single_named_function_decls.clearRetainingCapacity();
     }
 
+    fn clearEvolvingAnyBlockCursors(self: *Checker) void {
+        var cursors = self.evolving_any_block_cursors.valueIterator();
+        while (cursors.next()) |cursor| cursor.prefix_flows.deinit(self.gpa);
+        self.evolving_any_block_cursors.clearRetainingCapacity();
+    }
+
     /// Attach source bytes together with the exact marker index already
     /// computed by the driver during preparation.
     pub fn setSourceWithMarkers(
@@ -6482,7 +6491,7 @@ pub const Checker = struct {
     ) void {
         self.clearFunctionLocalNames();
         self.clearSingleNamedFunctionDecls();
-        self.evolving_any_block_cursors.clearRetainingCapacity();
+        self.clearEvolvingAnyBlockCursors();
         self.clearProgramGenericInstances();
         self.program_schema_support.clearRetainingCapacity();
         self.program_module_namespace_types.clearRetainingCapacity();
@@ -6976,6 +6985,7 @@ pub const Checker = struct {
         self.function_local_names.deinit(self.gpa);
         self.clearSingleNamedFunctionDecls();
         self.single_named_function_decls.deinit(self.gpa);
+        self.clearEvolvingAnyBlockCursors();
         self.evolving_any_block_cursors.deinit(self.gpa);
         self.flow_containers.deinit(self.gpa);
         {
@@ -7417,7 +7427,7 @@ pub const Checker = struct {
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
         self.clearSingleNamedFunctionDecls();
         // Rechecking the same HIR may have changed cached expression types.
-        self.evolving_any_block_cursors.clearRetainingCapacity();
+        self.clearEvolvingAnyBlockCursors();
         for (self.program_global_types) |binding| {
             if (binding.own_interface_type != types.Primitive.none) {
                 try self.ordered_overload_types.put(self.gpa, binding.type, binding.own_interface_type);
@@ -93111,6 +93121,7 @@ pub const Checker = struct {
                 const declaration = self.unwrapExportDecl(statements[declaration_pos]);
                 slot.value_ptr.flow = self.initialEvolvingAnyFlowType(hir_mod.varDeclOf(self.hir, declaration));
                 slot.value_ptr.next_pos = declaration_pos + 1;
+                try slot.value_ptr.prefix_flows.append(self.gpa, slot.value_ptr.flow);
             }
         }
         // Flow evaluation may recursively query another binding and grow the
@@ -93158,19 +93169,15 @@ pub const Checker = struct {
         }
         const use_pos = use_index orelse return null;
         if (declaration_pos >= use_pos) return null;
-        const declaration = self.unwrapExportDecl(statements[declaration_pos]);
-        const variable = hir_mod.varDeclOf(self.hir, declaration);
-        var flow = cursor.flow;
-        var next_pos = cursor.next_pos;
-        if (use_pos < next_pos) {
-            // Reads visited out of source order replay from the declaration;
-            // they must not move the forward cursor backwards.
-            flow = self.initialEvolvingAnyFlowType(variable);
-            next_pos = declaration_pos + 1;
+        if (use_pos < cursor.next_pos) {
+            const offset = use_pos - declaration_pos - 1;
+            return try self.identifierFlowTypeBeforeNode(statements[use_pos], node, name, cursor.prefix_flows.items[offset], false);
         }
-        var stable_end = next_pos;
-        var stable_flow = flow;
-        for (statements[next_pos..use_pos], next_pos..) |stmt, index| {
+        var flow = cursor.flow;
+        var stable_end = cursor.next_pos;
+        var stable_prefix: std.ArrayListUnmanaged(?TypeId) = .empty;
+        defer stable_prefix.deinit(self.gpa);
+        for (statements[cursor.next_pos..use_pos], cursor.next_pos..) |stmt, index| {
             // An earlier query can reach a statement before its expression
             // types are filled. Recompute from that statement on the next
             // query instead of freezing the temporary `any` result (#1038).
@@ -93178,13 +93185,14 @@ pub const Checker = struct {
             flow = try self.identifierFlowTypeAfterStatement(stmt, name, flow, false);
             if (stable_end == index and stable) {
                 stable_end = index + 1;
-                stable_flow = flow;
+                try stable_prefix.append(self.gpa, flow);
             }
         }
-        if (stable_end >= cursor.next_pos) {
+        if (stable_end > cursor.next_pos) {
             if (self.evolving_any_block_cursors.getPtr(key)) |latest| {
-                if (stable_end >= latest.next_pos) {
-                    latest.flow = stable_flow;
+                if (latest.next_pos == cursor.next_pos and latest.flow == cursor.flow) {
+                    try latest.prefix_flows.appendSlice(self.gpa, stable_prefix.items);
+                    latest.flow = stable_prefix.items[stable_prefix.items.len - 1];
                     latest.next_pos = stable_end;
                 }
             }
