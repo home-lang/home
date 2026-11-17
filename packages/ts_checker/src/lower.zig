@@ -489,7 +489,7 @@ pub const Lowerer = struct {
             .name = length_id,
             .type = length_t,
             .is_optional = false,
-            .is_readonly = true,
+            .is_readonly = false,
             .is_method = false,
         });
 

@@ -540,6 +540,27 @@ pub const Interner = struct {
                 try expanded.append(self.gpa, m);
             }
         }
+        var has_boolean = false;
+        var has_true = false;
+        var has_false = false;
+        for (expanded.items) |member| {
+            if (member == Primitive.boolean_t) has_boolean = true;
+            if (member == Primitive.true_lit) has_true = true;
+            if (member == Primitive.false_lit) has_false = true;
+        }
+        if (has_boolean or (has_true and has_false)) {
+            // A broad boolean absorbs either literal, and true | false is
+            // itself boolean. Canonicalize before hashing the union so every
+            // caller observes the same type identity and display (#1025).
+            var retained: usize = 0;
+            for (expanded.items) |member| {
+                if (member == Primitive.boolean_t or member == Primitive.true_lit or member == Primitive.false_lit) continue;
+                expanded.items[retained] = member;
+                retained += 1;
+            }
+            expanded.items = expanded.items[0..retained];
+            try expanded.append(self.gpa, Primitive.boolean_t);
+        }
         const flattened = expanded.items;
         if (flattened.len == 0) return Primitive.never;
         if (flattened.len == 1) return flattened[0];

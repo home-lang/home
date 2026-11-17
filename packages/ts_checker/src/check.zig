@@ -35668,9 +35668,16 @@ pub const Checker = struct {
             .return_stmt => {
                 const r = hir_mod.returnOf(self.hir, node);
                 if (r.value != hir_mod.none_node_id) {
-                    // An inferred return type widens a fresh literal; other
-                    // literal nodes are already checked widened.
-                    try out.append(self.gpa, self.widenLogicalNotLiteral(r.value, self.hir.typeOf(r.value)));
+                    const expression_t = self.hir.typeOf(r.value);
+                    // Conditional returns can retain a fresh literal inside
+                    // a union (for example, `flag ? 1 : undefined`). Widen
+                    // that literal before inferring the function's return
+                    // type, while preserving explicit `as const` branches.
+                    const return_t = if (self.initializerHasWideningFreshLiteral(r.value, expression_t, true))
+                        try self.widenFreshLiteralType(expression_t)
+                    else
+                        self.widenLogicalNotLiteral(r.value, expression_t);
+                    try out.append(self.gpa, return_t);
                 }
             },
             // Don't descend into nested functions ÃÂ¢ÃÂÃÂ their returns
@@ -94038,7 +94045,10 @@ pub const Checker = struct {
 
     fn tupleTypeLooksReadonly(self: *Checker, target: TypeId) bool {
         const len = self.fixedTupleLength(target) orelse return false;
-        if (len == 0) return false;
+        if (len == 0) {
+            const length_id = self.string_interner.intern("length") catch return false;
+            return if (self.interner.objectMemberInfo(target, length_id)) |member| member.is_readonly else false;
+        }
         var nbuf: [12]u8 = undefined;
         const zero_str = std.fmt.bufPrint(&nbuf, "{d}", .{0}) catch return false;
         const zero_name = self.string_interner.intern(zero_str) catch return false;
@@ -174149,7 +174159,7 @@ pub const Checker = struct {
             .name = length_id,
             .type = length_t,
             .is_optional = false,
-            .is_readonly = true,
+            .is_readonly = readonly,
             .is_method = false,
         });
         const elem_union: TypeId = if (elem_types.len == 0)
@@ -198798,6 +198808,14 @@ pub const Checker = struct {
         if (self.unnarrowedAnnotatedUnionType(init_node) != null) {
             return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
         }
+        // A boolean union retains its alias in TypeScript diagnostics even
+        // though the union's value type canonicalizes to `boolean`. Keep the
+        // source annotation available to the assignment reporter.
+        if (source == types.Primitive.boolean_t and
+            try self.identifierHasBooleanUnionAliasAnnotation(init_node))
+        {
+            return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
+        }
         if (self.hir.kindOf(init_node) == .identifier and
             self.visibleTupleAnnotationDisplayTextForIdentifier(init_node) != null and
             self.isTupleShapedTarget(source) and
@@ -203969,6 +203987,26 @@ pub const Checker = struct {
             self.generic_aliases.get(alias_name) == null and
             !self.type_alias_bodies.contains(alias_name)) return null;
         return try self.normalizedTypeAnnotationText(self.string_interner.get(alias_name));
+    }
+
+    fn identifierHasBooleanUnionAliasAnnotation(self: *Checker, node: NodeId) CheckError!bool {
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(node) orelse return false;
+        const alias_name = self.simpleTypeAliasNameFromTypeNode(annotation) orelse return false;
+        const decl = self.typeAliasDeclForNameAt(alias_name, annotation) orelse return false;
+        const alias = hir_mod.typeAliasOf(self.hir, decl);
+        if (alias.type_params_len != 0 or self.hir.kindOf(alias.aliased) != .union_type) return false;
+        var has_boolean = false;
+        var has_true = false;
+        var has_false = false;
+        for (hir_mod.unionTypeMembers(self.hir, alias.aliased)) |member_node| {
+            switch (try self.lowererLowerWithTypeParams(member_node)) {
+                types.Primitive.boolean_t => has_boolean = true,
+                types.Primitive.true_lit => has_true = true,
+                types.Primitive.false_lit => has_false = true,
+                else => return false,
+            }
+        }
+        return (has_boolean and (has_true or has_false)) or (has_true and has_false);
     }
 
     fn objectAnnotationName(self: *Checker, type_node: NodeId) ?[]const u8 {
