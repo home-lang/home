@@ -109360,6 +109360,13 @@ pub const Checker = struct {
     fn enumLiteralDisplayName(self: *Checker, t: TypeId) !?[]const u8 {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return null;
         const info = self.interner.enumLiteralInfo(t) orelse return null;
+        // A one-member enum is already the complete enum type. TypeScript
+        // prints its name even when the type originated at `E.Member`.
+        const Entry = struct { sort: struct { member: TypeId } };
+        const run = [_]Entry{.{ .sort = .{ .member = t } }};
+        if (self.enumDeclForCompleteRun(info.enum_name, &run) != null) {
+            return self.string_interner.get(info.enum_name);
+        }
         if (self.interner.pool.flagsOf(t).is_number) {
             if (self.numberLiteralValueFromType(t)) |value| {
                 if (std.math.isNan(value)) return self.string_interner.get(info.enum_name);
@@ -184089,8 +184096,44 @@ pub const Checker = struct {
         return a.member > b.member;
     }
 
-    /// `CompareTypes` for two types reached through a type-argument or
-    /// constituent list, where no display name has been rendered yet.
+    fn enumDeclMatchesCompleteRun(self: *Checker, decl: NodeId, enum_name: hir_mod.StringId, run: anytype) bool {
+        if (self.hir.kindOf(decl) != .enum_decl) return false;
+        const name_node = hir_mod.enumOf(self.hir, decl).name;
+        if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier or
+            hir_mod.identifierOf(self.hir, name_node).name != enum_name) return false;
+        var declared_count: usize = 0;
+        for (hir_mod.enumMembers(self.hir, decl)) |decl_member| {
+            const expected = self.enumMemberNameFromProperty(decl_member) orelse continue;
+            declared_count += 1;
+            var found = false;
+            for (run) |entry| {
+                const actual = self.interner.enumLiteralInfo(entry.sort.member) orelse continue;
+                if (actual.enum_name == enum_name and actual.member_name == expected) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return declared_count == run.len;
+    }
+
+    /// An enum literal carries its name and member, while a local enum can
+    /// shadow a global enum of the same name. Find the declaration whose
+    /// member set actually forms this run; the name-only global lookup can
+    /// select the wrong declaration for a local diagnostic.
+    fn enumDeclForCompleteRun(self: *Checker, enum_name: hir_mod.StringId, run: anytype) ?NodeId {
+        if (self.enumDeclForName(enum_name)) |decl| {
+            if (self.enumDeclMatchesCompleteRun(decl, enum_name, run)) return decl;
+        }
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .enum_decl) continue;
+            if (self.enumDeclMatchesCompleteRun(node, enum_name, run)) return node;
+        }
+        return null;
+    }
+
     /// Collapse the complete boolean or enum runs of a sorted union, as
     /// TypeScript's `formatUnionTypes` does. Both simple and structural type
     /// printers use this rule; a partial enum stays spelled out.
@@ -184109,36 +184152,20 @@ pub const Checker = struct {
                 continue;
             }
             const info = self.interner.enumLiteralInfo(member) orelse continue;
-            const decl = self.enumDeclForName(info.enum_name) orelse continue;
-            const declared = hir_mod.enumMembers(self.hir, decl);
-            var declared_count: usize = 0;
-            for (declared) |decl_member| {
-                if (self.enumMemberNameFromProperty(decl_member) != null) declared_count += 1;
+            var end = index + 1;
+            while (end < entries.items.len) : (end += 1) {
+                const next_info = self.interner.enumLiteralInfo(entries.items[end].sort.member) orelse break;
+                if (next_info.enum_name != info.enum_name) break;
             }
-            if (declared_count < 2 or index + declared_count > entries.items.len) continue;
-            const run = entries.items[index .. index + declared_count];
-            var complete = true;
-            for (declared) |decl_member| {
-                const expected = self.enumMemberNameFromProperty(decl_member) orelse continue;
-                var found = false;
-                for (run) |entry| {
-                    const actual = self.interner.enumLiteralInfo(entry.sort.member) orelse continue;
-                    if (actual.enum_name == info.enum_name and actual.member_name == expected) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    complete = false;
-                    break;
-                }
-            }
-            if (!complete) continue;
+            const run = entries.items[index..end];
+            if (run.len < 2 or self.enumDeclForCompleteRun(info.enum_name, run) == null) continue;
             entries.items[index].name = self.string_interner.get(info.enum_name);
-            for (1..declared_count) |_| _ = entries.orderedRemove(index + 1);
+            for (1..run.len) |_| _ = entries.orderedRemove(index + 1);
         }
     }
 
+    /// `CompareTypes` for two types reached through a type-argument or
+    /// constituent list, where no display name has been rendered yet.
     fn unionMemberOrder(self: *Checker, a: TypeId, b: TypeId, depth: u8) std.math.Order {
         if (a == b) return .eq;
         const ka = self.unionMemberSortKey(a, "");
