@@ -100,6 +100,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1029-function-flow-boundary/') ||
   path.includes('/issue1031-enum-member-flow/') ||
   path.includes('/issue1032-evolving-loop-exit/') ||
+  path.includes('/issue1033-generic-loop-head/') ||
   path.includes('/issue1034-nullish-arithmetic-operands/') ||
   path.includes('/issue1035-compound-annotation-flow/') ||
   path.includes('/issue1036-own-initializer-reads/') ||
