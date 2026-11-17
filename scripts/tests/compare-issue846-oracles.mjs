@@ -93,6 +93,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1017-logical-not-literal/') ||
   path.includes('/issue1019-readonly-empty-tuple/') ||
   path.includes('/issue1020-inferred-return-widening/') ||
+  path.includes('/issue1024-never-flow/') ||
   path.includes('/issue1025-boolean-union/') ||
   path.includes('/issue1022-assignment-narrowing/') ||
   path.includes('/issue1023-assignment-joins/') ||
@@ -182,6 +183,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue1017-logical-not-literal/tsconfig-loose.json',
   'packages/ts_cli/testdata/issue1019-readonly-empty-tuple/tsconfig.json',
   'packages/ts_cli/testdata/issue1020-inferred-return-widening/tsconfig.json',
+  'packages/ts_cli/testdata/issue1024-never-flow/tsconfig.json',
   'packages/ts_cli/testdata/issue1025-boolean-union/tsconfig.json',
   'packages/ts_cli/testdata/issue1022-assignment-narrowing/tsconfig.json',
   'packages/ts_cli/testdata/issue1023-assignment-joins/tsconfig.json',

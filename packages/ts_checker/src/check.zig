@@ -144674,9 +144674,9 @@ pub const Checker = struct {
             }
         }
         // Bare-identifier truthiness narrowing: `if (x)` / `!x`.
-        // Truthy branches remove nullish constituents; falsy branches use
-        // the logical-expression partitioner so broad primitives become
-        // their representable falsy units (`boolean` -> `false`, etc.).
+        // Both branches use the logical-expression partitioners. In
+        // particular, a literal `false`, `""`, or `0` has no truthy value:
+        // the selected branch records `never`, not its original type.
         if (self.hir.kindOf(cond) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, cond);
             const declared_current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(cond);
@@ -144685,10 +144685,7 @@ pub const Checker = struct {
             else
                 declared_current;
             const narrowed = if (when_true)
-                if (current == types.Primitive.unknown)
-                    try self.unknownEmptyObjectType()
-                else
-                    self.nonNullishAccessType(current) catch current
+                try self.logicalOrTruthyType(current)
             else
                 try self.logicalAndFalsyType(current);
             if (narrowed != current) {
