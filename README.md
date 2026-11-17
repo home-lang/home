@@ -111,6 +111,18 @@ See [diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABIL
 
 ### Measured TypeScript frontend performance
 
+In a focused [function-local flow scaling benchmark](docs/docs/TS_PERFORMANCE.md#function-local-flow-scaling-2026-11-17),
+the #1046 release build and TypeScript 5.7.3 produced byte-identical diagnostics
+on identical strict, no-emit files. Five-run median wall times (lower is better):
+
+| Assignments and reads | Home, uninitialized local | `tsc` 5.7.3 |
+|---|---:|---:|
+| 1,000 | 30 ms | 488 ms |
+| 2,000 | 62 ms | 509 ms |
+
+This measures one generated local-flow workload; the broader five-compiler
+matrix follows.
+
 Type-checking time on the reproducible
 [`bench/vs_tsgo`](bench/vs_tsgo) suite: TypeScript 6.0.3 (`tsc`), native
 TypeScript 7.0.2 (`tsgo`), Home, Rust tsc-rs 0.1.0 (TypeScript 7.1.0-dev),

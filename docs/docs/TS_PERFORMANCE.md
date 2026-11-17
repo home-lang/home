@@ -10,6 +10,46 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+### Function-local flow scaling (2026-11-17)
+
+The [#1046](https://github.com/home-lang/home/issues/1046) source fix in
+[`675c23f18`](https://github.com/home-lang/home/commit/675c23f18) caches the
+stable flow before each statement. Checker visits can arrive in reverse source
+order; a forward-only cursor previously replayed earlier statements on each
+visit. This is a focused scaling check, separate from the five-compiler matrix
+below.
+
+[`ts-checker-local-lookup.py`](../../scripts/benchmarks/ts-checker-local-lookup.py)
+generates the same strict TypeScript file for both compilers: one function with
+1,000 or 2,000 assignments and reads of a local, either initialized to `0` or
+left uninitialized. Both run with `--strict --target es2022 --noEmit --pretty
+false`. Exact stdout, stderr and exit status must agree before timing and on
+every run. Each case has one warmup/control run, then five measured runs with
+alternating compiler order; the table gives process wall-time medians. Lower is
+better.
+
+| Local | Statements | Home ReleaseSmall | TypeScript 5.7.3 `tsc` |
+|---|---:|---:|---:|
+| Initialized | 1,000 | 27 ms | 493 ms |
+| Initialized | 2,000 | 53 ms | 500 ms |
+| Uninitialized | 1,000 | 30 ms | 488 ms |
+| Uninitialized | 2,000 | 62 ms | 509 ms |
+
+Home's uninitialized case rises 2.07× when statements double. Before the
+prefix fix, the same benchmark measured 107 ms and 364 ms (3.40×) in a
+separate run on the same machine; those two sessions are descriptive rather
+than a controlled A/B. The current result shows scaling for this generated
+workload only, not a win across all TypeScript programs.
+
+The run used macOS 26.7.3 on arm64 with 16 GiB RAM, `tsc` 5.7.3, and a
+stripped `home-tsc` built with `zig build home-tsc -Doptimize=ReleaseSmall
+-Dhome-tsc-strip=true -j1` through the 3,840 MB guard. The binary SHA-256 was
+`5d500585bdbcd25308f22025a35e35a33067ab88721d864f997f6c865e6da5a0`;
+the guarded build peaked at 2,468 MB. Reproduce with
+`python3 scripts/benchmarks/ts-checker-local-lookup.py --home zig-out/bin/home-tsc
+--tsc /opt/homebrew/bin/tsc --repetitions 5`. The older matrix below uses a
+different build, compiler versions and workloads; its ranking is unaffected.
+
 The latest complete matrix is the [paused declaration-identity continuation](#landed-declaration-identity-matrix-resumed),
 `20261011T232901Z-resumed`, under protocol 5. Home has the lowest median on
 **1/20** workloads and a lower median than native TS7 on **9/20**. All 150
