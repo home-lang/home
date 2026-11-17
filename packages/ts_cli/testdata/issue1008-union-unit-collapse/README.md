@@ -2,7 +2,8 @@
 
 TypeScript prints a complete boolean member run as `boolean` and all members
 of one enum as the enum name. A partial enum remains a union of member names.
-The fixture checks those cases alone and alongside unrelated union members.
+The fixture checks those cases alone and alongside unrelated union members,
+plus a one-member enum and a local enum shadowing one at module scope.
 
 Native TypeScript 7.0.2 owns the deterministic union member order (#975).
 The oracle audit checks the same diagnostic codes and locations against tsc
