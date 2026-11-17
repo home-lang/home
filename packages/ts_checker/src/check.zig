@@ -11129,10 +11129,7 @@ pub const Checker = struct {
                 defer incoming_assignments.deinit(self.gpa);
                 try self.reportVoidTruthiness(i.cond, cond_t);
                 try self.reportKnownTruthyCallableCondition(i.cond, cond_t, i.then_branch);
-                if (self.isElseIfStatement(node))
-                    try self.reportStaticTruthiness(i.cond)
-                else
-                    try self.reportStaticTruthinessForStatementCond(i.cond);
+                try self.reportStaticTruthiness(i.cond);
                 try self.pushNarrowScope();
                 try self.applyTypeGuard(i.cond, true);
                 try self.checkStatement(i.then_branch);
@@ -11314,7 +11311,7 @@ pub const Checker = struct {
                 if (prime_annotated_flow) try self.primeAnnotatedWhileConditionFlow(w.cond);
                 const cond_t = try self.checkExpression(w.cond);
                 try self.reportVoidTruthiness(w.cond, cond_t);
-                try self.reportStaticTruthinessForStatementCond(w.cond);
+                try self.reportStaticTruthiness(w.cond);
                 try self.applyTypeGuard(w.cond, true);
                 try self.checkStatement(w.body);
             },
@@ -11323,7 +11320,7 @@ pub const Checker = struct {
                 try self.checkStatement(d.body);
                 const cond_t = try self.checkExpression(d.cond);
                 try self.reportVoidTruthiness(d.cond, cond_t);
-                try self.reportStaticTruthinessForStatementCond(d.cond);
+                try self.reportStaticTruthiness(d.cond);
             },
             .for_stmt => {
                 const fr = hir_mod.forStmtOf(self.hir, node);
@@ -171484,44 +171481,7 @@ pub const Checker = struct {
                 break :blk types.Primitive.number_t;
             },
             .not => blk: {
-                // `!{ ÃÂ¢ÃÂÃÂ¦ }` / `![ ÃÂ¢ÃÂÃÂ¦ ]` / `!fn` / `!/re/` always evaluate to
-                // `false` because the operand is a truthy literal.
-                // tsc fires TS2872 ("This kind of expression is
-                // always truthy.") at the operand. Restrict to the
-                // operand kinds tsc actually flags (object literal,
-                // array literal, function-shaped, regex literal) ÃÂ¢ÃÂÃÂ `!"x"` / `!0`
-                // are intentionally not flagged.
-                switch (self.hir.kindOf(u.operand)) {
-                    .object_literal, .array_literal, .fn_decl, .fn_expr, .arrow_fn, .literal_regex => {
-                        try self.report(u.operand, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-                    },
-                    .literal_string => {
-                        // tsc fires TS2873 ("This kind of expression
-                        // is always falsy.") for `!""` ÃÂ¢ÃÂÃÂ the empty
-                        // string is the only falsy string literal.
-                        const s = hir_mod.literalStringOf(self.hir, u.operand);
-                        if (self.string_interner.get(s.value).len == 0) {
-                            try self.report(u.operand, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
-                        }
-                    },
-                    .literal_number => {
-                        const text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(u.operand), " \t\r\n");
-                        if (text.len > 0 and !std.mem.eql(u8, text, "0") and !std.mem.eql(u8, text, "1")) {
-                            try self.report(u.operand, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-                        }
-                    },
-                    // `!null` / `!undefined` ÃÂ¢ÃÂÃÂ both operands are the
-                    // canonical falsy literals. tsc emits TS2873 at
-                    // the operand. Mirrors fixture
-                    // `logicalNotOperatorWithAnyOtherType` rows
-                    // `var ResultIsBoolean7 = !undefined` and
-                    // `var ResultIsBoolean8 = !null` and the LHS-of-`&&`
-                    // path already handled at the logical-op site.
-                    .literal_null, .literal_undefined => {
-                        try self.report(u.operand, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
-                    },
-                    else => {},
-                }
+                try self.reportStaticTruthiness(u.operand);
                 break :blk (try self.logicalNotLiteralType(u.operand, operand_t)) orelse types.Primitive.boolean_t;
             },
             .typeof => try self.typeofExpressionType(),
@@ -171657,63 +171617,10 @@ pub const Checker = struct {
         try self.reportVoidTruthiness(l.lhs, lhs);
         const report_syntactic_truthiness = !self.virtualSectionIsJsLike(l.lhs) or
             self.sourceHasCheckJsDirective();
-        if (report_syntactic_truthiness and l.op == .@"or" and self.hir.kindOf(l.lhs) == .object_literal) {
-            // tsc anchors at the opening `(` for parenthesized LHS
-            // forms like `({}) || s`. Mirrors fixture
-            // `symbolType11.ts(7,1)`.
-            const lhs_pos = self.symbolOperandAnchorPos(l.lhs);
-            try self.reportAt(l.lhs, lhs_pos, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-        }
-        // parserArrowFunctionExpression3: `(() => { }) || a` ÃÂ¢ÃÂÃÂ tsc
-        // fires TS2872 on the arrow LHS of `||` (heap-allocated
-        // function object, always truthy). Mirror the `&&` branch
-        // below and anchor at the opening `(` for the parenthesized
-        // form. `object_literal` is handled above with its own
-        // anchor so we exclude it here.
-        if (report_syntactic_truthiness and l.op == .@"or" and
-            self.hir.kindOf(l.lhs) != .object_literal and
-            self.expressionAlwaysTruthyInLogicalAnd(l.lhs, lhs))
-        {
-            if (self.hir.kindOf(l.lhs) == .literal_string) {
-                try self.report(l.lhs, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-            } else {
-                const lhs_pos = self.truthinessOperandAnchorPos(l.lhs);
-                try self.reportAt(l.lhs, lhs_pos, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-            }
-        }
-        if (report_syntactic_truthiness and l.op == .@"and" and self.expressionAlwaysTruthyInLogicalAnd(l.lhs, lhs)) {
-            if (self.hir.kindOf(l.lhs) == .literal_string) {
-                try self.report(l.lhs, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-            } else {
-                try self.reportAt(l.lhs, self.truthinessOperandAnchorPos(l.lhs), TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-            }
-            try self.reportLogicalTruthyFunctionImplicitAnyParams(l.lhs);
-        }
-        if (report_syntactic_truthiness and l.op == .@"or" and self.expressionAlwaysFalsyInLogicalOr(l.lhs, lhs)) {
-            try self.reportAt(l.lhs, self.symbolOperandAnchorPos(l.lhs), TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
-        }
-        // tsc also fires TS2873 on the LHS of `&&` when it is a
-        // literal `null` / `undefined` / empty string (the always-falsy
-        // gate short-circuits the right operand). Mirrors fixtures like
-        // `logicalAndOperatorWithEveryType.ts` rows 23-24 and witness.ts.
-        if (report_syntactic_truthiness and l.op == .@"and") {
-            switch (self.hir.kindOf(l.lhs)) {
-                .literal_null, .literal_undefined => {
-                    try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
-                },
-                .literal_string => {
-                    const lit = hir_mod.literalStringOf(self.hir, l.lhs);
-                    if (self.string_interner.get(lit.value).len == 0) {
-                        try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
-                    }
-                },
-                else => {},
-            }
-        }
-        if (report_syntactic_truthiness and l.op == .@"or" and self.hir.kindOf(l.lhs) == .literal_string) {
-            const lit = hir_mod.literalStringOf(self.hir, l.lhs);
-            if (self.string_interner.get(lit.value).len == 0) {
-                try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+        if (report_syntactic_truthiness and lhs != types.Primitive.void_t) {
+            try self.reportStaticTruthiness(l.lhs);
+            if (l.op == .@"and" and self.syntacticTruthySemantics(l.lhs) == .always) {
+                try self.reportLogicalTruthyFunctionImplicitAnyParams(l.lhs);
             }
         }
         const literal_lhs = try self.expressionLiteralType(l.lhs, lhs);
@@ -172263,52 +172170,76 @@ pub const Checker = struct {
         }
     }
 
+    const SyntacticTruthiness = enum { sometimes, always, never };
+
+    fn syntacticUndefinedIsGlobal(self: *Checker, node: NodeId) bool {
+        const name = self.string_interner.intern("undefined") catch return true;
+        if (self.findVisibleSameNameValueBinding(node, name) != null) return false;
+        var ancestor = self.hir.parentOf(node);
+        while (ancestor != hir_mod.none_node_id) : (ancestor = self.hir.parentOf(ancestor)) {
+            const kind = self.hir.kindOf(ancestor);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            for (hir_mod.fnParams(self.hir, ancestor)) |parameter| {
+                if (self.hir.kindOf(parameter) != .parameter) continue;
+                const binding = hir_mod.parameterOf(self.hir, parameter).name;
+                if (binding != hir_mod.none_node_id and
+                    self.hir.kindOf(binding) == .identifier and
+                    hir_mod.identifierOf(self.hir, binding).name == name) return false;
+            }
+        }
+        return true;
+    }
+
+    /// TypeScript's `getSyntacticTruthySemantics`: this depends on source
+    /// syntax, not on the expression's inferred type. Parentheses are not
+    /// represented in HIR; assertion wrappers are peeled here and the
+    /// diagnostic reporter retains the outer expression as its anchor.
+    fn syntacticTruthySemantics(self: *Checker, node: NodeId) SyntacticTruthiness {
+        if (node == hir_mod.none_node_id) return .sometimes;
+        return switch (self.hir.kindOf(node)) {
+            .as_expr, .type_assertion, .satisfies_expr, .non_null_expr =>
+                self.syntacticTruthySemantics(hir_mod.asExpressionOf(self.hir, node).expr),
+            .literal_number => blk: {
+                const source_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(node), " \t\r\n");
+                // Error recovery can synthesize a numeric HIR node for a
+                // missing operand. Its source span is not a numeric token.
+                if (source_text.len == 0 or
+                    (!std.ascii.isDigit(source_text[0]) and source_text[0] != '.')) break :blk .sometimes;
+                break :blk if (std.mem.eql(u8, source_text, "0") or std.mem.eql(u8, source_text, "1")) .sometimes else .always;
+            },
+            .array_literal, .object_literal, .arrow_fn, .fn_expr, .fn_decl,
+            .class_expr, .literal_bigint, .literal_regex, .jsx_element,
+            .jsx_self_closing => .always,
+            .literal_null => .never,
+            .literal_undefined => if (self.syntacticUndefinedIsGlobal(node)) .never else .sometimes,
+            .unary_op => if (hir_mod.unaryOf(self.hir, node).op == .void_) .never else .sometimes,
+            .literal_string => if (self.string_interner.get(hir_mod.literalStringOf(self.hir, node).value).len == 0) .never else .always,
+            .template_literal => blk: {
+                const template = hir_mod.templateLiteralOf(self.hir, node);
+                if (template.exprs_len != 0) break :blk .sometimes;
+                const texts = hir_mod.templateLiteralTexts(self.hir, node);
+                if (texts.len != 1 or self.hir.kindOf(texts[0]) != .literal_string) break :blk .sometimes;
+                break :blk if (self.string_interner.get(hir_mod.literalStringOf(self.hir, texts[0]).value).len == 0) .never else .always;
+            },
+            .conditional => blk: {
+                const conditional = hir_mod.conditionalOf(self.hir, node);
+                const yes = self.syntacticTruthySemantics(conditional.then_branch);
+                const no = self.syntacticTruthySemantics(conditional.else_branch);
+                break :blk if (yes == no) yes else .sometimes;
+            },
+            .identifier => if (self.nodeIsUndefinedLiteralish(node) and self.syntacticUndefinedIsGlobal(node)) .never else .sometimes,
+            else => .sometimes,
+        };
+    }
+
     fn reportStaticTruthiness(self: *Checker, node: NodeId) CheckError!void {
-        // tsc anchors at the opening `(` for parenthesized truthy
-        // operands (e.g. `({}) ? a : b` reports column 1 on `(`, not
-        // column 2 on `{`). Mirrors fixture
-        // `conditionalOperatorConditionIsObjectType.ts(28,1)`.
-        // EXCEPT: when the operand sits in the required `(cond)` slot
-        // of an `if`/`while`/`do-while` statement (e.g. `else if (2)`),
-        // those parens belong to the statement syntax and shouldn't be
-        // back-walked ÃÂ¢ÃÂÃÂ tsc anchors at the literal column itself.
-        // See constEnum4.ts(3,10).
-        const anchor = if (self.nodeIsStatementCondOperand(node)) null else self.symbolOperandAnchorPos(node);
-        switch (self.hir.kindOf(node)) {
-            .as_expr, .type_assertion => {
-                const a = hir_mod.asExpressionOf(self.hir, node);
-                switch (self.hir.kindOf(a.expr)) {
-                    .literal_null, .literal_undefined => try self.reportAt(node, anchor, TsCodes.expression_always_falsy, "This kind of expression is always falsy."),
-                    else => {},
-                }
-            },
-            .object_literal, .array_literal, .fn_decl, .fn_expr, .arrow_fn, .literal_regex => {
-                try self.reportAt(node, anchor, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-            },
-            .literal_string => {
-                const lit = hir_mod.literalStringOf(self.hir, node);
-                if (self.string_interner.get(lit.value).len == 0) {
-                    try self.reportAt(node, anchor, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
-                } else {
-                    try self.reportAt(node, anchor, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-                }
-            },
-            .literal_number => {
-                const value = hir_mod.literalNumberOf(self.hir, node);
-                // TypeScript deliberately permits `while (0)` / `while (1)`
-                // idioms in every truthiness slot, including conditionals.
-                if (value != 0 and value != 1) {
-                    try self.reportAt(node, anchor, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-                }
-            },
-            // Literal `null` / `undefined` ÃÂ¢ÃÂÃÂ always falsy. tsc fires
-            // TS2873 in any truthiness slot (conditional cond,
-            // if-stmt, while-stmt). Fixture coverage includes
-            // `conditionalOperatorConditoinIsAnyType.ts` rows 26-31.
-            .literal_null, .literal_undefined => {
-                try self.reportAt(node, anchor, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
-            },
-            else => {},
+        const semantics = self.syntacticTruthySemantics(node);
+        if (semantics == .sometimes) return;
+        const anchor = if (self.nodeIsStatementCondOperand(node)) null else self.truthinessOperandAnchorPos(node);
+        if (semantics == .always) {
+            try self.reportAt(node, anchor, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+        } else {
+            try self.reportAt(node, anchor, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
         }
     }
 
@@ -172329,39 +172260,6 @@ pub const Checker = struct {
             .code = TsCodes.operator_cannot_be_applied,
             .message = msg,
         });
-    }
-
-    /// Variant of `reportStaticTruthiness` used for if/while/do-while
-    /// statement conditions. Matches tsgo's pattern: numeric & boolean
-    /// literals are excluded (tsc skips them in statement contexts ÃÂ¢ÃÂÃÂ
-    /// see baselines/reference/ifDoWhileStatements.errors.txt where
-    /// `if (true)` and `if (0.0)` are NOT flagged), but `null`,
-    /// `undefined`, and the empty string ARE flagged as falsy.
-    /// Constructor calls (`new Foo()`) are not flagged either.
-    fn reportStaticTruthinessForStatementCond(self: *Checker, node: NodeId) CheckError!void {
-        switch (self.hir.kindOf(node)) {
-            .object_literal, .array_literal, .arrow_fn, .literal_regex => {
-                try self.report(node, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-            },
-            .literal_null, .literal_undefined => {
-                try self.report(node, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
-            },
-            .literal_string => {
-                const lit = hir_mod.literalStringOf(self.hir, node);
-                if (self.string_interner.get(lit.value).len == 0) {
-                    try self.report(node, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
-                } else {
-                    try self.report(node, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-                }
-            },
-            else => {},
-        }
-    }
-
-    fn isElseIfStatement(self: *Checker, node: NodeId) bool {
-        const parent = self.hir.parentOf(node);
-        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .if_stmt) return false;
-        return hir_mod.ifOf(self.hir, parent).else_branch == node;
     }
 
     /// Generic call-site instantiation. For each parameter slot
