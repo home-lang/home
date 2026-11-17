@@ -141973,8 +141973,9 @@ pub const Checker = struct {
         return t;
     }
 
-    /// The return type of a call to a non-generic function with one
-    /// signature, for a loop head estimate.
+    /// The return type of a call with one signature, for a loop head estimate.
+    /// Generic signatures use only estimated arguments or explicit type
+    /// arguments, so the loop body is never checked while estimating its head.
     fn estimateCallType(
         self: *Checker,
         node: NodeId,
@@ -141984,6 +141985,34 @@ pub const Checker = struct {
         depth: u8,
     ) CheckError!?TypeId {
         const call = hir_mod.callOf(self.hir, node);
+        const args = hir_mod.callArgs(self.hir, node);
+        const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
+        var arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer arg_types.deinit(self.gpa);
+        const can_estimate_args = blk: {
+            for (args) |arg| {
+                if (self.hir.kindOf(arg) == .spread) break :blk false;
+                const arg_t = (try self.estimateValueType(arg, name, current, walk, depth)) orelse break :blk false;
+                try arg_types.append(self.gpa, arg_t);
+            }
+            break :blk true;
+        };
+        // Promise's static methods use the same structural return model as
+        // ordinary call checking. Its declared member type is only an `any`
+        // fallback, so signature collection alone cannot estimate it.
+        if (can_estimate_args and self.hir.kindOf(call.callee) == .member_access) {
+            const member = hir_mod.memberOf(self.hir, call.callee);
+            if (self.hir.kindOf(member.object) == .identifier) {
+                const object_name = hir_mod.identifierOf(self.hir, member.object).name;
+                const receiver_t = (try self.estimateIdentifierType(member.object, name, current, walk, depth)) orelse
+                    if (std.mem.eql(u8, self.string_interner.get(object_name), "Promise") and
+                        !self.programGlobalThisNameIsShadowed(member.object, object_name))
+                        try self.promiseGlobalType()
+                    else
+                        types.Primitive.none;
+                if (try self.builtinPromiseStaticCallTypeWithReceiver(node, call.callee, args, arg_types.items, receiver_t)) |promise_t| return promise_t;
+            }
+        }
         const callee_t = switch (self.hir.kindOf(call.callee)) {
             .identifier => try self.estimateIdentifierType(call.callee, name, current, walk, depth),
             .member_access => try self.estimateMemberType(call.callee, name, current, walk, depth),
@@ -141995,8 +142024,17 @@ pub const Checker = struct {
         defer signatures.deinit(self.gpa);
         try self.collectCallSignatures(self.subtractNullUndefined(callee_t) catch callee_t, &signatures);
         if (signatures.items.len != 1) return null;
-        const signature = signatures.items[0];
-        if (self.generic_signature_params.contains(signature)) return null;
+        var signature = signatures.items[0];
+        if (self.generic_signature_params.get(signature)) |type_params| {
+            if (type_arg_nodes.len > 0) {
+                if (!self.typeArgumentCountMatches(type_params, type_arg_nodes.len)) return null;
+                var used_explicit_type_args = false;
+                signature = try self.instantiateSignatureWithExplicitTypeArgsUnchecked(node, signature, type_arg_nodes, &used_explicit_type_args);
+            } else {
+                if (!can_estimate_args) return null;
+                signature = try self.instantiateSignatureFromArgs(signature, args, arg_types.items);
+            }
+        } else if (type_arg_nodes.len > 0) return null;
         const return_t = self.interner.signatureReturn(signature) orelse return null;
         if (return_t == types.Primitive.none or self.isThisTypeParameter(return_t)) return null;
         if (call.optional and self.typeIsPossiblyNullishStrict(callee_t)) {
@@ -156302,13 +156340,24 @@ pub const Checker = struct {
         args: []const NodeId,
         arg_types: []const TypeId,
     ) CheckError!?TypeId {
+        return self.builtinPromiseStaticCallTypeWithReceiver(node, callee, args, arg_types, null);
+    }
+
+    fn builtinPromiseStaticCallTypeWithReceiver(
+        self: *Checker,
+        node: NodeId,
+        callee: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        estimated_receiver_t: ?TypeId,
+    ) CheckError!?TypeId {
         if (args.len > 1 or args.len != arg_types.len) return null;
         if (self.hir.kindOf(callee) != .member_access) return null;
         const member = hir_mod.memberOf(self.hir, callee);
         if (self.hir.kindOf(member.object) != .identifier) return null;
         const object_id = hir_mod.identifierOf(self.hir, member.object);
         if (!std.mem.eql(u8, self.string_interner.get(object_id.name), "Promise")) return null;
-        const receiver_t = self.hir.typeOf(member.object);
+        const receiver_t = estimated_receiver_t orelse self.hir.typeOf(member.object);
         if (receiver_t != try self.promiseGlobalType()) return null;
         for (args) |arg| {
             if (self.hir.kindOf(arg) == .spread) return null;
@@ -156324,7 +156373,13 @@ pub const Checker = struct {
             return try self.buildStructuralPromise(types.Primitive.void_t);
         }
 
-        if (self.promiseStaticCallHasContextualType(node)) return null;
+        // A loop-head estimate has only the argument's independently known
+        // type. For `resolve`, that is enough to determine the awaited value
+        // even when the assignment containing the call has a contextual type.
+        // Keep the ordinary call checker and collection methods on their
+        // existing contextual-inference path.
+        if (self.promiseStaticCallHasContextualType(node) and
+            (estimated_receiver_t == null or !is_resolve)) return null;
         const arg_t = arg_types[0];
         if (is_resolve) {
             return try self.buildStructuralPromise(self.evalAwaited(self.widenLiteralType(arg_t)));
