@@ -5,5 +5,5 @@
     "strict": true,
     "noEmit": true
   },
-  "files": ["function-boundary.ts"]
+  "files": ["function-boundary.ts", "class-field-forward.ts"]
 }
