@@ -82332,7 +82332,9 @@ pub const Checker = struct {
                                 kb.appendSlice(self.gpa, std.fmt.bufPrint(&nbuf, ",{d}", .{at}) catch break :memo) catch break :memo;
                             }
                             if (self.alias_instantiation_memo.get(kb.items)) |hit| {
-                                if (allow_alias_display and !self.alias_display_names.contains(hit)) {
+                                if (allow_alias_display and !self.alias_display_names.contains(hit) and
+                                    !self.mappedAliasUsesCanonicalArrayDisplay(info.body_node, hit))
+                                {
                                     try self.registerAliasDisplayNameInner(hit, r.name, alias_arg_list.items, false);
                                 }
                                 return hit;
@@ -82372,7 +82374,7 @@ pub const Checker = struct {
                                 self.instantiation_defer_events +%= 1;
                                 break :blk_m info.body;
                             };
-                            if (allow_alias_display) {
+                            if (allow_alias_display and !self.mappedAliasUsesCanonicalArrayDisplay(info.body_node, mapped_t)) {
                                 try self.registerAliasDisplayName(mapped_t, r.name, alias_arg_list.items);
                             }
                             self.memoPutAliasInstantiation(&memo_key, memo_defer_baseline, mapped_t, info.body);
@@ -89442,6 +89444,17 @@ pub const Checker = struct {
             }
             break :blk null;
         };
+        if (homomorphic_source) |source_t| {
+            if (m.remap == hir_mod.none_node_id and m.readonly == 1 and m.optional == 0 and
+                self.mappedTypeHasIdentityTemplate(m))
+            {
+                if (self.isActualTupleType(source_t)) return try self.internReadonlyTupleType(source_t);
+                if (self.array_origin_types.contains(source_t)) {
+                    const element = self.interner.objectNumberIndex(source_t);
+                    if (element != types.Primitive.none) return try self.internReadonlyArrayType(element);
+                }
+            }
+        }
         var can_materialize = try self.collectMappedLiteralKeys(constraint_t, &literal_keys, &literal_key_types);
         if (homomorphic_source) |source_t| {
             if (self.isActualTupleType(source_t)) {
@@ -90222,6 +90235,13 @@ pub const Checker = struct {
         const tp = hir_mod.typeParameterOf(self.hir, m.type_param);
         const index_name = self.bareTypeNodeName(ia.index) orelse return false;
         return index_name == tp.name;
+    }
+
+    fn mappedAliasUsesCanonicalArrayDisplay(self: *Checker, body_node: NodeId, result: TypeId) bool {
+        if (body_node == hir_mod.none_node_id or self.hir.kindOf(body_node) != .mapped_type) return false;
+        const mapped = hir_mod.mappedTypeOf(self.hir, body_node);
+        return mapped.remap == hir_mod.none_node_id and mapped.readonly == 1 and mapped.optional == 0 and
+            self.mappedTypeHasIdentityTemplate(mapped) and self.typeIsReadonlyArrayLike(result);
     }
 
     fn bareTypeNodeName(self: *Checker, node: NodeId) ?hir_mod.StringId {
@@ -104455,6 +104475,18 @@ pub const Checker = struct {
         }
         if (source_t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(source_t).is_object_type) return null;
+
+        // Homomorphic Readonly over an array is the readonly array type, not
+        // an indexed object with a copied mutable Array method surface.
+        // Keep its array provenance so reads, assignability, and diagnostics
+        // all use the same representation as `readonly T[]`.
+        if (kind == .readonly and self.isActualTupleType(source_t)) {
+            return try self.internReadonlyTupleType(source_t);
+        }
+        if (kind == .readonly and self.array_origin_types.contains(source_t)) {
+            const element = self.interner.objectNumberIndex(source_t);
+            if (element != types.Primitive.none) return try self.internReadonlyArrayType(element);
+        }
 
         // Pick/Omit need the literal key set from the second arg.
         var key_set: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
@@ -118967,6 +118999,13 @@ pub const Checker = struct {
         }
 
         if (!source_flags.is_object_type) return error.UnsupportedProgramType;
+        if (kind == .readonly and self.isActualTupleType(source_t)) {
+            return self.internReadonlyTupleType(source_t);
+        }
+        if (kind == .readonly and self.array_origin_types.contains(source_t)) {
+            const element = self.interner.objectNumberIndex(source_t);
+            if (element != types.Primitive.none) return self.internReadonlyArrayType(element);
+        }
         var selected_keys: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer selected_keys.deinit(self.gpa);
         if (keyed_utility) {
@@ -174194,6 +174233,32 @@ pub const Checker = struct {
         return array_t;
     }
 
+    fn internReadonlyTupleType(self: *Checker, source: TypeId) CheckError!TypeId {
+        const members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
+        defer self.gpa.free(members);
+        for (members) |*member| member.is_readonly = true;
+        const tuple = self.interner.internObjectTypeWithIndexAndSymbol(
+            members,
+            self.interner.objectStringIndex(source),
+            self.interner.objectNumberIndex(source),
+            self.interner.objectSymbolIndex(source),
+        ) catch return error.OutOfMemory;
+        try self.markTupleOrigin(tuple);
+        try self.readonly_index_types.put(self.gpa, tuple, .{});
+        if (self.tuple_trailing_rest_types.get(source)) |rest| {
+            try self.tuple_trailing_rest_types.put(self.gpa, tuple, rest);
+        }
+        if (self.tuple_trailing_variadic_types.get(source)) |rest| {
+            try self.tuple_trailing_variadic_types.put(self.gpa, tuple, rest);
+        }
+        if (!self.symbolic_tuple_layouts.contains(tuple)) {
+            if (self.symbolic_tuple_layouts.get(source)) |layout| {
+                try self.symbolic_tuple_layouts.put(self.gpa, tuple, try self.gpa.dupe(SymbolicTupleSegment, layout));
+            }
+        }
+        return tuple;
+    }
+
     fn compactReadonlyArrayElement(self: *Checker, t: TypeId) ?TypeId {
         if (!self.array_origin_types.contains(t) or !self.readonly_index_types.contains(t)) return null;
         if (t >= self.interner.pool.typeCount()) return null;
@@ -176428,6 +176493,18 @@ pub const Checker = struct {
                 const array_t = try self.instantiateMappedArrayType(m, raw_key_tp, subs);
                 return try self.finishSubstitutedMappedType(mapped_t, array_t, subs);
             }
+            if (m.readonly == .add and m.optional == .none and
+                self.array_origin_types.contains(source_t) and !self.isActualTupleType(source_t))
+            {
+                return try self.instantiateMappedArrayType(m, raw_key_tp, subs);
+            }
+            if (m.readonly == .add and m.optional == .none and self.isActualTupleType(source_t)) {
+                if (self.indexedAccessPayloadOrNull(m.template)) |indexed| {
+                    if (indexed.object == source_tp and indexed.index == raw_key_tp) {
+                        return try self.internReadonlyTupleType(source_t);
+                    }
+                }
+            }
         }
         // TypeScript never evaluates `keyof` for a homomorphic mapped type over
         // a primitive: `instantiateMappedType` returns the primitive first, so
@@ -176754,9 +176831,9 @@ pub const Checker = struct {
                 .none => element_t,
             };
         }
+        if (mapped.readonly == .add) return try self.internReadonlyArrayType(element_t);
         const array_t = self.interner.internArrayType(self.string_interner, element_t) catch return error.OutOfMemory;
         try self.array_origin_types.put(self.gpa, array_t, {});
-        if (mapped.readonly == .add) try self.readonly_index_types.put(self.gpa, array_t, .{});
         return array_t;
     }
 
@@ -200264,18 +200341,29 @@ pub const Checker = struct {
         target: TypeId,
         depth: u8,
     ) CheckError!?DiagnosticChainEntry {
-        if (!self.array_origin_types.contains(source) or !self.array_origin_types.contains(target)) return null;
+        const source_is_tuple = self.isActualTupleType(source);
+        if ((!self.array_origin_types.contains(source) and !source_is_tuple) or
+            !self.array_origin_types.contains(target) or self.isActualTupleType(target)) return null;
         const source_elem = self.interner.objectNumberIndex(source);
         const target_elem = self.interner.objectNumberIndex(target);
         if (source_elem == types.Primitive.none or target_elem == types.Primitive.none or
             try self.indexSignatureValueAssignable(source_elem, target_elem)) return null;
-        var entry = try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
+        // A tuple's number index combines its fixed elements. TypeScript
+        // widens fresh element literals when it relates that index to an
+        // array element, while retaining the tuple's literal display in the
+        // outer diagnostic (`readonly [1]` -> `readonly boolean[]`).
+        const display_source_elem = if (source_is_tuple and target_elem != types.Primitive.never and
+            !self.typeCouldHaveTopLevelSingletonTypes(target_elem, 0))
+            try self.widenFreshLiteralType(source_elem)
+        else
+            source_elem;
+        var entry = try self.typeNotAssignableChainEntry(display_source_elem, target_elem, false);
         // The element pair carries its own explanation: a tuple element names
         // the position that failed, a nested array its own element type.
         // Readonly-to-mutable states its own reason and is not expanded.
         if (entry.code == TsCodes.type_not_assignable and depth < 3) {
             const children = try self.buildAssignabilityElaborationChainDepth(
-                source_elem,
+                display_source_elem,
                 target_elem,
                 depth + 1,
                 false,
