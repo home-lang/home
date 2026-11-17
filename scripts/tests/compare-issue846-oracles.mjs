@@ -95,6 +95,8 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1023-assignment-joins/') ||
   path.includes('/issue1027-loop-head-values/') ||
   path.includes('/issue1028-compound-assignment-flow/') ||
+  path.includes('/issue1026-speculative-diagnostics/') ||
+  path.includes('/issue1030-catch-shadow-write/') ||
   path.includes('/issue1034-nullish-arithmetic-operands/') ||
   path.includes('/issue1035-compound-annotation-flow/') ||
   path.includes('/issue1036-own-initializer-reads/') ||
