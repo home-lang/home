@@ -92760,9 +92760,18 @@ pub const Checker = struct {
                     after_cond;
                 break :blk try self.mergeDefiniteEvolvingAnyFlowTypes(then_t, else_t);
             },
-            .for_stmt => try self.identifierFlowTypeAfterStatement(hir_mod.forStmtOf(self.hir, stmt).body, name, incoming, widen_assignments),
-            .for_in_stmt, .for_of_stmt => try self.identifierFlowTypeAfterStatement(hir_mod.forInOf(self.hir, stmt).body, name, incoming, widen_assignments),
-            .while_stmt => try self.identifierFlowTypeAfterStatement(hir_mod.whileOf(self.hir, stmt).body, name, incoming, widen_assignments),
+            .for_stmt => try self.mergeDefiniteEvolvingAnyFlowTypes(
+                incoming,
+                try self.identifierFlowTypeAfterStatement(hir_mod.forStmtOf(self.hir, stmt).body, name, incoming, widen_assignments),
+            ),
+            .for_in_stmt, .for_of_stmt => try self.mergeDefiniteEvolvingAnyFlowTypes(
+                incoming,
+                try self.identifierFlowTypeAfterStatement(hir_mod.forInOf(self.hir, stmt).body, name, incoming, widen_assignments),
+            ),
+            .while_stmt => try self.mergeDefiniteEvolvingAnyFlowTypes(
+                incoming,
+                try self.identifierFlowTypeAfterStatement(hir_mod.whileOf(self.hir, stmt).body, name, incoming, widen_assignments),
+            ),
             .do_while_stmt => try self.identifierFlowTypeAfterStatement(hir_mod.doWhileOf(self.hir, stmt).body, name, incoming, widen_assignments),
             .switch_stmt, .try_stmt, .labeled_stmt => incoming,
             // Any other statement: the writes nested in it that always run
@@ -93000,12 +93009,14 @@ pub const Checker = struct {
 
     fn recoveredEvolvingAnyFlowTypeAt(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
         const use_start = self.hir.spanOf(node).start;
+        const containing_function = self.enclosingFunctionLike(node);
         var declaration = hir_mod.none_node_id;
         var declaration_start: u32 = 0;
         var candidate: NodeId = 1;
         while (candidate < self.hir.nodeCount()) : (candidate += 1) {
             const kind = self.hir.kindOf(candidate);
             if (kind != .var_decl and kind != .let_decl) continue;
+            if (self.enclosingFunctionLike(candidate) != containing_function) continue;
             const span = self.hir.spanOf(candidate);
             if (span.start >= use_start or span.start < declaration_start) continue;
             const variable = hir_mod.varDeclOf(self.hir, candidate);
@@ -93022,6 +93033,7 @@ pub const Checker = struct {
         candidate = 1;
         while (candidate < self.hir.nodeCount()) : (candidate += 1) {
             if (self.hir.kindOf(candidate) != .assignment) continue;
+            if (self.enclosingFunctionLike(candidate) != containing_function) continue;
             const span = self.hir.spanOf(candidate);
             if (span.start <= declaration_start or span.start >= use_start) continue;
             const assignment = hir_mod.assignmentOf(self.hir, candidate);
@@ -95937,7 +95949,15 @@ pub const Checker = struct {
                                         try self.sourceTypeForVarDeclAssignmentReport(v.init, init_type, declared_type);
                                     if (self.hir.kindOf(v.init) == .identifier) {
                                         const declared_init_t = self.visibleAnnotatedIdentifierType(v.init) orelse self.typeOfIdentifierDeclared(v.init);
-                                        if (self.enumIdentityInfo(declared_init_t) != null) report_source = declared_init_t;
+                                        // Keep the member reached by assignment flow (E.A)
+                                        // even when the binding is declared as the whole
+                                        // enum E. Only fall back to E when the read has no
+                                        // member identity to display (#1031).
+                                        if (self.enumIdentityInfo(declared_init_t) != null and
+                                            self.interner.enumLiteralInfo(report_source) == null)
+                                        {
+                                            report_source = declared_init_t;
+                                        }
                                     }
                                     if (!try self.tryReportVarDeclSignaturePredicateAssignment(diag_node, v.init, v.type_annotation, report_source, declared_type)) {
                                         if (!try self.tryReportConditionalImportedNamespaceNotAssignable(diag_node, v.init, declared_type)) {
@@ -207442,6 +207462,16 @@ pub const Checker = struct {
             },
             .literal_null => types.Primitive.null_t,
             .literal_undefined => types.Primitive.undefined_t,
+            .member_access => blk: {
+                const member = hir_mod.memberOf(self.hir, value_node);
+                if (self.hir.kindOf(member.object) == .identifier) {
+                    const owner = hir_mod.identifierOf(self.hir, member.object);
+                    if (try self.enumMemberAccessType(owner.name, member.name, value_node)) |member_t| {
+                        break :blk member_t;
+                    }
+                }
+                break :blk fallback;
+            },
             // `!x` records its fresh literal; a `let` initializer's own type
             // has been widened (#1017).
             .unary_op => self.recordedLogicalNotLiteral(value_node) orelse fallback,
