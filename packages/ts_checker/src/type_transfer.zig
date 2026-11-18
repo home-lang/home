@@ -358,7 +358,15 @@ const Builder = struct {
             .union_payloads => blk: {
                 const p = try self.payload(.union_payloads, id);
                 const members = try self.mappedTypes(try self.slice(.member_pool, p.members_start, p.members_len));
-                break :blk try target.internUnion(members);
+                const union_t = try target.internUnion(members);
+                if (self.source.union_alias_info.get(id)) |identity| {
+                    break :blk try target.internAliasedUnion(union_t, .{
+                        .name = try self.string(identity.name),
+                        .declaration = if (identity.declaration == hir.none_node_id) hir.none_node_id else try self.node(identity.declaration),
+                        .origin = if (identity.origin == 0) 0 else try self.string(identity.origin),
+                    });
+                }
+                break :blk union_t;
             },
             .intersection_payloads => blk: {
                 const p = try self.payload(.intersection_payloads, id);
@@ -528,6 +536,10 @@ fn rollback(target: *interner.Interner, lengths: Offsets) void {
     while (enums.next()) |entry| {
         if (entry.key_ptr.* >= first) _ = target.enum_literal_info.remove(entry.key_ptr.*);
     }
+    var union_aliases = target.union_alias_info.iterator();
+    while (union_aliases.next()) |entry| {
+        if (entry.key_ptr.* >= first) _ = target.union_alias_info.remove(entry.key_ptr.*);
+    }
     inline for (comptime std.meta.fieldNames(types.Pool)) |name| {
         const column = @field(Column, name);
         if (comptime column != .gpa) @field(target.pool, name).items.len = lengths.get(column);
@@ -693,6 +705,12 @@ fn prepareRoots(target: *interner.Interner, source: *const interner.Interner, na
             !source.pool.flagsOf(entry.key_ptr.*).is_enum_literal or
             try payloadColumn(source.pool.flagsOf(entry.key_ptr.*)) != .literal_payloads) return error.InvalidTypeGraph;
     }
+    var union_alias_entries = source.union_alias_info.iterator();
+    while (union_alias_entries.next()) |entry| {
+        if (entry.key_ptr.* < types.Primitive.first_dynamic or entry.key_ptr.* >= count or
+            try payloadColumn(source.pool.flagsOf(entry.key_ptr.*)) != .union_payloads or
+            (entry.value_ptr.declaration == hir.none_node_id and entry.value_ptr.origin == 0)) return error.InvalidTypeGraph;
+    }
     return .{ .target = target, .lengths = lengths, .relocation = relocation };
 }
 
@@ -713,6 +731,30 @@ test "type transfer relocates unique symbol declaration identity" {
     const mapped_well_known = try relocated.typeId(well_known);
     try T.expectEqual(types.UniqueSymbolIdentity{ .name = 131, .declaration = 1007 }, target.literalOf(mapped_declared).symbol_lit);
     try T.expectEqual(types.UniqueSymbolIdentity{ .name = 132 }, target.literalOf(mapped_well_known).symbol_lit);
+}
+
+test "type transfer preserves distinct named union identities" {
+    var source = try interner.Interner.init(T.allocator);
+    defer source.deinit();
+    var target = try interner.Interner.init(T.allocator);
+    defer target.deinit();
+    const first_member = try source.internStringLiteral(21);
+    const second_member = try source.internStringLiteral(22);
+    const bare = try source.internUnion(&.{ first_member, second_member });
+    const named = try source.internAliasedUnion(bare, .{ .name = 31, .declaration = 7 });
+    const imported = try source.internAliasedUnion(bare, .{ .name = 31, .origin = 51 });
+    var names = TestNames{};
+    var pending = try prepare(&target, &source, names.names());
+    defer pending.deinit();
+    const mapped_bare = try pending.ids().typeId(bare);
+    const mapped_named = try pending.ids().typeId(named);
+    const mapped_imported = try pending.ids().typeId(imported);
+    try T.expect(mapped_bare != mapped_named);
+    try T.expect(mapped_imported != mapped_named and mapped_imported != mapped_bare);
+    try T.expectEqualDeep(target.unionMembers(mapped_bare), target.unionMembers(mapped_named));
+    try T.expectEqual(types.UnionAliasIdentity{ .name = 131, .declaration = 1007 }, target.union_alias_info.get(mapped_named).?);
+    try T.expectEqual(types.UnionAliasIdentity{ .name = 131, .origin = 151 }, target.union_alias_info.get(mapped_imported).?);
+    try T.expect(target.union_alias_info.get(mapped_bare) == null);
 }
 
 const TestNames = struct {

@@ -167,6 +167,18 @@ pub const EnumLiteralInfo = struct {
     member_name: StringId,
 };
 
+/// Declaration identity carried by a named union. The same members can form
+/// an unnamed union or several differently named aliases without sharing a
+/// diagnostic name. A local declaration or source-qualified Program origin
+/// distinguishes equal names, and all populated IDs relocate across owners.
+pub const UnionAliasIdentity = struct {
+    name: StringId,
+    declaration: hir.NodeId = hir.none_node_id,
+    /// Source-qualified Program declaration identity for an imported alias.
+    /// Local aliases use `declaration`; imported aliases use `origin`.
+    origin: StringId = 0,
+};
+
 /// Header for every interned type. Side payload is in a separate column
 /// indexed by the same `TypeId` (SoA — see `Pool` below).
 pub const TypeHeader = struct {

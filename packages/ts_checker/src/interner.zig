@@ -21,6 +21,7 @@
 //! require the relation engine to determine structural compatibility.
 
 const std = @import("std");
+const hir = @import("hir");
 const types = @import("types.zig");
 
 pub const TypeId = types.TypeId;
@@ -120,9 +121,12 @@ pub const TypeKey = union(Kind) {
         member_name: StringId,
         value: types.LiteralData,
     },
-    /// Union: members must be sorted by TypeId (interner sorts before
-    /// keying so `A | B` and `B | A` collapse).
-    union_t: []const TypeId,
+    /// Union members are canonical; an alias declaration is part of the key
+    /// so a named union cannot rename an unrelated structural union.
+    union_t: struct {
+        members: []const TypeId,
+        alias: ?types.UnionAliasIdentity = null,
+    },
     intersection: []const TypeId,
     conditional: types.ConditionalPayload,
     mapped: types.MappedPayload,
@@ -187,7 +191,16 @@ pub const TypeKey = union(Kind) {
                     },
                 }
             },
-            .union_t, .intersection => |members| {
+            .union_t => |u| {
+                for (u.members) |m| hasher.update(std.mem.asBytes(&m));
+                if (u.alias) |alias| {
+                    hasher.update(&[_]u8{1});
+                    hasher.update(std.mem.asBytes(&alias.name));
+                    hasher.update(std.mem.asBytes(&alias.declaration));
+                    hasher.update(std.mem.asBytes(&alias.origin));
+                } else hasher.update(&[_]u8{0});
+            },
+            .intersection => |members| {
                 for (members) |m| hasher.update(std.mem.asBytes(&m));
             },
             .conditional => |c| {
@@ -259,7 +272,15 @@ pub const TypeKey = union(Kind) {
                     .symbol_lit => |identity| identity.name == b.value.symbol_lit.name and identity.declaration == b.value.symbol_lit.declaration,
                 };
             },
-            .union_t => |a| std.mem.eql(TypeId, a, other.union_t),
+            .union_t => |a| blk: {
+                const b = other.union_t;
+                if (!std.mem.eql(TypeId, a.members, b.members)) break :blk false;
+                if (a.alias) |alias| {
+                    const other_alias = b.alias orelse break :blk false;
+                    break :blk alias.name == other_alias.name and alias.declaration == other_alias.declaration and alias.origin == other_alias.origin;
+                }
+                break :blk b.alias == null;
+            },
             .intersection => |a| std.mem.eql(TypeId, a, other.intersection),
             .conditional => |a| {
                 const b = other.conditional;
@@ -402,6 +423,10 @@ pub const Interner = struct {
     /// published the entry (the `is_enum_literal` header flag gates
     /// every lookup).
     enum_literal_info: std.AutoHashMapUnmanaged(TypeId, types.EnumLiteralInfo) = .empty,
+    /// Named union origins are sparse. The TypeKey carries this identity for
+    /// deduplication; this reverse map lets transfer preserve it by TypeId.
+    /// Checker reads use `unionAliasInfo` because writers may rehash the map.
+    union_alias_info: std.AutoHashMapUnmanaged(TypeId, types.UnionAliasIdentity) = .empty,
 
     pub fn init(gpa: std.mem.Allocator) !Interner {
         return initWithHeaderCapacity(gpa, POOL_INITIAL_CAPACITY);
@@ -439,6 +464,7 @@ pub const Interner = struct {
             self.shards[i].deinit(self.gpa);
         }
         self.enum_literal_info.deinit(self.gpa);
+        self.union_alias_info.deinit(self.gpa);
         self.pool.deinit();
     }
 
@@ -589,7 +615,23 @@ pub const Interner = struct {
             flags = @bitCast(a | b);
         }
         flags.is_union = true;
-        return try self.internKeyWithSlice(.union_t, canonical, flags);
+        return try self.internKeyWithSlice(.union_t, canonical, flags, null);
+    }
+
+    /// Give an explicitly declared union its alias-symbol identity while
+    /// preserving the same constituent types for relation checks.
+    pub fn internAliasedUnion(self: *Interner, union_t: TypeId, alias: types.UnionAliasIdentity) !TypeId {
+        std.debug.assert(alias.declaration != hir.none_node_id or alias.origin != 0);
+        if (union_t >= self.pool.typeCount() or !self.pool.flagsOf(union_t).is_union) return union_t;
+        return self.internKeyWithSlice(.union_t, self.unionMembers(union_t), self.pool.flagsOf(union_t), alias);
+    }
+
+    /// A copied identity is safe after the lock is released. Hash-map storage
+    /// can move when another checker interns a different named union.
+    pub fn unionAliasInfo(self: *Interner, id: TypeId) ?types.UnionAliasIdentity {
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        return self.union_alias_info.get(id);
     }
 
     /// Intern an intersection. Single-member intersection collapses.
@@ -610,7 +652,7 @@ pub const Interner = struct {
         const canonical = scratch[0..write];
         if (canonical.len == 1) return canonical[0];
 
-        return try self.internKeyWithSlice(.intersection, canonical, .{ .is_intersection = true });
+        return try self.internKeyWithSlice(.intersection, canonical, .{ .is_intersection = true }, null);
     }
 
     pub fn internKeyof(self: *Interner, operand: TypeId) !TypeId {
@@ -1309,9 +1351,10 @@ pub const Interner = struct {
         comptime tag: TypeKey.Kind,
         canonical: []const TypeId,
         flags: types.TypeFlags,
+        alias: ?types.UnionAliasIdentity,
     ) !TypeId {
         const probe: TypeKey = switch (tag) {
-            .union_t => .{ .union_t = canonical },
+            .union_t => .{ .union_t = .{ .members = canonical, .alias = alias } },
             .intersection => .{ .intersection = canonical },
             else => @compileError("internKeyWithSlice: unsupported tag"),
         };
@@ -1338,7 +1381,7 @@ pub const Interner = struct {
         // key holds stable storage.
         const owned = try shard.key_arena.allocator().dupe(TypeId, canonical);
         const owned_key: TypeKey = switch (tag) {
-            .union_t => .{ .union_t = owned },
+            .union_t => .{ .union_t = .{ .members = owned, .alias = alias } },
             .intersection => .{ .intersection = owned },
             else => unreachable,
         };
@@ -1359,6 +1402,13 @@ pub const Interner = struct {
         try shard.table.ensureUnusedCapacity(self.gpa, 1);
         self.pool_mu.lock();
         defer self.pool_mu.unlock();
+        if (key == .union_t) {
+            if (key.union_t.alias != null) {
+                // Reserve before publishing the header: an OOM here must not
+                // leave a visible TypeId without its declaration identity.
+                try self.union_alias_info.ensureUnusedCapacity(self.gpa, 1);
+            }
+        }
 
         const payload_idx: u32 = switch (key) {
             .string_lit => |sid| blk: {
@@ -1395,13 +1445,13 @@ pub const Interner = struct {
                 try self.pool.literal_payloads.append(self.gpa, e.value);
                 break :blk idx;
             },
-            .union_t => |members| blk: {
+            .union_t => |u| blk: {
                 const start: u32 = @intCast(self.pool.member_pool.items.len);
-                try self.pool.member_pool.appendSlice(self.gpa, members);
+                try self.pool.member_pool.appendSlice(self.gpa, u.members);
                 const idx: u32 = @intCast(self.pool.union_payloads.items.len);
                 try self.pool.union_payloads.append(self.gpa, .{
                     .members_start = start,
-                    .members_len = @intCast(members.len),
+                    .members_len = @intCast(u.members.len),
                 });
                 break :blk idx;
             },
@@ -1492,6 +1542,9 @@ pub const Interner = struct {
                 .enum_name = key.enum_lit.enum_name,
                 .member_name = key.enum_lit.member_name,
             });
+        }
+        if (key == .union_t) {
+            if (key.union_t.alias) |identity| try self.union_alias_info.put(self.gpa, id, identity);
         }
         const probe: PrehashedTypeKey = .{ .key = key, .hash = hash };
         const entry = shard.table.getOrPutAssumeCapacityAdapted(probe, PrehashedTypeKeyContext{});
@@ -1733,6 +1786,27 @@ test "Interner: string literal type dedup" {
     try T.expect(a != c);
     try T.expect(i.pool.flagsOf(a).is_string);
     try T.expect(i.pool.flagsOf(a).is_literal);
+}
+
+test "Interner: named unions retain declaration identity" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const a = try i.internStringLiteral(21);
+    const b = try i.internStringLiteral(22);
+    const bare = try i.internUnion(&.{ a, b });
+    const first_identity: types.UnionAliasIdentity = .{ .name = 31, .declaration = 41 };
+    const second_identity: types.UnionAliasIdentity = .{ .name = 32, .declaration = 42 };
+    const first = try i.internAliasedUnion(bare, first_identity);
+    const second = try i.internAliasedUnion(bare, second_identity);
+    try T.expect(first != bare and second != bare and first != second);
+    try T.expectEqual(first, try i.internAliasedUnion(bare, first_identity));
+    try T.expectEqualDeep(first_identity, i.union_alias_info.get(first).?);
+    try T.expectEqualDeep(i.unionMembers(bare), i.unionMembers(first));
+    try T.expectEqualDeep(i.unionMembers(first), i.unionMembers(second));
+    const imported_one = try i.internAliasedUnion(bare, .{ .name = 31, .origin = 51 });
+    const imported_two = try i.internAliasedUnion(bare, .{ .name = 31, .origin = 52 });
+    try T.expect(imported_one != imported_two and imported_one != first);
+    try T.expectEqualDeep(i.unionMembers(bare), i.unionMembers(imported_one));
 }
 
 test "Interner: union sort-and-dedup canonicalization" {
