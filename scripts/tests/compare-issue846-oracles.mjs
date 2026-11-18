@@ -82,6 +82,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1001-string-surface/') ||
   path.includes('/issue995-keyof-apparent/') ||
   path.includes('/issue1002-keyof-display/') ||
+  path.includes('/issue994-keyof-alias/') ||
   path.includes('/issue975-union-member-order/') ||
   path.includes('/issue1005-bigint-literal/') ||
   path.includes('/issue1004-returned-literals/') ||
@@ -211,6 +212,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue1004-returned-literals/tsconfig.json',
   'packages/ts_cli/testdata/issue1008-union-unit-collapse/tsconfig.json',
   'packages/ts_cli/testdata/issue1009-literal-union-widening/tsconfig.json',
+  'packages/ts_cli/testdata/issue994-keyof-alias/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
