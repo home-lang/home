@@ -1,8 +1,17 @@
 const std = @import("std");
 
-/// LZ4 compression implementation
-/// Extremely fast compression/decompression with reasonable compression ratios
-/// LZ4 is designed for real-time compression scenarios
+const XxHash32 = std.hash.XxHash32;
+
+/// LZ4 in the LZ4 Frame format (lz4/doc/lz4_Frame_format.md), which is what
+/// the `lz4` tool reads and writes.
+///
+/// `compress` writes one frame of independent 64 KiB blocks with the content
+/// size and a content checksum. `decompress` reads any sequence of frames:
+/// independent or linked blocks, block and content checksums, skippable
+/// frames, and the legacy frame format (`lz4 -l`). Dictionary frames are
+/// refused with `error.DictionaryUnsupported`.
+///
+/// `compressBlock` and `decompressBlock` expose the raw LZ4 block format.
 pub const LZ4 = struct {
     allocator: std.mem.Allocator,
     acceleration: u32, // 1 = default, >1 = faster but less compression
@@ -16,18 +25,31 @@ pub const LZ4 = struct {
         InvalidLength,
         OutputTooSmall,
         SizeTooLarge,
+        /// Not an LZ4 frame, skippable frame or legacy frame.
+        InvalidMagic,
+        /// A frame descriptor field this version does not define.
+        UnsupportedVersion,
+        HeaderChecksumMismatch,
+        BlockChecksumMismatch,
+        ContentChecksumMismatch,
+        DictionaryUnsupported,
+        /// Decoding would produce more than the allowed output.
+        OutputTooLarge,
     };
 
-    // LZ4 constants
+    pub const frame_magic: u32 = 0x184D2204;
+    pub const legacy_magic: u32 = 0x184C2102;
+
+    // LZ4 block constants
     const MIN_MATCH: usize = 4;
+    /// The last 5 bytes of a block are always literals.
     const LAST_LITERALS: usize = 5;
+    /// The last match starts at least 12 bytes before the end of the block.
     const MFLIMIT: usize = 12;
-    const HASH_SIZE_U32: usize = 1 << 16;
+    const HASH_LOG = 16;
     const MAX_DISTANCE: usize = 65535;
-    const ML_BITS: u8 = 4;
-    const ML_MASK: u8 = (1 << ML_BITS) - 1;
-    const RUN_BITS: u8 = 8 - ML_BITS;
-    const RUN_MASK: u8 = (1 << RUN_BITS) - 1;
+    const block_size: usize = 64 * 1024;
+    const legacy_block_size: usize = 8 * 1024 * 1024;
 
     /// Initialize LZ4 compressor
     /// acceleration: 1 = default, higher values trade compression for speed
@@ -38,7 +60,7 @@ pub const LZ4 = struct {
         };
     }
 
-    /// Compress data using LZ4
+    /// Compress `input` into one LZ4 frame.
     pub fn compress(self: *LZ4, input: []const u8) Error![]u8 {
         var compressor = try LZ4Compressor.init(self.allocator, self.acceleration);
         defer compressor.deinit();
@@ -46,7 +68,7 @@ pub const LZ4 = struct {
         return try compressor.compress(input);
     }
 
-    /// Decompress LZ4-compressed data
+    /// Decompress a sequence of LZ4 frames.
     pub fn decompress(self: *LZ4, input: []const u8) Error![]u8 {
         var decompressor = try LZ4Decompressor.init(self.allocator);
         defer decompressor.deinit();
@@ -54,14 +76,129 @@ pub const LZ4 = struct {
         return try decompressor.decompress(input);
     }
 
-    /// Get maximum compressed size for a given input size
+    /// Get maximum compressed size of one block for a given input size
     pub fn compressBound(input_size: usize) usize {
         // LZ4 worst case: input + (input / 255) + 16
         return input_size + (input_size / 255) + 16;
     }
+
+    /// Compress `input` as one raw LZ4 block, appended to `out`.
+    pub fn compressBlock(allocator: std.mem.Allocator, input: []const u8, acceleration: u32, out: *std.ArrayList(u8)) Error!void {
+        const table = try allocator.alloc(u32, 1 << HASH_LOG);
+        defer allocator.free(table);
+        try compressBlockWithTable(allocator, input, @max(acceleration, 1), table, out);
+    }
+
+    /// Decompress one raw LZ4 block, appending to `out`. Matches may reach back
+    /// into the `history` bytes already in `out` (linked blocks); the block may
+    /// add at most `max_len` bytes.
+    pub fn decompressBlock(allocator: std.mem.Allocator, block: []const u8, out: *std.ArrayList(u8), history: usize, max_len: usize) Error!void {
+        const start = out.items.len;
+        const floor = start - @min(history, start);
+        var ip: usize = 0;
+        while (true) {
+            if (ip >= block.len) return Error.InvalidStream;
+            const token = block[ip];
+            ip += 1;
+
+            const literal_length = try readLength(block, &ip, token >> 4);
+            if (literal_length > block.len - ip) return Error.InvalidStream;
+            if (literal_length > max_len - (out.items.len - start)) return Error.OutputTooLarge;
+            try out.appendSlice(allocator, block[ip..][0..literal_length]);
+            ip += literal_length;
+
+            // The last sequence has literals only.
+            if (ip == block.len) return;
+
+            if (block.len - ip < 2) return Error.InvalidStream;
+            const offset = @as(usize, block[ip]) | (@as(usize, block[ip + 1]) << 8);
+            ip += 2;
+            if (offset == 0 or offset > out.items.len - floor) return Error.InvalidOffset;
+
+            const match_length = try readLength(block, &ip, token & 15) + MIN_MATCH;
+            if (match_length > max_len - (out.items.len - start)) return Error.OutputTooLarge;
+            try out.ensureUnusedCapacity(allocator, match_length);
+            const from = out.items.len - offset;
+            for (0..match_length) |i| out.appendAssumeCapacity(out.items[from + i]);
+        }
+    }
+
+    fn readLength(block: []const u8, ip: *usize, nibble: u8) Error!usize {
+        var length: usize = nibble;
+        if (nibble != 15) return length;
+        while (true) {
+            if (ip.* >= block.len) return Error.InvalidStream;
+            const extra = block[ip.*];
+            ip.* += 1;
+            length = std.math.add(usize, length, extra) catch return Error.InvalidLength;
+            if (extra != 255) return length;
+        }
+    }
+
+    fn compressBlockWithTable(
+        allocator: std.mem.Allocator,
+        input: []const u8,
+        acceleration: u32,
+        table: []u32,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        // Hash table entries hold position + 1, so zero means empty.
+        @memset(table, 0);
+        var anchor: usize = 0;
+        if (input.len >= MFLIMIT + 1) {
+            const match_limit = input.len - MFLIMIT;
+            const match_end = input.len - LAST_LITERALS;
+            var ip: usize = 0;
+            var misses: usize = 0;
+            while (ip < match_limit) {
+                const sequence = std.mem.readInt(u32, input[ip..][0..4], .little);
+                const hash = (sequence *% 2654435761) >> (32 - HASH_LOG);
+                const candidate = table[hash];
+                table[hash] = @intCast(ip + 1);
+                if (candidate != 0) {
+                    const ref = candidate - 1;
+                    if (ip - ref <= MAX_DISTANCE and std.mem.readInt(u32, input[ref..][0..4], .little) == sequence) {
+                        var len: usize = MIN_MATCH;
+                        while (ip + len < match_end and input[ref + len] == input[ip + len]) len += 1;
+                        try writeSequence(allocator, out, input[anchor..ip], ip - ref, len);
+                        ip += len;
+                        anchor = ip;
+                        misses = 0;
+                        continue;
+                    }
+                }
+                misses += 1;
+                ip += 1 + (misses >> 6) * acceleration;
+            }
+        }
+        try writeLastLiterals(allocator, out, input[anchor..]);
+    }
+
+    fn writeLength(allocator: std.mem.Allocator, out: *std.ArrayList(u8), length: usize) Error!void {
+        var remaining = length - 15;
+        while (remaining >= 255) : (remaining -= 255) try out.append(allocator, 255);
+        try out.append(allocator, @intCast(remaining));
+    }
+
+    fn writeSequence(allocator: std.mem.Allocator, out: *std.ArrayList(u8), literals: []const u8, offset: usize, match_length: usize) Error!void {
+        const ml = match_length - MIN_MATCH;
+        const token: u8 = (@as(u8, @intCast(@min(literals.len, 15))) << 4) | @as(u8, @intCast(@min(ml, 15)));
+        try out.append(allocator, token);
+        if (literals.len >= 15) try writeLength(allocator, out, literals.len);
+        try out.appendSlice(allocator, literals);
+        try out.append(allocator, @intCast(offset & 0xff));
+        try out.append(allocator, @intCast(offset >> 8));
+        if (ml >= 15) try writeLength(allocator, out, ml);
+    }
+
+    fn writeLastLiterals(allocator: std.mem.Allocator, out: *std.ArrayList(u8), literals: []const u8) Error!void {
+        try out.append(allocator, @as(u8, @intCast(@min(literals.len, 15))) << 4);
+        if (literals.len >= 15) try writeLength(allocator, out, literals.len);
+        try out.appendSlice(allocator, literals);
+    }
 };
 
-/// LZ4 stream compressor
+/// Writes LZ4 frames.
 pub const LZ4Compressor = struct {
     allocator: std.mem.Allocator,
     acceleration: u32,
@@ -69,13 +206,10 @@ pub const LZ4Compressor = struct {
     output: std.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator, acceleration: u32) LZ4.Error!LZ4Compressor {
-        const hash_table = try allocator.alloc(u32, LZ4.HASH_SIZE_U32);
-        @memset(hash_table, 0);
-
         return LZ4Compressor{
             .allocator = allocator,
-            .acceleration = acceleration,
-            .hash_table = hash_table,
+            .acceleration = if (acceleration == 0) 1 else acceleration,
+            .hash_table = try allocator.alloc(u32, 1 << LZ4.HASH_LOG),
             .output = .empty,
         };
     }
@@ -85,226 +219,62 @@ pub const LZ4Compressor = struct {
         self.output.deinit(self.allocator);
     }
 
+    /// One frame: independent 64 KiB blocks, content size, content checksum.
     pub fn compress(self: *LZ4Compressor, input: []const u8) LZ4.Error![]u8 {
-        self.output.clearRetainingCapacity();
-        @memset(self.hash_table, 0);
+        const a = self.allocator;
+        const out = &self.output;
+        out.clearRetainingCapacity();
 
-        // The frame always begins with the uncompressed size, including for
-        // empty inputs. The decoder uses this header to distinguish a valid
-        // empty frame from a truncated stream.
-        try self.writeU32(input.len);
+        var header: [4]u8 = undefined;
+        std.mem.writeInt(u32, &header, LZ4.frame_magic, .little);
+        try out.appendSlice(a, &header);
 
-        if (input.len == 0) {
-            return try self.output.toOwnedSlice(self.allocator);
-        }
+        // FLG: version 01, block independence, content size, content checksum.
+        // BD: 64 KiB maximum block size.
+        const descriptor_start = out.items.len;
+        try out.append(a, 0b01_1_0_1_1_0_0);
+        try out.append(a, 4 << 4);
+        var size: [8]u8 = undefined;
+        std.mem.writeInt(u64, &size, input.len, .little);
+        try out.appendSlice(a, &size);
+        const descriptor_hash = XxHash32.hash(0, out.items[descriptor_start..]);
+        try out.append(a, @truncate(descriptor_hash >> 8));
 
-        // Compress the data
-        try self.compressBlock(input);
-
-        return try self.output.toOwnedSlice(self.allocator);
-    }
-
-    fn compressBlock(self: *LZ4Compressor, input: []const u8) LZ4.Error!void {
-        if (input.len < LZ4.MFLIMIT) {
-            // Too small to compress, store as literals
-            try self.storeLiterals(input);
-            return;
-        }
-
-        var ip: usize = 0; // Input position
-        var current_anchor: usize = 0; // Start of current literal run
-
-        const input_end = input.len;
-        const match_limit = input_end - LZ4.LAST_LITERALS;
-
-        // Main compression loop
-        while (ip < match_limit) {
-            // Find match
-            const match_result = self.findMatch(input, ip);
-
-            if (match_result) |match| {
-                // Encode literals before match
-                try self.encodeSequence(
-                    input[current_anchor..ip],
-                    match.length,
-                    match.offset,
-                );
-
-                // Move past the match
-                ip += match.length;
-                current_anchor = ip;
+        var block: std.ArrayList(u8) = .empty;
+        defer block.deinit(a);
+        var rest = input;
+        while (rest.len > 0) {
+            const chunk = rest[0..@min(rest.len, LZ4.block_size)];
+            rest = rest[chunk.len..];
+            block.clearRetainingCapacity();
+            try LZ4.compressBlockWithTable(a, chunk, self.acceleration, self.hash_table, &block);
+            var block_header: [4]u8 = undefined;
+            if (block.items.len < chunk.len) {
+                std.mem.writeInt(u32, &block_header, @intCast(block.items.len), .little);
+                try out.appendSlice(a, &block_header);
+                try out.appendSlice(a, block.items);
             } else {
-                // No match found, move forward
-                ip += 1 + (ip - current_anchor) / self.acceleration;
+                // Incompressible: store the block uncompressed (high bit set).
+                std.mem.writeInt(u32, &block_header, @as(u32, @intCast(chunk.len)) | 0x8000_0000, .little);
+                try out.appendSlice(a, &block_header);
+                try out.appendSlice(a, chunk);
             }
         }
 
-        // Encode remaining literals
-        const remaining = input[current_anchor..];
-        if (remaining.len > 0) {
-            try self.storeLiterals(remaining);
-        }
-    }
-
-    const Match = struct {
-        offset: u32,
-        length: usize,
-    };
-
-    fn findMatch(self: *LZ4Compressor, input: []const u8, pos: usize) ?Match {
-        if (pos + LZ4.MIN_MATCH > input.len) return null;
-
-        // Hash current position
-        const hash = self.hashPosition(input, pos);
-        const match_pos = self.hash_table[hash];
-
-        // Update hash table; positions beyond u32 wrap cleanly with @truncate.
-        self.hash_table[hash] = @truncate(pos);
-
-        // Check if match is valid
-        if (match_pos == 0) return null;
-        if (pos < match_pos) return null;
-
-        const offset = pos - match_pos;
-        if (offset == 0 or offset > LZ4.MAX_DISTANCE) return null;
-
-        // Verify match
-        if (!self.matchesAtPosition(input, pos, match_pos, LZ4.MIN_MATCH)) {
-            return null;
-        }
-
-        // Extend match
-        var match_len = LZ4.MIN_MATCH;
-        const max_len = @min(input.len - pos, 65535 + LZ4.MIN_MATCH);
-
-        while (match_len < max_len and
-            match_pos + match_len < pos and
-            input[pos + match_len] == input[match_pos + match_len])
-        {
-            match_len += 1;
-        }
-
-        return Match{
-            .offset = @intCast(offset),
-            .length = match_len,
-        };
-    }
-
-    fn hashPosition(self: *LZ4Compressor, input: []const u8, pos: usize) usize {
-        _ = self;
-        if (pos + 4 > input.len) return 0;
-
-        const value = std.mem.readInt(u32, input[pos..][0..4], .little);
-        return ((value *% 2654435761) >> 16) & (LZ4.HASH_SIZE_U32 - 1);
-    }
-
-    fn matchesAtPosition(self: *LZ4Compressor, input: []const u8, pos1: usize, pos2: usize, length: usize) bool {
-        _ = self;
-        if (pos1 + length > input.len or pos2 + length > input.len) return false;
-
-        for (0..length) |i| {
-            if (input[pos1 + i] != input[pos2 + i]) return false;
-        }
-        return true;
-    }
-
-    fn encodeSequence(self: *LZ4Compressor, literals: []const u8, match_length: usize, offset: u32) LZ4.Error!void {
-        // Calculate match length minus MIN_MATCH
-        const ml = match_length - LZ4.MIN_MATCH;
-
-        // Encode token
-        const literal_length = literals.len;
-        var token: u8 = 0;
-
-        // Literal length in token (4 bits)
-        if (literal_length < 15) {
-            token = @intCast(literal_length << 4);
-        } else {
-            token = 15 << 4;
-        }
-
-        // Match length in token (4 bits)
-        if (ml < 15) {
-            token |= @intCast(ml);
-        } else {
-            token |= 15;
-        }
-
-        try self.output.append(self.allocator, token);
-
-        // Encode extra literal length if needed
-        if (literal_length >= 15) {
-            var remaining = literal_length - 15;
-            while (remaining >= 255) {
-                try self.output.append(self.allocator, 255);
-                remaining -= 255;
-            }
-            try self.output.append(self.allocator, @intCast(remaining));
-        }
-
-        // Write literals
-        try self.output.appendSlice(self.allocator, literals);
-
-        // Write offset (little-endian)
-        try self.output.append(self.allocator, @intCast(offset & 0xFF));
-        try self.output.append(self.allocator, @intCast((offset >> 8) & 0xFF));
-
-        // Encode extra match length if needed
-        if (ml >= 15) {
-            var remaining = ml - 15;
-            while (remaining >= 255) {
-                try self.output.append(self.allocator, 255);
-                remaining -= 255;
-            }
-            try self.output.append(self.allocator, @intCast(remaining));
-        }
-    }
-
-    fn storeLiterals(self: *LZ4Compressor, literals: []const u8) LZ4.Error!void {
-        if (literals.len == 0) return;
-
-        // Token with only literals (no match)
-        var token: u8 = 0;
-        const literal_length = literals.len;
-
-        if (literal_length < 15) {
-            token = @intCast(literal_length << 4);
-        } else {
-            token = 15 << 4;
-        }
-
-        try self.output.append(self.allocator, token);
-
-        // Encode extra literal length if needed
-        if (literal_length >= 15) {
-            var remaining = literal_length - 15;
-            while (remaining >= 255) {
-                try self.output.append(self.allocator, 255);
-                remaining -= 255;
-            }
-            try self.output.append(self.allocator, @intCast(remaining));
-        }
-
-        // Write literals
-        try self.output.appendSlice(self.allocator, literals);
-    }
-
-    fn writeU32(self: *LZ4Compressor, value: usize) !void {
-        // @intCast would panic on overflow; surface it as a recoverable
-        // error so callers can abort the compression cleanly.
-        if (value > std.math.maxInt(u32)) return error.SizeTooLarge;
-        const val: u32 = @intCast(value);
-        try self.output.append(self.allocator, @intCast(val & 0xFF));
-        try self.output.append(self.allocator, @intCast((val >> 8) & 0xFF));
-        try self.output.append(self.allocator, @intCast((val >> 16) & 0xFF));
-        try self.output.append(self.allocator, @intCast((val >> 24) & 0xFF));
+        var trailer: [8]u8 = undefined;
+        std.mem.writeInt(u32, trailer[0..4], 0, .little); // EndMark
+        std.mem.writeInt(u32, trailer[4..8], XxHash32.hash(0, input), .little);
+        try out.appendSlice(a, &trailer);
+        return out.toOwnedSlice(a);
     }
 };
 
-/// LZ4 stream decompressor
+/// Reads LZ4 frames.
 pub const LZ4Decompressor = struct {
     allocator: std.mem.Allocator,
     output: std.ArrayList(u8),
+    /// Decoding fails with `error.OutputTooLarge` past this many bytes.
+    max_output: usize = std.math.maxInt(usize),
 
     pub fn init(allocator: std.mem.Allocator) LZ4.Error!LZ4Decompressor {
         return LZ4Decompressor{
@@ -317,103 +287,120 @@ pub const LZ4Decompressor = struct {
         self.output.deinit(self.allocator);
     }
 
+    /// Decode every frame in `input`, concatenated.
     pub fn decompress(self: *LZ4Decompressor, input: []const u8) LZ4.Error![]u8 {
-        if (input.len < 4) return LZ4.Error.InvalidStream;
         self.output.clearRetainingCapacity();
+        var reader: Cursor = .{ .data = input };
+        if (input.len == 0) return LZ4.Error.InvalidStream;
+        while (reader.pos < input.len) {
+            const magic = try reader.int(u32);
+            if (magic == LZ4.frame_magic) {
+                try self.frame(&reader);
+            } else if (magic == LZ4.legacy_magic) {
+                try self.legacyFrame(&reader);
+            } else if (magic & 0xFFFF_FFF0 == 0x184D2A50) {
+                const len = try reader.int(u32);
+                _ = try reader.take(len);
+            } else return LZ4.Error.InvalidMagic;
+        }
+        return self.output.toOwnedSlice(self.allocator);
+    }
 
-        // Read uncompressed size
-        const uncompressed_size = self.readU32(input[0..4]);
+    fn remainingOutput(self: *const LZ4Decompressor) usize {
+        return self.max_output - self.output.items.len;
+    }
 
-        // Cap the pre-allocation at a sane multiple of the compressed
-        // input so a maliciously large header field can't trigger a huge
-        // allocation up-front; the buffer will still grow as needed.
-        const max_prealloc = @min(uncompressed_size, input.len *| 256);
-        try self.output.ensureTotalCapacity(self.allocator, max_prealloc);
+    fn frame(self: *LZ4Decompressor, reader: *Cursor) LZ4.Error!void {
+        const descriptor_start = reader.pos;
+        const flg = try reader.byte();
+        const bd = try reader.byte();
+        if (flg >> 6 != 1) return LZ4.Error.UnsupportedVersion;
+        if (flg & 0b10 != 0 or bd & 0x8F != 0) return LZ4.Error.UnsupportedVersion;
+        const independent = flg & 0b0010_0000 != 0;
+        const block_checksum = flg & 0b0001_0000 != 0;
+        const has_size = flg & 0b0000_1000 != 0;
+        const content_checksum = flg & 0b0000_0100 != 0;
+        const has_dict = flg & 0b0000_0001 != 0;
+        const max_block: usize = switch (bd >> 4) {
+            4 => 64 * 1024,
+            5 => 256 * 1024,
+            6 => 1024 * 1024,
+            7 => 4 * 1024 * 1024,
+            else => return LZ4.Error.UnsupportedVersion,
+        };
+        const content_size: ?u64 = if (has_size) try reader.int(u64) else null;
+        if (has_dict) {
+            _ = try reader.int(u32);
+        }
+        const descriptor = reader.data[descriptor_start..reader.pos];
+        const hc = try reader.byte();
+        if (hc != @as(u8, @truncate(XxHash32.hash(0, descriptor) >> 8))) return LZ4.Error.HeaderChecksumMismatch;
+        if (has_dict) return LZ4.Error.DictionaryUnsupported;
 
-        // Decompress
-        var ip: usize = 4; // Skip size header
-
-        while (ip < input.len) {
-            // Read token
-            const token = input[ip];
-            ip += 1;
-
-            // Decode literal length
-            var literal_length: usize = @intCast(token >> 4);
-            if (literal_length == 15) {
-                var terminated = false;
-                while (ip < input.len) {
-                    const extra = input[ip];
-                    ip += 1;
-                    if (literal_length > std.math.maxInt(usize) - @as(usize, extra)) return LZ4.Error.InvalidLength;
-                    literal_length += extra;
-                    if (extra != 255) {
-                        terminated = true;
-                        break;
-                    }
-                }
-                if (!terminated) return LZ4.Error.InvalidStream;
+        const frame_start = self.output.items.len;
+        while (true) {
+            const raw = try reader.int(u32);
+            if (raw == 0) break;
+            const uncompressed = raw & 0x8000_0000 != 0;
+            const len = raw & 0x7FFF_FFFF;
+            if (len > max_block) return LZ4.Error.InvalidLength;
+            const data = try reader.take(len);
+            if (block_checksum) {
+                if (try reader.int(u32) != XxHash32.hash(0, data)) return LZ4.Error.BlockChecksumMismatch;
             }
-
-            // Copy literals
-            if (literal_length > input.len - ip) {
-                return LZ4.Error.InvalidStream;
-            }
-            if (literal_length > uncompressed_size -| self.output.items.len) return LZ4.Error.InvalidLength;
-            try self.output.appendSlice(self.allocator, input[ip..][0..literal_length]);
-            ip += literal_length;
-
-            // Check if we're done
-            if (ip >= input.len) break;
-
-            // Read offset
-            if (ip + 2 > input.len) return LZ4.Error.InvalidStream;
-            const offset = @as(u32, input[ip]) | (@as(u32, input[ip + 1]) << 8);
-            ip += 2;
-
-            if (offset == 0 or offset > self.output.items.len) {
-                return LZ4.Error.InvalidOffset;
-            }
-
-            // Decode match length
-            var match_length: usize = @intCast(token & LZ4.ML_MASK);
-            if (match_length == 15) {
-                var terminated = false;
-                while (ip < input.len) {
-                    const extra = input[ip];
-                    ip += 1;
-                    if (match_length > std.math.maxInt(usize) - @as(usize, extra)) return LZ4.Error.InvalidLength;
-                    match_length += extra;
-                    if (extra != 255) {
-                        terminated = true;
-                        break;
-                    }
-                }
-                if (!terminated) return LZ4.Error.InvalidStream;
-            }
-            if (match_length > std.math.maxInt(usize) - LZ4.MIN_MATCH) return LZ4.Error.InvalidLength;
-            match_length += LZ4.MIN_MATCH;
-            if (match_length > uncompressed_size -| self.output.items.len) return LZ4.Error.InvalidLength;
-
-            // Copy match
-            const match_pos = self.output.items.len - offset;
-            for (0..match_length) |i| {
-                const byte = self.output.items[match_pos + (i % offset)];
-                try self.output.append(self.allocator, byte);
+            const limit = @min(max_block, self.remainingOutput());
+            if (uncompressed) {
+                if (data.len > self.remainingOutput()) return LZ4.Error.OutputTooLarge;
+                try self.output.appendSlice(self.allocator, data);
+            } else {
+                // Linked blocks may reach 64 KiB back into this frame's earlier blocks.
+                const history: usize = if (independent) 0 else @min(64 * 1024, self.output.items.len - frame_start);
+                try LZ4.decompressBlock(self.allocator, data, &self.output, history, limit);
             }
         }
 
-        if (self.output.items.len != uncompressed_size) return LZ4.Error.InvalidLength;
-
-        return try self.output.toOwnedSlice(self.allocator);
+        const content = self.output.items[frame_start..];
+        if (content_size) |size| if (size != content.len) return LZ4.Error.InvalidLength;
+        if (content_checksum) {
+            if (try reader.int(u32) != XxHash32.hash(0, content)) return LZ4.Error.ContentChecksumMismatch;
+        }
     }
 
-    fn readU32(self: *LZ4Decompressor, bytes: []const u8) usize {
-        _ = self;
-        return @as(usize, bytes[0]) |
-            (@as(usize, bytes[1]) << 8) |
-            (@as(usize, bytes[2]) << 16) |
-            (@as(usize, bytes[3]) << 24);
+    /// Legacy frames: independent blocks of up to 8 MiB, each with a size
+    /// prefix, until end of input or the next frame's magic number.
+    fn legacyFrame(self: *LZ4Decompressor, reader: *Cursor) LZ4.Error!void {
+        while (reader.pos < reader.data.len) {
+            const len = std.mem.readInt(u32, (try reader.peek(4))[0..4], .little);
+            if (len == LZ4.frame_magic or len == LZ4.legacy_magic or len & 0xFFFF_FFF0 == 0x184D2A50) return;
+            reader.pos += 4;
+            if (len > LZ4.compressBound(LZ4.legacy_block_size)) return LZ4.Error.InvalidLength;
+            const data = try reader.take(len);
+            try LZ4.decompressBlock(self.allocator, data, &self.output, 0, @min(LZ4.legacy_block_size, self.remainingOutput()));
+        }
+    }
+};
+
+const Cursor = struct {
+    data: []const u8,
+    pos: usize = 0,
+
+    fn take(self: *Cursor, n: usize) LZ4.Error![]const u8 {
+        if (n > self.data.len - self.pos) return LZ4.Error.InvalidStream;
+        defer self.pos += n;
+        return self.data[self.pos..][0..n];
+    }
+
+    fn peek(self: *Cursor, n: usize) LZ4.Error![]const u8 {
+        if (n > self.data.len - self.pos) return LZ4.Error.InvalidStream;
+        return self.data[self.pos..][0..n];
+    }
+
+    fn byte(self: *Cursor) LZ4.Error!u8 {
+        return (try self.take(1))[0];
+    }
+
+    fn int(self: *Cursor, comptime T: type) LZ4.Error!T {
+        return std.mem.readInt(T, (try self.take(@sizeOf(T)))[0..@sizeOf(T)], .little);
     }
 };
 
@@ -426,6 +413,7 @@ test "lz4 basic compression and decompression" {
 
     const compressed = try lz4.compress(input);
     defer allocator.free(compressed);
+    try std.testing.expectEqual(LZ4.frame_magic, std.mem.readInt(u32, compressed[0..4], .little));
 
     const decompressed = try lz4.decompress(compressed);
     defer allocator.free(decompressed);
@@ -438,14 +426,13 @@ test "lz4 empty input" {
 
     var lz4 = LZ4.init(allocator, 1);
 
-    const input = "";
-    const compressed = try lz4.compress(input);
+    const compressed = try lz4.compress("");
     defer allocator.free(compressed);
 
     const decompressed = try lz4.decompress(compressed);
     defer allocator.free(decompressed);
 
-    try std.testing.expectEqualStrings(input, decompressed);
+    try std.testing.expectEqual(@as(usize, 0), decompressed.len);
 }
 
 test "lz4 acceleration levels" {
@@ -457,7 +444,6 @@ test "lz4 acceleration levels" {
         @memcpy(input[i * phrase.len ..][0..phrase.len], phrase);
     }
 
-    // Test different acceleration levels
     for (1..5) |accel| {
         var lz4 = LZ4.init(allocator, @intCast(accel));
 
@@ -471,21 +457,21 @@ test "lz4 acceleration levels" {
     }
 }
 
-test "lz4 large data" {
+test "lz4 large data spans several blocks" {
     const allocator = std.testing.allocator;
 
     var lz4 = LZ4.init(allocator, 1);
 
-    // Generate large input with patterns
-    const input = try allocator.alloc(u8, 100000);
+    const input = try allocator.alloc(u8, 300_000);
     defer allocator.free(input);
 
     for (input, 0..) |*byte, i| {
-        byte.* = @intCast(i % 256);
+        byte.* = @intCast(i % 251);
     }
 
     const compressed = try lz4.compress(input);
     defer allocator.free(compressed);
+    try std.testing.expect(compressed.len < input.len / 10);
 
     const decompressed = try lz4.decompress(compressed);
     defer allocator.free(decompressed);
@@ -493,47 +479,19 @@ test "lz4 large data" {
     try std.testing.expectEqualSlices(u8, input, decompressed);
 }
 
-test "lz4 repeated patterns" {
-    const allocator = std.testing.allocator;
-
-    var lz4 = LZ4.init(allocator, 1);
-
-    const pattern = "abcdefgh";
-    var input: [pattern.len * 100]u8 = undefined;
-    for (0..100) |i| {
-        @memcpy(input[i * pattern.len ..][0..pattern.len], pattern);
-    }
-
-    const compressed = try lz4.compress(&input);
-    defer allocator.free(compressed);
-
-    // LZ4 should achieve good compression on repeated patterns
-    try std.testing.expect(compressed.len < input.len);
-
-    const decompressed = try lz4.decompress(compressed);
-    defer allocator.free(decompressed);
-
-    try std.testing.expectEqualStrings(&input, decompressed);
-}
-
 test "lz4 compress bound" {
     const input_size: usize = 1000;
     const max_compressed = LZ4.compressBound(input_size);
-
-    // Maximum compressed size should be larger than input
     try std.testing.expect(max_compressed > input_size);
-
-    // But not excessively larger
     try std.testing.expect(max_compressed < input_size * 2);
 }
 
-test "lz4 incompressible data" {
+test "lz4 incompressible data is stored" {
     const allocator = std.testing.allocator;
     var prng = std.Random.DefaultPrng.init(0x4c5a_3401);
 
     var lz4 = LZ4.init(allocator, 1);
 
-    // Generate random data (incompressible)
     var input: [1000]u8 = undefined;
     prng.random().bytes(&input);
 
@@ -546,13 +504,36 @@ test "lz4 incompressible data" {
     try std.testing.expectEqualSlices(u8, &input, decompressed);
 }
 
-test "lz4 rejects malformed lengths and offsets" {
+test "lz4 raw blocks reject malformed lengths and offsets" {
+    const allocator = std.testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+    const max = std.math.maxInt(usize);
+
+    try std.testing.expectError(LZ4.Error.InvalidStream, LZ4.decompressBlock(allocator, &.{}, &out, 0, max));
+    try std.testing.expectError(LZ4.Error.InvalidStream, LZ4.decompressBlock(allocator, &.{ 0x20, 'A' }, &out, 0, max));
+    out.clearRetainingCapacity();
+    try std.testing.expectError(LZ4.Error.InvalidOffset, LZ4.decompressBlock(allocator, &.{ 0x10, 'A', 2, 0 }, &out, 0, max));
+    out.clearRetainingCapacity();
+    try std.testing.expectError(LZ4.Error.InvalidStream, LZ4.decompressBlock(allocator, &.{ 0xf0, 255 }, &out, 0, max));
+    out.clearRetainingCapacity();
+    try std.testing.expectError(LZ4.Error.OutputTooLarge, LZ4.decompressBlock(allocator, &.{ 0x1f, 'A', 1, 0, 100, 0x00 }, &out, 0, 50));
+}
+
+test "lz4 frames reject bad magic and checksums" {
     const allocator = std.testing.allocator;
     var lz4 = LZ4.init(allocator, 1);
+    const encoded = try lz4.compress("checksummed content, checksummed content");
+    defer allocator.free(encoded);
 
-    try std.testing.expectError(LZ4.Error.InvalidStream, lz4.decompress(&.{ 1, 0, 0 }));
-    try std.testing.expectError(LZ4.Error.InvalidLength, lz4.decompress(&.{ 1, 0, 0, 0 }));
-    try std.testing.expectError(LZ4.Error.InvalidOffset, lz4.decompress(&.{ 4, 0, 0, 0, 0, 0, 0 }));
-    try std.testing.expectError(LZ4.Error.InvalidLength, lz4.decompress(&.{ 4, 0, 0, 0, 0x10, 'A', 1, 0 }));
-    try std.testing.expectError(LZ4.Error.InvalidStream, lz4.decompress(&.{ 20, 0, 0, 0, 0x1f, 'A', 1, 0 }));
+    encoded[0] ^= 0xff;
+    try std.testing.expectError(LZ4.Error.InvalidMagic, lz4.decompress(encoded));
+    encoded[0] ^= 0xff;
+
+    encoded[14] ^= 0xff; // header checksum
+    try std.testing.expectError(LZ4.Error.HeaderChecksumMismatch, lz4.decompress(encoded));
+    encoded[14] ^= 0xff;
+
+    encoded[encoded.len - 1] ^= 0xff;
+    try std.testing.expectError(LZ4.Error.ContentChecksumMismatch, lz4.decompress(encoded));
 }
