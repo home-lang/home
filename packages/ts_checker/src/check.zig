@@ -4618,11 +4618,6 @@ pub const CheckedTypes = struct {
 
 const TypeOnlyOriginKind = enum { none, import_type, export_type };
 
-const GenericInterfaceRefreshKey = struct {
-    decl: NodeId,
-    instantiated: TypeId,
-};
-
 const EvolvingAnyBlockKey = struct { container: NodeId, name: hir_mod.StringId };
 const EvolvingAnyBlockCursor = struct {
     declaration_pos: ?usize = null,
@@ -4693,6 +4688,10 @@ pub const Checker = struct {
     /// (alias, args) pair exponentially: the depth/count backstop only
     /// bounds DEPTH, and the blowup is WIDTH. Keys are gpa-owned.
     alias_instantiation_memo: std.StringHashMapUnmanaged(TypeId) = .empty,
+    /// Distinct object identities for generic alias arguments that reduce to
+    /// one already materialized object. Keys own the source TypeId and the
+    /// argument TypeIds; the produced object carries its own alias ownership.
+    alias_object_instances: std.StringHashMapUnmanaged(TypeId) = .empty,
     /// Lazily-computed per-alias-decl memoizability: true when the
     /// declaration sits at module/namespace scope (no function-like or
     /// class ancestor). A function-local alias may capture the enclosing
@@ -5071,16 +5070,16 @@ pub const Checker = struct {
     /// body. Member refreshes must not fall back to a same-named interface
     /// from another namespace.
     generic_interface_decl_by_instance: std.AutoHashMapUnmanaged(TypeId, NodeId),
-    /// Completed generic-interface `extends` refreshes. The substituted body
-    /// is structurally interned, so `(declaration, instantiated body)` is a
-    /// stable identity for repeating the same inheritance work.
-    generic_interface_refresh_cache: std.AutoHashMapUnmanaged(GenericInterfaceRefreshKey, TypeId) = .empty,
+    /// Completed generic-interface `extends` refreshes, keyed by declaration,
+    /// structural body, and the actual type arguments. Different arguments
+    /// may reduce to one body but inherit different index signatures.
+    generic_interface_refresh_cache: std.StringHashMapUnmanaged(TypeId) = .empty,
     /// Exact body and mapper identities; refreshed/merged bodies get new keys.
     interface_instantiation_memo: std.StringHashMapUnmanaged(TypeId) = .empty,
     /// Exact refreshes currently walking their inherited interfaces. A
     /// recursive inheritance path cannot contribute new index information
     /// by re-entering the same substituted body, so defer that edge.
-    generic_interface_refresh_active: std.AutoHashMapUnmanaged(GenericInterfaceRefreshKey, void) = .empty,
+    generic_interface_refresh_active: std.StringHashMapUnmanaged(void) = .empty,
     /// Generic alias instantiations currently being materialized.
     /// Recursive mapped aliases such as
     /// `type Circular<T> = { [K in keyof T]: Circular<T> }` must defer
@@ -7176,6 +7175,8 @@ pub const Checker = struct {
         while (gid_it.next()) |info| self.gpa.free(info.params);
         self.generic_interfaces_by_decl.deinit(self.gpa);
         self.generic_interface_decl_by_instance.deinit(self.gpa);
+        var refresh_keys = self.generic_interface_refresh_cache.keyIterator();
+        while (refresh_keys.next()) |key| self.gpa.free(key.*);
         self.generic_interface_refresh_cache.deinit(self.gpa);
         self.clearInterfaceInstantiationMemo();
         self.interface_instantiation_memo.deinit(self.gpa);
@@ -7220,6 +7221,9 @@ pub const Checker = struct {
             var memo_it = self.alias_instantiation_memo.keyIterator();
             while (memo_it.next()) |k| self.gpa.free(k.*);
             self.alias_instantiation_memo.deinit(self.gpa);
+            var object_instances = self.alias_object_instances.keyIterator();
+            while (object_instances.next()) |key| self.gpa.free(key.*);
+            self.alias_object_instances.deinit(self.gpa);
         }
         self.alias_memo_cacheable.deinit(self.gpa);
         self.subst_memo.deinit(self.gpa);
@@ -73357,7 +73361,16 @@ pub const Checker = struct {
         if (self.hir.kindOf(decl) != .interface_decl) return null;
         const extends = hir_mod.interfaceExtends(self.hir, decl);
         if (extends.len == 0) return null;
-        const refresh_key: GenericInterfaceRefreshKey = .{ .decl = decl, .instantiated = instantiated_t };
+        const refresh_key = try self.gpa.alloc(u8, @sizeOf(NodeId) + @sizeOf(TypeId) * (params.len + 1));
+        var owns_refresh_key = true;
+        defer if (owns_refresh_key) self.gpa.free(refresh_key);
+        @memcpy(refresh_key[0..@sizeOf(NodeId)], std.mem.asBytes(&decl));
+        @memcpy(refresh_key[@sizeOf(NodeId)..][0..@sizeOf(TypeId)], std.mem.asBytes(&instantiated_t));
+        for (params, 0..) |param_t, i| {
+            const arg_t = subs.get(param_t) orelse param_t;
+            const start = @sizeOf(NodeId) + @sizeOf(TypeId) * (i + 1);
+            @memcpy(refresh_key[start..][0..@sizeOf(TypeId)], std.mem.asBytes(&arg_t));
+        }
         if (self.generic_interface_refresh_cache.get(refresh_key)) |cached| {
             return if (cached == instantiated_t) null else cached;
         }
@@ -73382,7 +73395,11 @@ pub const Checker = struct {
             ReadonlyIndexDomains{ .string = false, .number = false, .symbol = false };
         var readonly_domains = original_domains;
         for (extends) |ext_node| {
-            const parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
+            const parent_decl_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
+            // Re-lowering an extends clause can reuse its declaration-time
+            // type. Apply the interface's actual arguments to the inherited
+            // surface before copying index signatures into this instance.
+            const parent_t = self.substituteType(parent_decl_t, subs) catch continue;
             if (parent_t >= self.interner.pool.typeCount()) continue;
             const parent_domains = self.readonly_index_types.get(parent_t) orelse
                 ReadonlyIndexDomains{ .string = false, .number = false, .symbol = false };
@@ -73407,6 +73424,7 @@ pub const Checker = struct {
         }
         if (!changed and std.meta.eql(readonly_domains, original_domains)) {
             try self.generic_interface_refresh_cache.put(self.gpa, refresh_key, instantiated_t);
+            owns_refresh_key = false;
             return null;
         }
         const refreshed = self.interner.internObjectTypeWithIndexAndSymbol(
@@ -73418,6 +73436,7 @@ pub const Checker = struct {
         if (readonly_domains.any()) try self.readonly_index_types.put(self.gpa, refreshed, readonly_domains);
         try self.copyMemberPredicatesFromReceiver(refreshed, instantiated_t);
         try self.generic_interface_refresh_cache.put(self.gpa, refresh_key, refreshed);
+        owns_refresh_key = false;
         return refreshed;
     }
 
@@ -82516,6 +82535,11 @@ pub const Checker = struct {
                             if (try self.refreshGenericInterfaceExtendsInstantiation(type_node, r.name, instantiated, info.params, &subs)) |refreshed| {
                                 instantiated = refreshed;
                             }
+                        }
+                        if (allow_alias_display and info.body_node == hir_mod.none_node_id and
+                            !is_class_instance and instantiated != info.body)
+                        {
+                            instantiated = try self.distinctAliasObjectForArguments(instantiated, alias_arg_list.items);
                         }
                         try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
                         if (allow_alias_display and instantiated != info.body) {
@@ -207107,6 +207131,35 @@ pub const Checker = struct {
         return self.registerAliasDisplayNameInner(t, alias_name, args, false);
     }
 
+    /// Structural object results can be reused by different generic
+    /// instantiations. Give a later argument list its own object identity so
+    /// the alias arguments used by semantic property and readonly resolution
+    /// cannot be overwritten by, or confused with, the first instantiation.
+    fn distinctAliasObjectForArguments(self: *Checker, t: TypeId, args: []const TypeId) CheckError!TypeId {
+        const prior_args = self.alias_type_args.get(t) orelse return t;
+        if (std.mem.eql(TypeId, prior_args, args)) return t;
+        if (t >= self.interner.pool.typeCount()) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return t;
+
+        const key = try self.gpa.alloc(u8, @sizeOf(TypeId) * (args.len + 1));
+        var owns_key = true;
+        defer if (owns_key) self.gpa.free(key);
+        @memcpy(key[0..@sizeOf(TypeId)], std.mem.asBytes(&t));
+        @memcpy(key[@sizeOf(TypeId)..], std.mem.sliceAsBytes(args));
+        if (self.alias_object_instances.get(key)) |existing| return existing;
+
+        const clone = try self.interner.cloneObjectType(t);
+        if (self.readonly_index_types.get(t)) |domains| try self.readonly_index_types.put(self.gpa, clone, domains);
+        if (self.array_origin_types.contains(t)) try self.array_origin_types.put(self.gpa, clone, {});
+        if (self.tuple_origin_types.contains(t)) try self.tuple_origin_types.put(self.gpa, clone, {});
+        if (self.generic_instance_origins.get(t)) |origin| try self.generic_instance_origins.put(self.gpa, clone, origin);
+        if (self.generic_interface_decl_by_instance.get(t)) |decl| try self.generic_interface_decl_by_instance.put(self.gpa, clone, decl);
+        try self.alias_object_instances.put(self.gpa, key, clone);
+        owns_key = false;
+        return clone;
+    }
+
     /// Like `registerAliasDisplayName`, but `override_named_guard`
     /// permits registration even when `t` already maps to a name via
     /// `namedTypeForId`. Used for concrete generic *class instances*
@@ -286905,6 +286958,32 @@ test "checker: conditional Function relations recognize the declared callable ob
     defer destroyBoundSetup(empty);
     try empty.base.checker.checkSourceFile(empty.base.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(empty.base, TsCodes.type_not_assignable));
+}
+
+test "checker: recursive readonly interface instances retain their own index element" {
+    const s = try newBoundSetup(
+        \\interface Function { call(thisArg: any, ...args: any[]): any }
+        \\interface ReadonlyArray<T> { readonly [index: number]: T }
+        \\interface Part { id: number; subparts: Part[]; updatePart(name: string): void }
+        \\type NonFunctionPropertyNames<T> = {
+        \\  [K in keyof T]: T[K] extends Function ? never : K
+        \\}[keyof T];
+        \\type DeepReadonly<T> = T extends any[] ? DeepReadonlyArray<T[number]> :
+        \\  T extends object ? DeepReadonlyObject<T> : T;
+        \\interface DeepReadonlyArray<T> extends ReadonlyArray<DeepReadonly<T>> {}
+        \\type DeepReadonlyObject<T> = {
+        \\  readonly [P in NonFunctionPropertyNames<T>]: DeepReadonly<T[P]>;
+        \\};
+        \\declare const part: DeepReadonly<Part>;
+        \\part.id = 1;
+        \\part.subparts[0] = part.subparts[0];
+        \\part.subparts[0].id = 1;
+    );
+    defer destroyBoundSetup(s);
+    s.base.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.base.checker.checkSourceFile(s.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s.base, TsCodes.readonly_property));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s.base, TsCodes.readonly_index_signature));
 }
 
 test "checker: generic Extract argument diagnostics preserve symbolic source" {

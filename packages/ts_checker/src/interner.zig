@@ -1116,6 +1116,32 @@ pub const Interner = struct {
         return self.internObjectTypeWithIndex(members, types.Primitive.none, types.Primitive.none);
     }
 
+    /// Give one alias instantiation its own object identity while retaining
+    /// the complete structural payload of a previously materialized object.
+    /// Distinct generic arguments may reduce to the same object TypeId, but
+    /// the caller still needs separate ownership of alias arguments.
+    pub fn cloneObjectType(self: *Interner, source: TypeId) error{OutOfMemory}!TypeId {
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        std.debug.assert(source < self.pool.headers.items.len);
+        const header = self.pool.headers.items[source];
+        std.debug.assert(header.flags.is_object_type and !header.flags.is_union and !header.flags.is_intersection);
+        std.debug.assert(header.payload < self.pool.object_type_payloads.items.len);
+        var payload = self.pool.object_type_payloads.items[header.payload];
+        const source_members = self.pool.object_member_pool.items[payload.members_start..][0..payload.members_len];
+        const members = try self.gpa.dupe(types.ObjectMember, source_members);
+        defer self.gpa.free(members);
+        payload.members_start = @intCast(self.pool.object_member_pool.items.len);
+        try self.pool.object_member_pool.appendSlice(self.gpa, members);
+        const payload_idx: u32 = @intCast(self.pool.object_type_payloads.items.len);
+        try self.pool.object_type_payloads.append(self.gpa, payload);
+        const clone: TypeId = @intCast(self.pool.headers.items.len);
+        var cloned_header = header;
+        cloned_header.payload = payload_idx;
+        try self.pool.headers.append(self.gpa, cloned_header);
+        return clone;
+    }
+
     /// Complete a fresh, unpublished empty object. Reserving object identities
     /// before filling their members permits cyclic module namespace graphs.
     /// The caller must own the object exclusively until the graph is complete.
