@@ -22478,6 +22478,40 @@ test "Program: imported JSDoc generic constructor field instantiates at the cons
     }
 }
 
+test "Program: checked JavaScript function heritage keeps JSDoc constructor arguments" {
+    const source =
+        \\/**
+        \\ * @template T
+        \\ * @param {T} value
+        \\ */
+        \\function Box(value) { this.value = value; }
+        \\new Box(1);
+        \\/** @extends {Box<{ claim: "no" | "yes" }>} */
+        \\class ClaimedBox extends Box {}
+        \\const valid = new ClaimedBox({ claim: "yes" });
+        \\valid.value.claim;
+        \\new ClaimedBox(0);
+    ;
+    for ([_]bool{ false, true }) |strict| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/box.js", source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const file = try p.add("/box.js", source);
+        try p.compileAll(.{ .allow_js = true, .check_js = true, .no_emit = true, .strict = strict });
+        const diagnostics = p.fileById(file).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 1), diagnostics.len);
+        try T.expectEqual(@as(u32, 2345), diagnostics[0].code);
+        try T.expectEqualStrings(
+            "Argument of type 'number' is not assignable to parameter of type '{ claim: \"no\" | \"yes\"; }'.",
+            diagnostics[0].message,
+        );
+    }
+}
+
 test "Program: multiple JSDoc class templates instantiate independent constructor fields" {
     const owner_source =
         \\/** @template T, U */

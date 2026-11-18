@@ -86,6 +86,8 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue994-keyof-alias/') ||
   path.includes('/issue975-union-member-order/') ||
   path.includes('/issue1005-bigint-literal/') ||
+  path.includes('/issue1006-qualified-enum/') ||
+  path.includes('/issue1007-js-constructor-heritage/') ||
   path.includes('/issue1004-returned-literals/') ||
   path.includes('/issue1008-union-unit-collapse/') ||
   path.includes('/issue1009-literal-union-widening/') ||
@@ -185,6 +187,9 @@ for (const config of [
   'packages/ts_cli/testdata/issue1002-keyof-display/tsconfig.json',
   'packages/ts_cli/testdata/issue975-union-member-order/tsconfig.json',
   'packages/ts_cli/testdata/issue1005-bigint-literal/tsconfig.json',
+  'packages/ts_cli/testdata/issue1006-qualified-enum/tsconfig.json',
+  'packages/ts_cli/testdata/issue1007-js-constructor-heritage/tsconfig.json',
+  'packages/ts_cli/testdata/issue1007-js-constructor-heritage/tsconfig-loose.json',
   'packages/ts_cli/testdata/issue1011-template-placeholder/tsconfig.json',
   'packages/ts_cli/testdata/issue1012-signed-numeric-literal/tsconfig.json',
   'packages/ts_cli/testdata/issue1014-number-literal-display/tsconfig.json',
