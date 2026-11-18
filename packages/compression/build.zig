@@ -26,6 +26,15 @@ pub fn build(b: *std.Build) void {
     });
     tests.root_module.addImport("compression", compression);
 
+    const interop_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/interop_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    interop_tests.root_module.addImport("compression", compression);
+
     const module_tests = b.addTest(.{ .root_module = compression });
     const run_module_tests = b.addRunArtifact(module_tests);
     const run_tests = b.addRunArtifact(tests);
@@ -33,10 +42,25 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&lib.step);
     check_step.dependOn(&module_tests.step);
     check_step.dependOn(&tests.step);
+    check_step.dependOn(&interop_tests.step);
 
     const test_step = b.step("test", "Run compression tests");
     test_step.dependOn(&run_module_tests.step);
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&b.addRunArtifact(interop_tests).step);
+
+    const interop_check = b.addExecutable(.{
+        .name = "interop-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/interop_check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "compression", .module = compression }},
+        }),
+    });
+    check_step.dependOn(&interop_check.step);
+    const interop_step = b.step("interop", "Decode this package's output with the reference zstd, lz4 and brotli tools");
+    interop_step.dependOn(&b.addRunArtifact(interop_check).step);
 
     const install_docs = b.addInstallDirectory(.{
         .source_dir = tests.getEmittedDocs(),
