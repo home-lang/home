@@ -6132,6 +6132,9 @@ pub const Checker = struct {
     /// zero-argument object types resolved from them. These never participate
     /// in consumer name lookup or structural identity.
     program_definition_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    /// A union alias imported through Program keeps its source declaration
+    /// identity even when another alias has identical members.
+    program_definition_union_aliases: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     program_type_display_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     /// Imported `Record` alias annotations admitted by the Program schema.
     /// Keying the source type-reference node keeps their diagnostic spelling
@@ -7009,6 +7012,7 @@ pub const Checker = struct {
         self.program_declaration_type_parameters.deinit(self.gpa);
         self.program_schema_tuple_types.deinit(self.gpa);
         self.program_definition_names.deinit(self.gpa);
+        self.program_definition_union_aliases.deinit(self.gpa);
         self.program_type_display_names.deinit(self.gpa);
         self.program_record_alias_annotations.deinit(self.gpa);
         self.program_definition_classes.deinit(self.gpa);
@@ -75902,6 +75906,10 @@ pub const Checker = struct {
         if (aliased_node != hir_mod.none_node_id and self.hir.kindOf(aliased_node) == .template_literal_type) return true;
         if (aliased_t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(aliased_t);
+        // `type V = U` keeps U's symbol when U is already a named union;
+        // declaring V does not rename U's union type.
+        if (flags.is_union and self.hir.kindOf(aliased_node) != .union_type and
+            self.interner.unionAliasInfo(aliased_t) != null) return true;
         if (flags.is_union or flags.is_intersection or flags.is_object_type) return false;
         return flags.is_literal;
     }
@@ -76065,13 +76073,28 @@ pub const Checker = struct {
                 }
                 break :blk placeholder;
             } else types.Primitive.none;
-            const aliased_t = blk: {
+            var aliased_t = blk: {
                 defer if (alias_name) |an| {
                     _ = self.alias_lower_in_progress.remove(an);
                 };
                 break :blk (try self.programExactFiniteStringIndexedAliasType(ta.aliased)) orelse
                     try self.lowererLowerWithTypeParams(ta.aliased);
             };
+            if (alias_name) |name| {
+                if (self.hir.kindOf(ta.aliased) == .union_type and
+                    aliased_t < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(aliased_t).is_union)
+                {
+                    const bare_union = aliased_t;
+                    aliased_t = self.interner.internAliasedUnion(bare_union, .{
+                        .name = name,
+                        .declaration = node,
+                    }) catch return error.OutOfMemory;
+                    if (self.source_ordered_union_members.get(bare_union)) |ordered| {
+                        try self.source_ordered_union_members.put(self.gpa, aliased_t, ordered);
+                    }
+                }
+            }
             if (recursive_placeholder != types.Primitive.none) {
                 const payload_idx = self.interner.pool.payloadOf(recursive_placeholder);
                 if (payload_idx < self.interner.pool.type_parameter_payloads.items.len) {
@@ -118068,6 +118091,7 @@ pub const Checker = struct {
         try self.removeProgramEntriesFrom(&self.program_expression_parameters, watermark, false, true);
         try self.removeProgramEntriesFrom(&self.program_declaration_type_parameters, watermark, true, false);
         try self.removeProgramEntriesFrom(&self.program_definition_names, watermark, true, false);
+        try self.removeProgramEntriesFrom(&self.program_definition_union_aliases, watermark, true, false);
         try self.removeProgramEntriesFrom(&self.program_type_display_names, watermark, true, false);
         try self.removeProgramEntriesFrom(&self.ordered_overload_types, watermark, true, true);
         try self.removeProgramEntriesFrom(&self.program_definition_classes, watermark, true, false);
@@ -118141,6 +118165,7 @@ pub const Checker = struct {
         self.program_expression_parameters.clearRetainingCapacity();
         self.program_declaration_type_parameters.clearRetainingCapacity();
         self.program_definition_names.clearRetainingCapacity();
+        self.program_definition_union_aliases.clearRetainingCapacity();
         self.program_type_display_names.clearRetainingCapacity();
         self.ordered_overload_types.clearRetainingCapacity();
         self.program_definition_classes.clearRetainingCapacity();
@@ -118281,7 +118306,13 @@ pub const Checker = struct {
             const snapshot = try self.gpa.dupe(TypeId, members);
             defer self.gpa.free(snapshot);
             for (snapshot) |*member| member.* = try self.resolveGenericType(member.*);
-            const result = if (flags.is_union) try self.interner.internUnion(snapshot) else try self.interner.internIntersection(snapshot);
+            const result = if (flags.is_union) blk: {
+                const union_t = try self.interner.internUnion(snapshot);
+                if (self.interner.unionAliasInfo(t)) |identity| {
+                    break :blk try self.interner.internAliasedUnion(union_t, identity);
+                }
+                break :blk union_t;
+            } else try self.interner.internIntersection(snapshot);
             if (own != null) try self.ordered_overload_types.put(self.gpa, result, if (own_index) |i| snapshot[i] else result);
             if (defer_before != self.instantiation_defer_events or self.type_instantiation_overflow) return result;
             try self.generic_instances.put(self.gpa, t, result);
@@ -118329,7 +118360,13 @@ pub const Checker = struct {
         defer subs.deinit(self.gpa);
         for (parameters, args) |parameter, arg| try subs.put(self.gpa, parameter, arg);
         const substituted = try self.substituteType(definition.body, &subs);
-        const result = try self.resolveGenericType(substituted);
+        var result = try self.resolveGenericType(substituted);
+        if (self.program_definition_union_aliases.get(reference.origin)) |origin| {
+            if (result < self.interner.pool.typeCount() and self.interner.pool.flagsOf(result).is_union) {
+                const name = self.program_definition_names.get(reference.origin) orelse definition.name;
+                result = try self.interner.internAliasedUnion(result, .{ .name = name, .origin = origin });
+            }
+        }
         // A non-productive alias cycle remains symbolic; never publish a
         // guessed body as a completed instantiation.
         if (result == t) return t;
@@ -118409,6 +118446,9 @@ pub const Checker = struct {
             definition,
             self.string_interner.intern(declaration.name) catch return error.OutOfMemory,
         );
+        if (declaration.is_type_alias and declaration.body != null and declaration.body.?.* == .union_type) {
+            try self.program_definition_union_aliases.put(self.gpa, definition, try self.programSchemaDeclarationOrigin(declaration));
+        }
         if (declaration.is_class) try self.program_definition_classes.put(self.gpa, definition, .{
             .name = self.string_interner.intern(declaration.name) catch return error.OutOfMemory,
             .origin = try self.programSchemaDeclarationOrigin(declaration),
@@ -184395,6 +184435,9 @@ pub const Checker = struct {
                 if (self.enumNameFromNominal(t)) |enum_name| {
                     break :blk self.string_interner.get(enum_name);
                 }
+                if (self.interner.unionAliasInfo(t)) |identity| {
+                    break :blk self.string_interner.get(identity.name);
+                }
                 if (t < self.interner.pool.typeCount()) {
                     const flags = self.interner.pool.flagsOf(t);
                     if (flags.is_template_literal and !flags.is_union and !flags.is_intersection) {
@@ -205868,6 +205911,9 @@ pub const Checker = struct {
                 }
                 if (self.enumNameFromNominal(t)) |enum_name| {
                     break :blk self.string_interner.get(enum_name);
+                }
+                if (self.interner.unionAliasInfo(t)) |identity| {
+                    break :blk self.string_interner.get(identity.name);
                 }
                 if (t < self.interner.pool.typeCount()) {
                     const early_flags = self.interner.pool.flagsOf(t);

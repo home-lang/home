@@ -195,6 +195,7 @@ pub const Declaration = struct {
     constructors: ?*const Expression = null,
     is_abstract_class: bool = false,
     is_interface: bool = false,
+    is_type_alias: bool = false,
     /// Own members remain distinct from heritage when collecting overloads.
     /// This expression is also reachable through `body`.
     interface_own_body: ?*const Expression = null,
