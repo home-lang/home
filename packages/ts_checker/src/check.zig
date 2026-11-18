@@ -57218,23 +57218,6 @@ pub const Checker = struct {
         return ma.name;
     }
 
-    fn checkedJsHeritageFunctionDecl(
-        self: *Checker,
-        anchor: NodeId,
-        name: hir_mod.StringId,
-    ) ?NodeId {
-        if (!self.sourceHasCheckJsDirective()) return null;
-        const function = self.checkJsFunctionDeclNamedInVirtualProgram(anchor, name) orelse
-            self.findFunctionDeclForNameNearNode(anchor, name) orelse
-            self.jsConstructorFunctionDeclForName(anchor, name) orelse return null;
-        if (self.virtualSectionFilenameForNode(function)) |filename| {
-            if (!self.pathIsJsLike(filename)) return null;
-        } else if (!self.virtualSectionIsJsLike(function)) {
-            return null;
-        }
-        return function;
-    }
-
     fn classExtendsInstanceType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
         if (self.class_extends_instance_type_cache.get(extends_expr)) |cached| return cached;
         const result: ?TypeId = switch (self.hir.kindOf(extends_expr)) {
@@ -57278,12 +57261,6 @@ pub const Checker = struct {
                             break :blk inherited_t;
                         }
                     }
-                }
-                if (self.checkedJsHeritageFunctionDecl(extends_expr, id.name) != null) {
-                    if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
-                        if (try self.constructReturnType(value_t)) |instance_t| break :blk instance_t;
-                    }
-                    break :blk null;
                 }
                 if (self.class_instance_types.get(id.name)) |t| {
                     const inherited_t = self.merged_class_instance_types.get(t) orelse t;
@@ -58448,13 +58425,6 @@ pub const Checker = struct {
                         }
                         break :blk t;
                     }
-                }
-                if (self.checkedJsHeritageFunctionDecl(extends_expr, id.name) != null) {
-                    if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
-                        const static_t = self.typeParameterConstraint(value_t) orelse value_t;
-                        if (try self.constructReturnType(static_t)) |_| break :blk static_t;
-                    }
-                    break :blk null;
                 }
                 if (self.class_static_types.get(id.name)) |t| {
                     if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, t)) |instantiated| {
@@ -85372,6 +85342,26 @@ pub const Checker = struct {
     fn qualifiedEnumMemberTypeRef(self: *Checker, type_node: NodeId) CheckError!?TypeId {
         const r = hir_mod.typeRefOf(self.hir, type_node);
         const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
+        if (qualifiers.len > 1) {
+            var namespace_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+            defer namespace_path.deinit(self.gpa);
+            for (qualifiers[0 .. qualifiers.len - 1]) |qualifier| {
+                if (self.hir.kindOf(qualifier) != .identifier) return null;
+                try namespace_path.append(self.gpa, hir_mod.identifierOf(self.hir, qualifier).name);
+            }
+            const enum_qualifier = qualifiers[qualifiers.len - 1];
+            if (self.hir.kindOf(enum_qualifier) != .identifier) return null;
+            const enum_name = hir_mod.identifierOf(self.hir, enum_qualifier).name;
+            const namespace = self.findVisibleNamespaceByPath(type_node, namespace_path.items) orelse return null;
+            const decl = self.findVisibleTypeDeclInNamespace(namespace, enum_name, type_node) orelse return null;
+            if (self.hir.kindOf(decl) != .enum_decl) return null;
+            const value = (try self.enumRelationValueForMemberInScope(decl, enum_name, r.name)) orelse return null;
+            return switch (value) {
+                .numeric => |number| self.interner.internEnumNumberLiteral(number, enum_name, r.name) catch return error.OutOfMemory,
+                .string => |string| self.interner.internEnumStringLiteral(string, enum_name, r.name) catch return error.OutOfMemory,
+                .unknown_numeric => try self.enumNominalTypeForDecl(decl, enum_name),
+            };
+        }
         if (qualifiers.len != 1 or self.hir.kindOf(qualifiers[0]) != .identifier) return null;
         const enum_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
         if (self.constEnumLiteralAccess(enum_name, r.name, type_node)) |lit_t| return lit_t;
@@ -110054,6 +110044,15 @@ pub const Checker = struct {
         // The value remains literal for assignability: `const x: number =
         // box.value` reports `string` for a `"ready"` field, while assigning
         // that same field to `"other"` still reports `"ready"`.
+        // A whole enum can hold singleton member values. TypeScript keeps
+        // the literal source in the diagnostic even though it is not a
+        // member of this enum (for example `"x"` assigned to `NS.Color`).
+        // Enum types may arrive as unions of their members rather than a
+        // nominal intersection. Keep the narrow source only for that enum
+        // shape; nullable primitive unions still widen fresh literals.
+        if (self.enumNameForSwitchType(target_t) != null) {
+            return try self.expressionLiteralType(init_node, init_t);
+        }
         if (!init_flags.is_enum_literal) return if (self.shouldWidenForArgDiagnostic(init_t, target_t)) self.widenLiteralType(init_t) else init_t;
         const target_flags = if (target_t < self.interner.pool.typeCount())
             self.interner.pool.flagsOf(target_t)
@@ -295352,6 +295351,29 @@ test "checker: GH58603 namespace enum-member literal in type-alias member positi
     try whole_enum.base.checker.checkSourceFile(whole_enum.base.root);
     try T.expect(!checkerHasCode(whole_enum, TsCodes.cannot_find_namespace));
     try T.expect(!checkerHasCode(whole_enum, TsCodes.cannot_find_name));
+}
+
+test "checker: namespace-qualified enum members retain their literal types" {
+    const b = try newBoundSetup(
+        \\namespace NS { export enum Color { Red, Green, Blue } }
+        \\const wrongMember: NS.Color.Blue = NS.Color.Red;
+        \\const wrongString: NS.Color.Blue = "x";
+        \\const wrongWhole: NS.Color = "x";
+        \\const valid: NS.Color.Blue = NS.Color.Blue;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(
+        b.base,
+        TsCodes.type_not_assignable,
+        "Type 'Color.Red' is not assignable to type 'Color.Blue'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        b.base,
+        TsCodes.type_not_assignable,
+        "Type '\"x\"' is not assignable to type 'Color'.",
+    ));
 }
 
 test "checker: non-exported namespace-scoped enum-member type ref is clean (GH58603)" {
