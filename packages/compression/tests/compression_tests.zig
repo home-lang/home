@@ -45,18 +45,14 @@ test "gzip streaming API emits a complete frame" {
     try testing.expectEqualStrings("stream payload", decoded);
 }
 
-test "zstd preserves the established block wire format" {
+test "zstd writes a standard frame header" {
     var zstd = compression.Zstd.init(testing.allocator, .balanced);
     const input = "abcabcabcabcabcabc";
-    const expected_block = [_]u8{
-        'a',  'b', 'c', 'a', 'b', 'c',
-        0xff, 6,   0,   6,   0,   0xff,
-        12,   0,   6,   0,
-    };
 
     const encoded = try zstd.compress(input);
     defer testing.allocator.free(encoded);
-    try testing.expectEqualSlices(u8, &expected_block, encoded[18 .. encoded.len - 4]);
+    // Magic, then FHD: 1-byte content size, single segment, content checksum.
+    try testing.expectEqualSlices(u8, &.{ 0x28, 0xb5, 0x2f, 0xfd, 0x24, input.len }, encoded[0..6]);
     const decoded = try zstd.decompress(encoded);
     defer testing.allocator.free(decoded);
     try testing.expectEqualStrings(input, decoded);
@@ -89,10 +85,9 @@ test "zstd rejects truncated blocks" {
     const encoded = try zstd.compress("truncated block");
     defer testing.allocator.free(encoded);
 
-    // Frame header is 14 bytes. Make the first block claim more bytes than
-    // remain before the checksum.
-    std.mem.writeInt(u32, encoded[14..18], (@as(u32, 4096) << 3) | 1, .little);
-    try testing.expectError(error.EndOfStream, zstd.decompress(encoded));
+    // The header is 6 bytes. Make the only block claim more bytes than remain.
+    std.mem.writeInt(u24, encoded[6..9], (@as(u24, 4096) << 3) | 1, .little);
+    try testing.expectError(error.Truncated, zstd.decompress(encoded));
 }
 
 test "zstd streaming API emits a validated frame" {
