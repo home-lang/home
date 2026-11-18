@@ -97,6 +97,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1013-exported-const-types/') ||
   path.includes('/issue1016-inferred-export-types/') ||
   path.includes('/issue1017-logical-not-literal/') ||
+  path.includes('/issue1018-inferred-named-export/') ||
   path.includes('/issue1019-readonly-empty-tuple/') ||
   path.includes('/issue1020-inferred-return-widening/') ||
   path.includes('/issue1021-syntactic-truthiness/') ||
