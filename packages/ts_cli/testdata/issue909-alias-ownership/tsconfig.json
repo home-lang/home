@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "es2015",
+    "lib": ["es2015"],
+    "strict": true,
+    "noEmit": true
+  },
+  "files": ["readonly.ts"]
+}
