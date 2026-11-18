@@ -198609,6 +198609,12 @@ pub const Checker = struct {
         // A union of keys, or a `keyof T` still symbolic over a type parameter.
         if (!target_flags.is_union and !target_flags.is_keyof) return null;
         const operand = hir_mod.keyofTypeOf(self.hir, type_node).operand;
+        if (self.hir.kindOf(operand) == .typeof_type) {
+            const operand_t = try self.lowererLowerWithTypeParams(operand);
+            if (!self.typeIsArrayLikeObject(operand_t) and self.namedTypeForId(operand_t) == null) return null;
+            const operand_name = (try self.allocSimpleTypeName(operand_t)) orelse return null;
+            return try std.fmt.allocPrint(self.diag_arena.allocator(), "keyof {s}", .{operand_name});
+        }
         if (!self.keyofOperandKeepsName(operand)) return null;
         const operand_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(operand), " \t\r\n");
         if (operand_text.len == 0) return null;
@@ -198947,9 +198953,9 @@ pub const Checker = struct {
             // just `"a"` and stays on the general reporter.
             if (self.keyofNodeBehindAnnotation(annotation)) |type_node| {
                 const operand = hir_mod.keyofTypeOf(self.hir, type_node).operand;
-                if ((self.typeNodeHasArraySyntax(operand) or self.hir.kindOf(operand) == .type_ref) and
-                    (type_node == annotation or
-                        (try self.keyofAnnotationNameForIdentifier(target_node, target)) != null))
+                if (((self.typeNodeHasArraySyntax(operand) or self.hir.kindOf(operand) == .type_ref) and
+                    type_node == annotation) or
+                    (try self.keyofAnnotationNameForIdentifier(target_node, target)) != null)
                 {
                     return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
                 }
