@@ -154,6 +154,7 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
         .signature_decl_nodes,
         .type_parameter_decl_nodes,
         .class_decl_by_instance,
+        .local_named_type_decl_by_id,
         .enum_nominal_decls,
         => .{ .key = type_id, .value = node_id },
         .rest_signatures,

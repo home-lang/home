@@ -4454,6 +4454,10 @@ pub const CheckedTypes = struct {
     protected_constructor_classes: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
     class_accessor_setter_types: std.AutoHashMapUnmanaged(ClassAccessorKey, TypeId) = .empty,
     named_type_by_id: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    /// A checked object reached through a local, non-generic named type
+    /// reference. The type may be a fresh copy of the declaration's TypeId;
+    /// retain the declaration rather than inferring a name from its shape.
+    local_named_type_decl_by_id: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
     last_iface_decl_for_name: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty,
     recursive_indexed_access_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
     recursive_mapped_index_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
@@ -5032,6 +5036,7 @@ pub const Checker = struct {
     /// validated against `type_names` before use so name rebinding cannot
     /// leave a stale diagnostic identity.
     named_type_by_id: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId),
+    local_named_type_decl_by_id: std.AutoHashMapUnmanaged(TypeId, NodeId),
     /// Monotonic membership proves never-registered TypeIds cannot occur in
     /// `type_names`. Rebinding may leave obsolete IDs, which only cause an
     /// extra full scan. This has the same lifetime as the type-name table.
@@ -6300,6 +6305,7 @@ pub const Checker = struct {
             .class_static_private_set_only_accessors = .empty,
             .type_names = .empty,
             .named_type_by_id = .empty,
+            .local_named_type_decl_by_id = .empty,
             .last_iface_decl_for_name = .empty,
             .generic_aliases = .empty,
             .generic_interfaces_by_decl = .empty,
@@ -7158,6 +7164,7 @@ pub const Checker = struct {
         self.class_static_private_set_only_accessors.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
         self.named_type_by_id.deinit(self.gpa);
+        self.local_named_type_decl_by_id.deinit(self.gpa);
         self.registered_named_type_ids.deinit(self.gpa);
         self.last_iface_decl_for_name.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
@@ -80973,7 +80980,30 @@ pub const Checker = struct {
                 }
             }
         }
-        return self.resolveGenericType(result);
+        const resolved = try self.resolveGenericType(result);
+        // A plain reference to a local interface or object alias can produce
+        // a fresh object TypeId during checking. Preserve its declaration for
+        // cross-file checked-schema projection; structural equality cannot
+        // distinguish it from an unrelated object literal.
+        if (self.hir.kindOf(type_node) == .type_ref and
+            resolved >= types.Primitive.first_dynamic and resolved < self.interner.pool.typeCount())
+        {
+            const reference = hir_mod.typeRefOf(self.hir, type_node);
+            const flags = self.interner.pool.flagsOf(resolved);
+            if (reference.qualifier_len == 0 and reference.args_len == 0 and
+                flags.is_object_type and !flags.is_union and !flags.is_intersection)
+            {
+                if (self.findVisibleNamedTypeDecl(type_node, reference.name)) |declaration| {
+                    const kind = self.hir.kindOf(declaration);
+                    if ((kind == .interface_decl or kind == .type_alias_decl) and
+                        self.typeParamNodesOfDecl(declaration).len == 0)
+                    {
+                        try self.local_named_type_decl_by_id.put(self.gpa, resolved, declaration);
+                    }
+                }
+            }
+        }
+        return resolved;
     }
 
     fn typeNodeHasResolutionError(self: *Checker, type_node: NodeId) bool {

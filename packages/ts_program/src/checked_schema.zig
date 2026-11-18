@@ -460,6 +460,33 @@ const Builder = struct {
         return declaration;
     }
 
+    fn localNamedDeclaration(self: *Builder, typ: TypeId) error{OutOfMemory}!?*schema.Declaration {
+        if (self.declarations.get(typ)) |existing| return existing;
+        const node = self.compilation.checked_types.local_named_type_decl_by_id.get(typ) orelse return null;
+        if (node == hir.none_node_id or node >= self.compilation.hir.nodeCount()) return null;
+        const kind = self.compilation.hir.kindOf(node);
+        const name_node = switch (kind) {
+            .interface_decl => hir.interfaceOf(&self.compilation.hir, node).name,
+            .type_alias_decl => hir.typeAliasOf(&self.compilation.hir, node).name,
+            else => return null,
+        };
+        if (name_node == hir.none_node_id or self.compilation.hir.kindOf(name_node) != .identifier) return null;
+        const name_id = hir.identifierOf(&self.compilation.hir, name_node).name;
+        const declaration = try self.arena.create(schema.Declaration);
+        declaration.* = .{
+            .path = self.path,
+            .position = self.compilation.hir.spanOf(node).start,
+            .name = self.compilation.interner.get(name_id),
+            .is_interface = kind == .interface_decl,
+            .is_type_alias = kind == .type_alias_decl,
+        };
+        // Install the declaration before lowering its body so a recursive
+        // member can refer back to the same declaration.
+        try self.declarations.put(self.arena, typ, declaration);
+        declaration.body = try self.lowerUncached(typ);
+        return declaration;
+    }
+
     fn lower(self: *Builder, typ: TypeId) error{OutOfMemory}!*const schema.Expression {
         if (typ == Primitive.true_lit) return self.expression(.{ .boolean = true });
         if (typ == Primitive.false_lit) return self.expression(.{ .boolean = false });
@@ -468,6 +495,10 @@ const Builder = struct {
 
         if (self.compilation.checked_types.class_decl_by_instance.get(typ) != null) {
             const declaration = (try self.classDeclaration(typ)) orelse return self.unsupported();
+            return self.expression(.{ .reference = .{ .declaration = declaration, .arguments = &.{} } });
+        }
+        if (self.compilation.checked_types.local_named_type_decl_by_id.contains(typ)) {
+            const declaration = (try self.localNamedDeclaration(typ)) orelse return self.unsupported();
             return self.expression(.{ .reference = .{ .declaration = declaration, .arguments = &.{} } });
         }
         if (self.expressions.get(typ)) |existing| return existing;
