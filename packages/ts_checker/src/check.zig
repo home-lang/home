@@ -182455,7 +182455,11 @@ pub const Checker = struct {
                 );
             }
         }
-        if (self.propertyKeyLiteralUnionPart(param_t)) |literal_param_t| {
+        const literal_key_target = if (self.unionHasBroadPropertyKeyMember(param_t))
+            null
+        else
+            self.propertyKeyLiteralUnionPart(param_t);
+        if (literal_key_target) |literal_param_t| {
             const arg_is_union = arg_t < self.interner.pool.typeCount() and
                 self.interner.pool.flagsOf(arg_t).is_union;
             const arg_text = if (arg_is_union)
@@ -182537,7 +182541,7 @@ pub const Checker = struct {
                     .{ arg_text, param_text },
                 );
             }
-            if (self.propertyKeyLiteralUnionPart(param_t)) |literal_param_t| {
+            if (literal_key_target) |literal_param_t| {
                 if (try self.simpleDiagnosticTypeName(literal_param_t)) |param_text| {
                     return try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -184164,6 +184168,36 @@ pub const Checker = struct {
         }
     }
 
+    /// TypeScript's `mapToTypeNodes` starts eliding a bare union once the
+    /// approximate type-node length exceeds 160. Simple members add their
+    /// printed length plus two separator units; the final member remains
+    /// visible. Complex members have their own length accounting, so this
+    /// path applies only where that simple estimate is exact.
+    fn simpleUnionElisionStart(self: *Checker, entries: anytype) ?usize {
+        if (self.sourceDirectiveValueMentions("noErrorTruncation", "true")) return null;
+        var approximate_length: usize = 0;
+        var saw_non_string_literal = false;
+        var candidate: ?usize = null;
+        for (entries, 0..) |entry, index| {
+            const member = entry.sort.member;
+            if (member >= self.interner.pool.typeCount()) return null;
+            const flags = self.interner.pool.flagsOf(member);
+            if (flags.is_union or flags.is_intersection or flags.is_object_type or
+                flags.is_signature or flags.is_mapped or flags.is_conditional or
+                flags.is_keyof or flags.is_instantiation or flags.is_template_literal or
+                flags.is_enum_literal) return null;
+            if (!(flags.is_string and flags.is_literal)) saw_non_string_literal = true;
+            const next_index = index + 1;
+            if (candidate == null and approximate_length > 160 and next_index + 2 < entries.len - 1) {
+                candidate = index;
+            }
+            approximate_length += entry.name.len + 2;
+        }
+        // All-string literal unions use their existing dedicated display
+        // path; this handles the mixed primitive/literal/symbol case.
+        return if (saw_non_string_literal) candidate else null;
+    }
+
     /// `CompareTypes` for two types reached through a type-argument or
     /// constituent list, where no display name has been rendered yet.
     fn unionMemberOrder(self: *Checker, a: TypeId, b: TypeId, depth: u8) std.math.Order {
@@ -184547,7 +184581,19 @@ pub const Checker = struct {
                             try entries.append(self.gpa, .{ .name = "boolean", .sort = .{ .flags_rank = 8, .has_name = false, .name = "" } });
                         }
                     }
-                    for (entries.items) |entry| {
+                    if (if (!has_null and !has_undef) self.simpleUnionElisionStart(entries.items) else null) |limit| {
+                        for (entries.items[0..limit]) |entry| {
+                            if (!first) try union_buf.appendSlice(arena_u, " | ");
+                            first = false;
+                            try union_buf.appendSlice(arena_u, entry.name);
+                        }
+                        const omitted = entries.items.len - limit - 1;
+                        const summary = try std.fmt.allocPrint(arena_u, " | ... {d} more ... | {s}", .{
+                            omitted,
+                            entries.items[entries.items.len - 1].name,
+                        });
+                        try union_buf.appendSlice(arena_u, summary);
+                    } else for (entries.items) |entry| {
                         if (!first) try union_buf.appendSlice(arena_u, " | ");
                         first = false;
                         try union_buf.appendSlice(arena_u, entry.name);
@@ -184868,6 +184914,16 @@ pub const Checker = struct {
         }
         if (self.typeIsPropertyKeyLiteral(t)) return t;
         return null;
+    }
+
+    fn unionHasBroadPropertyKeyMember(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return false;
+        for (self.interner.unionMembers(t)) |member| {
+            if (member == types.Primitive.string_t or
+                member == types.Primitive.number_t or
+                member == types.Primitive.symbol_t) return true;
+        }
+        return false;
     }
 
     fn conditionalTypeParameterConstraintForArgument(
@@ -206359,6 +206415,18 @@ pub const Checker = struct {
                         const summary = try std.fmt.allocPrint(arena_u, " | ... {d} more ... | ", .{omitted});
                         try union_buf.appendSlice(arena_u, summary);
                         try union_buf.appendSlice(arena_u, entries.items[entries.items.len - 1].name);
+                    } else if (if (!has_null and !has_undef) self.simpleUnionElisionStart(entries.items) else null) |limit| {
+                        for (entries.items[0..limit]) |entry| {
+                            if (!first) try union_buf.appendSlice(arena_u, " | ");
+                            first = false;
+                            try union_buf.appendSlice(arena_u, entry.name);
+                        }
+                        const omitted = entries.items.len - limit - 1;
+                        const summary = try std.fmt.allocPrint(arena_u, " | ... {d} more ... | {s}", .{
+                            omitted,
+                            entries.items[entries.items.len - 1].name,
+                        });
+                        try union_buf.appendSlice(arena_u, summary);
                     } else {
                         for (entries.items) |entry| {
                             if (!first) try union_buf.appendSlice(arena_u, " | ");

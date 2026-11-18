@@ -40,17 +40,13 @@ shown, on its own annotation and on an unrelated one.
 Not covered, and why:
 
 - **Member order of a longer union.** TypeScript 5.7.3 prints declaration
-  order; native 7.0.2 sorts members by value. That was a choice of reference,
-  since settled: native 7 owns member order, and
-  `issue975-union-member-order` pins it. Every union in this fixture has at
-  most two members whose two orders coincide, so it stays on 5.7.3 in full.
-- **An alias for a union.** `type U = "a" | "b"` still labels an unrelated
-  `"a" | "b"` as `U`. TypeScript gives an aliased union its own identity; Home
-  deduplicates unions structurally, so telling the two apart needs a
-  type-system change.
+  order; native 7.0.2 sorts members by value. Native 7 owns member order (#975).
+  `tsconfig-long.json` checks the complete long-key display, including
+  TypeScript's `... N more ...` elision, against native 7's text and 5.7.3's
+  diagnostic positions and exit status.
+- **An alias for a union.** Covered separately by #1003.
 - **`keyof (Shape & One)`**, which TypeScript prints as `keyof Shape` because
   the key union was first created under that name.
-- **A literal returned against a literal return type**, where Home reports the
-  source as `string` rather than the literal. It is not specific to `keyof`.
+- **A literal returned against a literal return type.** Covered by #1004.
 
 [Issue #1002](https://github.com/home-lang/home/issues/1002) tracks this work.
