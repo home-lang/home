@@ -203783,8 +203783,7 @@ pub const Checker = struct {
     /// display; native TypeScript 7 prints `Zed | Alpha` as `Alpha | Zed`.
     ///
     /// `null` when the members cannot be rearranged safely — when anything
-    /// but `|` stands between them, such as the parentheses of
-    /// `(() => void) | string`, whose member span may not include them.
+    /// but `|` stands between their complete source spans.
     fn orderedUnionAnnotationText(self: *Checker, node: NodeId) CheckError!?[]const u8 {
         const annotation = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
         if (self.hir.kindOf(annotation) != .union_type) return null;
@@ -203793,16 +203792,27 @@ pub const Checker = struct {
         if (member_nodes.len < 2) return null;
         const union_span = self.hir.spanOf(annotation);
         if (union_span.start > union_span.end or union_span.end > src.len) return null;
-        var cursor = union_span.start;
+        const first_span = self.hir.spanOf(member_nodes[0]);
+        const last_span = self.hir.spanOf(member_nodes[member_nodes.len - 1]);
+        const first_wrapped = unionMemberHasSourceParens(self, src, member_nodes[0]);
+        const last_wrapped = unionMemberHasSourceParens(self, src, member_nodes[member_nodes.len - 1]);
+        if (first_wrapped and first_span.start == 0) return null;
+        if (last_wrapped and last_span.end >= src.len) return null;
+        const complete_start = union_span.start - @intFromBool(first_wrapped);
+        const complete_end = union_span.end + @intFromBool(last_wrapped);
+        var cursor = complete_start;
         for (member_nodes, 0..) |member_node, index| {
             const span = self.hir.spanOf(member_node);
-            if (span.start < cursor or span.start > span.end or span.end > union_span.end) return null;
-            const gap = std.mem.trim(u8, src[cursor..span.start], " \t\r\n");
+            const wrapped = unionMemberHasSourceParens(self, src, member_node);
+            const start = span.start - @intFromBool(wrapped);
+            const end = span.end + @intFromBool(wrapped);
+            if (start < cursor or start > end or end > complete_end) return null;
+            const gap = std.mem.trim(u8, src[cursor..start], " \t\r\n");
             const separated = std.mem.eql(u8, gap, "|") or (index == 0 and gap.len == 0);
             if (!separated) return null;
-            cursor = span.end;
+            cursor = end;
         }
-        if (std.mem.trim(u8, src[cursor..union_span.end], " \t\r\n").len != 0) return null;
+        if (std.mem.trim(u8, src[cursor..complete_end], " \t\r\n").len != 0) return null;
 
         var entries: std.ArrayListUnmanaged(UnionAnnotationEntry) = .empty;
         defer entries.deinit(self.gpa);
@@ -203818,7 +203828,11 @@ pub const Checker = struct {
                 has_undefined = true;
                 continue;
             }
-            const member_text = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(member_node));
+            const span = self.hir.spanOf(member_node);
+            const wrapped = unionMemberHasSourceParens(self, src, member_node);
+            const start = span.start - @intFromBool(wrapped);
+            const end = span.end + @intFromBool(wrapped);
+            const member_text = try self.normalizedTypeAnnotationText(src[start..end]);
             if (member_text.len == 0) return null;
             try entries.append(self.gpa, .{ .text = member_text, .sort = self.unionMemberSortKey(member_t, member_text) });
         }
@@ -203839,6 +203853,14 @@ pub const Checker = struct {
         }
         if (buf.items.len == 0) return null;
         return buf.items;
+    }
+
+    fn unionMemberHasSourceParens(self: *Checker, src: []const u8, member_node: NodeId) bool {
+        const kind = self.hir.kindOf(member_node);
+        if (kind != .fn_type and kind != .constructor_type) return false;
+        const span = self.hir.spanOf(member_node);
+        return span.start > 0 and span.end < src.len and
+            src[span.start - 1] == '(' and src[span.end] == ')';
     }
 
     fn singleLiteralAliasAssignmentName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
@@ -206377,7 +206399,8 @@ pub const Checker = struct {
                         // matches upstream tsc for `unionTypeLiterals.ts`
                         // and `intersectionAndUnionTypes.ts(23,1)`.
                         const needs_parens = std.mem.indexOf(u8, member_name, "=>") != null or
-                            (member_flags.is_intersection and self.alias_display_names.get(member) == null);
+                            (member_flags.is_intersection and self.alias_display_names.get(member) == null and
+                                self.enumNameFromNominal(member) == null);
                         try entries.append(self.gpa, .{
                             .name = member_name,
                             .parens = needs_parens,

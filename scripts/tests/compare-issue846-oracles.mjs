@@ -89,6 +89,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1004-returned-literals/') ||
   path.includes('/issue1008-union-unit-collapse/') ||
   path.includes('/issue1009-literal-union-widening/') ||
+  path.includes('/issue1010-union-parentheses/') ||
   path.includes('/issue1011-template-placeholder/') ||
   path.includes('/issue1012-signed-numeric-literal/') ||
   path.includes('/issue1014-number-literal-display/') ||
@@ -266,6 +267,7 @@ const nativeOrderConfigs = new Map([
   // diagnostics in 5.7.3, but native 7 owns their displayed member order.
   ['packages/ts_cli/testdata/issue1008-union-unit-collapse/tsconfig.json', '#1008'],
   ['packages/ts_cli/testdata/issue1009-literal-union-widening/tsconfig.json', '#1009'],
+  ['packages/ts_cli/testdata/issue1010-union-parentheses/tsconfig.json', '#1010'],
   ['packages/ts_cli/testdata/issue1002-keyof-display/tsconfig-long.json', '#1002'],
 ])
 const native7 = resolve(repo, 'bench/vs_tsgo/.tools/tsgo/node_modules/.bin/tsc')
