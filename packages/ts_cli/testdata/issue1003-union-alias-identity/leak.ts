@@ -1,0 +1,17 @@
+type U = "a" | "b";
+type V = "a" | "b";
+const viaAlias: U = "c";
+const viaOtherAlias: V = "c";
+const direct: "a" | "b" = "c";
+const element: ("a" | "b")[] = ["c"];
+const nested: { key: U } = { key: "c" };
+const nestedDirect: { key: "a" | "b" } = { key: "c" };
+type W = U;
+const throughAlias: W = "c";
+declare const u: U;
+declare const v: V;
+declare const bare: "a" | "b";
+const validBare: "a" | "b" = u;
+const validU: U = bare;
+const validV: V = u;
+const validUFromV: U = v;
