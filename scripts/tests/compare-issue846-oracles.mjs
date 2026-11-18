@@ -212,6 +212,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue1004-returned-literals/tsconfig.json',
   'packages/ts_cli/testdata/issue1008-union-unit-collapse/tsconfig.json',
   'packages/ts_cli/testdata/issue1009-literal-union-widening/tsconfig.json',
+  'packages/ts_cli/testdata/issue1002-keyof-display/tsconfig-long.json',
   'packages/ts_cli/testdata/issue994-keyof-alias/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {
@@ -262,6 +263,7 @@ const nativeOrderConfigs = new Map([
   // diagnostics in 5.7.3, but native 7 owns their displayed member order.
   ['packages/ts_cli/testdata/issue1008-union-unit-collapse/tsconfig.json', '#1008'],
   ['packages/ts_cli/testdata/issue1009-literal-union-widening/tsconfig.json', '#1009'],
+  ['packages/ts_cli/testdata/issue1002-keyof-display/tsconfig-long.json', '#1002'],
 ])
 const native7 = resolve(repo, 'bench/vs_tsgo/.tools/tsgo/node_modules/.bin/tsc')
 if (nativeOrderConfigs.size > 0) {
