@@ -114950,6 +114950,8 @@ pub const Checker = struct {
         else if (numeric_depth == null or numeric_depth.? < -1)
             if (deferred_mask) |mask|
                 try self.deferredFlatArrayElement(receiver, mask)
+            else if (try self.symbolicFlatArrayElement(receiver, self.hir.typeOf(depth_arg))) |symbolic|
+                symbolic
             else
                 return current
         else
@@ -114969,6 +114971,54 @@ pub const Checker = struct {
     const flat_depth_minus_one: u32 = @as(u32, 1) << 22;
     const flat_depth_undefined: u32 = @as(u32, 1) << 23;
     const flat_depth_any: u32 = @as(u32, 1) << 24;
+
+    fn symbolicFlatArrayElement(self: *Checker, receiver: TypeId, depth: TypeId) CheckError!?TypeId {
+        if (depth >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(depth).is_type_parameter) return null;
+        const constraint = self.typeParameterConstraint(depth) orelse return null;
+        if (!try self.checkerAssignableTo(constraint, types.Primitive.number_t)) return null;
+        const evaluated = (try self.symbolicFlatArrayConstraintResult(receiver, self.operandApparentType(depth))) orelse return null;
+        const declaration = &@import("flat_array_schema.zig").declaration;
+        const symbolic = self.programDeclarationReference(declaration, &.{ receiver, depth }, &.{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.UnsupportedProgramType => return null,
+        };
+        try self.generic_instances.put(self.gpa, symbolic, evaluated);
+        const alias_name = self.string_interner.intern("FlatArray") catch return error.OutOfMemory;
+        try self.registerAliasDisplayNameInner(symbolic, alias_name, &.{ receiver, depth }, true);
+        return symbolic;
+    }
+
+    fn symbolicFlatArrayConstraintResult(self: *Checker, receiver: TypeId, constraint: TypeId) CheckError!?TypeId {
+        if (self.numberLiteralValueFromType(constraint)) |literal| {
+            if (literal == -1) return receiver;
+            if (literal < -1) return null;
+            const remaining: i32 = if (std.math.isNan(literal) or std.math.isInf(literal) or
+                literal != @trunc(literal) or literal > 21)
+                flat_saturating_depth
+            else
+                @intFromFloat(literal);
+            return try self.flatArrayAtDepth(receiver, remaining);
+        }
+        const mask = self.flatDeferredDepthMask(constraint) orelse return null;
+        const finite_depths = mask & flat_all_deferred_depths;
+        const minimum_depth: i32 = if (constraint == types.Primitive.number_t or
+            (mask & (flat_depth_any | flat_depth_minus_one)) != 0)
+            -1
+        else if (finite_depths != 0)
+            @intCast(@ctz(finite_depths))
+        else
+            0;
+        var possibilities: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer possibilities.deinit(self.gpa);
+        var current = try self.flatArrayAtDepth(receiver, minimum_depth);
+        for (0..64) |_| {
+            try possibilities.append(self.gpa, current);
+            const next = try self.flatArrayAtDepth(current, 0);
+            if (next == current) break;
+            current = next;
+        }
+        return self.interner.internUnion(possibilities.items) catch return error.OutOfMemory;
+    }
 
     fn flatDeferredDepthMask(self: *Checker, argument: TypeId) ?u32 {
         if (argument == types.Primitive.any) return flat_depth_any;
@@ -200797,6 +200847,128 @@ pub const Checker = struct {
 
     const DeferredFlatArrayInfo = struct { operand: TypeId, depth_mask: u32 };
 
+    const SymbolicFlatArrayInfo = struct { operand: TypeId, depth: TypeId, depth_mask: u32 };
+
+    fn symbolicFlatArrayInfo(self: *Checker, t: TypeId) ?SymbolicFlatArrayInfo {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_instantiation or flags.is_union or flags.is_intersection) return null;
+        const definition = self.program_generic_definitions.get(&@import("flat_array_schema.zig").declaration) orelse return null;
+        const index = self.interner.pool.payloadOf(t);
+        if (index >= self.interner.pool.instantiation_payloads.items.len) return null;
+        const instance = self.interner.pool.instantiation_payloads.items[index];
+        if (instance.origin != definition or instance.args_len != 2) return null;
+        const args = self.interner.pool.type_arg_pool.items[instance.args_start..][0..2];
+        if (!self.interner.isDirectTypeParameter(args[1])) return null;
+        const constraint = self.operandApparentType(args[1]);
+        const mask: u32 = if (constraint == types.Primitive.number_t)
+            flat_all_deferred_depths | flat_depth_minus_one | flat_depth_undefined
+        else if (constraint == types.Primitive.any)
+            flat_depth_any
+        else if (self.numberLiteralValueFromType(constraint)) |value| blk: {
+            if (value == -1) break :blk flat_depth_minus_one;
+            if (value < -1) break :blk flat_all_deferred_depths;
+            if (std.math.isNan(value) or std.math.isInf(value) or value != @trunc(value) or value > 21)
+                break :blk flat_depth_undefined;
+            break :blk @as(u32, 1) << @intFromFloat(value);
+        } else self.flatDeferredDepthMask(constraint) orelse return null;
+        return .{ .operand = args[0], .depth = args[1], .depth_mask = mask };
+    }
+
+    fn flatDecrementDepthMask(mask: u32) u32 {
+        if ((mask & flat_depth_any) != 0) return flat_depth_any;
+        var result: u32 = 0;
+        if ((mask & (flat_depth_minus_one | flat_depth_undefined)) != 0) result |= flat_depth_undefined;
+        for (0..22) |depth| {
+            if ((mask & (@as(u32, 1) << @intCast(depth))) == 0) continue;
+            result |= if (depth == 0) flat_depth_minus_one else @as(u32, 1) << @intCast(depth - 1);
+        }
+        return result;
+    }
+
+    fn symbolicFlatArrayNext(self: *Checker, operand: TypeId, depth: TypeId) CheckError!?struct { alias: TypeId, operand: TypeId, depth: TypeId } {
+        const inner = try self.flatArrayAtDepth(operand, 0);
+        if (inner == operand) return null;
+        const schema = @import("flat_array_schema.zig");
+        const tuple = self.lowerProgramExpression(&schema.decrement_tuple, &schema.declaration, &.{ operand, depth }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.UnsupportedProgramType => return null,
+        };
+        const decremented = self.interner.internIndexedAccess(tuple, depth) catch return error.OutOfMemory;
+        const alias = self.programDeclarationReference(&schema.declaration, &.{ inner, decremented }, &.{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.UnsupportedProgramType => return null,
+        };
+        const name = self.string_interner.intern("FlatArray") catch return error.OutOfMemory;
+        try self.registerAliasDisplayNameInner(alias, name, &.{ inner, decremented }, true);
+        return .{ .alias = alias, .operand = inner, .depth = decremented };
+    }
+
+    fn symbolicFlatArrayElaboration(
+        self: *Checker,
+        alias: TypeId,
+        operand: TypeId,
+        depth: TypeId,
+        mask: u32,
+        target: TypeId,
+        level: u8,
+        explain_union_target: bool,
+    ) CheckError![]const DiagnosticChainEntry {
+        if (level >= 12) return &.{};
+        const arena = self.diag_arena.allocator();
+        const may_done = (mask & flat_depth_minus_one) != 0 or mask == flat_depth_any;
+        const may_recur = (mask & ~flat_depth_minus_one) != 0 or mask == flat_depth_any;
+        const next = if (may_recur) try self.symbolicFlatArrayNext(operand, depth) else null;
+        if (!may_recur or next == null) {
+            var leaf = try self.typeNotAssignableChainEntry(operand, target, false);
+            if (leaf.code == TsCodes.type_not_assignable) leaf.children = try self.deferredFlatArrayWitnessChildren(operand, target, level);
+            const chain = try arena.alloc(DiagnosticChainEntry, 1);
+            chain[0] = leaf;
+            return chain;
+        }
+        const next_mask = flatDecrementDepthMask(mask);
+        const expanded = if (may_done)
+            self.interner.internUnion(&.{ operand, next.?.alias }) catch return error.OutOfMemory
+        else
+            next.?.alias;
+        var entry = try self.typeNotAssignableChainEntry(expanded, target, false);
+        if (may_done and !try self.checkerAssignableTo(operand, target)) {
+            var leaf = try self.typeNotAssignableChainEntry(operand, target, false);
+            if (leaf.code == TsCodes.type_not_assignable) leaf.children = try self.deferredFlatArrayWitnessChildren(operand, target, level);
+            if (explain_union_target and leaf.children.len == 1 and
+                leaf.children[0].code == TsCodes.readonly_type_to_mutable_type and
+                target < self.interner.pool.typeCount() and self.interner.pool.flagsOf(target).is_union)
+            {
+                const members = try arena.dupe(TypeId, self.interner.unionMembers(target));
+                self.sortUnionMembersForDisplay(members);
+                var index = members.len;
+                while (index > 0) {
+                    index -= 1;
+                    if (!self.readonlyArrayLikeAssignedToMutable(operand, members[index])) continue;
+                    var second = try self.typeNotAssignableChainEntry(alias, members[index], false);
+                    second.children = try self.symbolicFlatArrayElaboration(
+                        alias, operand, depth, mask, members[index], level + 1, false,
+                    );
+                    const second_chain = try arena.alloc(DiagnosticChainEntry, 1);
+                    second_chain[0] = second;
+                    const readonly_chain = try arena.alloc(DiagnosticChainEntry, 1);
+                    readonly_chain[0] = leaf.children[0];
+                    readonly_chain[0].children = second_chain;
+                    leaf.children = readonly_chain;
+                    break;
+                }
+            }
+            const children = try arena.alloc(DiagnosticChainEntry, 1);
+            children[0] = leaf;
+            entry.children = children;
+        } else {
+            entry.children = try self.symbolicFlatArrayElaboration(next.?.alias, next.?.operand, next.?.depth, next_mask, target, level + 1, false);
+        }
+        const chain = try arena.alloc(DiagnosticChainEntry, 1);
+        chain[0] = entry;
+        return chain;
+    }
+
     fn deferredFlatArrayInfo(self: *Checker, t: TypeId) ?DeferredFlatArrayInfo {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
@@ -200874,6 +201046,11 @@ pub const Checker = struct {
         const target_elem = self.interner.objectNumberIndex(target);
         if (source_elem == types.Primitive.none or target_elem == types.Primitive.none or
             try self.indexSignatureValueAssignable(source_elem, target_elem)) return null;
+        if (self.symbolicFlatArrayInfo(source_elem)) |info| {
+            var entry = try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
+            entry.children = try self.symbolicFlatArrayElaboration(source_elem, info.operand, info.depth, info.depth_mask, target_elem, depth, true);
+            return entry;
+        }
         if (try self.deferredFlatArrayMismatchWitness(source_elem, target_elem)) |witness| {
             var entry = try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
             const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
@@ -222126,6 +222303,32 @@ test "checker: nonliteral flat depths retain early and out-of-range branches" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: generic flat depth retains its symbolic relation" {
+    const s = try newSetup(
+        \\declare const nested: readonly number[][][];
+        \\function broad<D extends number>(depth: D) {
+        \\  const result = nested.flat(depth);
+        \\  const toOne: number[][] = result;
+        \\  const toFlat: number[] = result;
+        \\  const toMutableUnion: (number[][] | number[] | number)[] = result;
+        \\  const toReadonlyUnion: (readonly number[][][] | number[][] | number[] | number)[] = result;
+        \\}
+        \\function bounded<D extends 0 | 1>(depth: D) {
+        \\  const result = nested.flat(depth);
+        \\  const toOne: number[][] = result;
+        \\  const valid: (readonly number[][][] | number[][] | number[] | number)[] = result;
+        \\}
+        \\function fixed<D extends 1>(depth: D) {
+        \\  const result = nested.flat(depth);
+        \\  const valid: number[][] = result;
+        \\  const toFlat: number[] = result;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: ReadonlyArray requires its method surface for structural assignment" {

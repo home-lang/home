@@ -19,7 +19,7 @@ const depth_elements = blk: {
     for (&elements, 0..) |*element, index| element.* = .{ .type = &depth_values[index] };
     break :blk elements;
 };
-const decrement_tuple: schema.Expression = .{ .tuple = &depth_elements };
+pub const decrement_tuple: schema.Expression = .{ .tuple = &depth_elements };
 const parameters = [_]schema.Parameter{
     .{ .name = "Arr" },
     .{ .name = "Depth", .constraint = &number_type },
