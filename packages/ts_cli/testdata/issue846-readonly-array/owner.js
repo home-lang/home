@@ -9,3 +9,6 @@ export const readonlyNested = [[1], ["one"]];
 
 /** @type {Array<number[] | string[]>} */
 export const mutableNested = [[1], ["one"]];
+
+/** @type {ReadonlyArray<(number[] | string[])[]>} */
+export const groupedNested = [[[1], ["one"]]];

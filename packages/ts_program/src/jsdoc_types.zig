@@ -959,6 +959,13 @@ test "JSDoc union expression parser preserves precedence and nested wrappers" {
     try std.testing.expectEqual(Primitive.number_t, union_of_arrays.base.union_type[0].base.primitive);
     try std.testing.expectEqual(Primitive.string_t, union_of_arrays.base.union_type[1].base.primitive);
 
+    const grouped_arrays = (try parseTypeExpression(std.testing.allocator, "ReadonlyArray<(number[] | string[])[]>")).?;
+    defer grouped_arrays.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(Container, &.{ .readonly_array, .array }, grouped_arrays.containers);
+    try std.testing.expectEqual(@as(usize, 2), grouped_arrays.base.union_type.len);
+    try std.testing.expectEqualSlices(Container, &.{.array}, grouped_arrays.base.union_type[0].containers);
+    try std.testing.expectEqualSlices(Container, &.{.array}, grouped_arrays.base.union_type[1].containers);
+
     try std.testing.expect((try parseTypeExpression(std.testing.allocator, "string | ")) == null);
     const object_array = (try parseTypeExpression(std.testing.allocator, "Array<string | { value: number }>")).?;
     defer object_array.deinit(std.testing.allocator);

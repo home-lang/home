@@ -41,8 +41,10 @@ messages, and exit status.
 `tsconfig-jsdoc-union.json` and its no-`checkJs` control isolate JSDoc
 `ReadonlyArray<number[] | string[]>` precedence across the import boundary.
 Both imported element types assign to `number[] | string[]`, and their indexed
-values assign to `number | string`. An invalid assignment to `boolean` yields
-one TS2322 at `jsdoc-union.ts(7,7)` in both TypeScript 5.7.3 and Home, with
+values assign to `number | string`. A grouped
+`ReadonlyArray<(number[] | string[])[]>` keeps its additional array level
+through the import. An invalid assignment to `boolean` yields
+one TS2322 at `jsdoc-union.ts(9,7)` in both TypeScript 5.7.3 and Home, with
 matching nested explanation and exit status. This is the focused CLI oracle
 for [#974](https://github.com/home-lang/home/issues/974).
 
@@ -60,9 +62,9 @@ fourth TS2322 for its flattened result. This guards both JSDoc union precedence
 The `ArrayLikeOnly` control has a numeric index signature and `length` but
 does not extend `ReadonlyArray`; `flat()` preserves that object. Assigning
 its flattened result to `number[]` adds one TS2322 diagnostic.
-Home matches the five diagnostic sites and explanations, but currently prints
-the imported source union in the opposite order at line 5; that exact-stream
-gap is tracked in [#975](https://github.com/home-lang/home/issues/975).
+Home matches the five diagnostic sites, explanations, and union order; the
+former display-order gap was resolved in
+[#975](https://github.com/home-lang/home/issues/975).
 
 `tsconfig-flat-depth.json` and its no-`checkJs` control pin the explicit
 `flat(depth)` result. TypeScript 5.7.3 evaluates `FlatArray<A, D>` by
@@ -73,7 +75,8 @@ default depth, `flat(2)` reaches `number[]`, and `flat(9)` saturates there.
 An interface extending `ReadonlyArray<number>` unwraps while the numeric-index
 `ArrayLikeOnly` is preserved, a readonly tuple keeps its element union at
 depth 0 and flattens it at depth 1, `2 as const` counts as depth 2, chained
-calls compose, imported checked-JavaScript arrays follow the same rule, and an
+calls compose, imported checked-JavaScript arrays (including a grouped union
+of arrays) follow the same rule, and an
 optional-chained receiver keeps its `undefined`. Both engines report only the
 two intentional TS2322 diagnostics at `flat-depth.ts(22,7)` and `(24,7)`,
 with identical elaborations and exit status. A depth that is not statically

@@ -1,4 +1,4 @@
-import { mutableNested, readonlyNested } from "./owner.js";
+import { groupedNested, mutableNested, readonlyNested } from "./owner.js";
 
 interface Arrayish extends ReadonlyArray<number> {
   tag: string;
@@ -30,6 +30,8 @@ const tupleDepth1: (string | number | boolean)[] = tuple.flat();
 const chained: number[][][] = nested.flat(0).flat(0);
 const importedDepth0: (number[] | string[])[] = readonlyNested.flat(0);
 const importedMutableDepth2: (number | string)[] = mutableNested.flat(2);
+const groupedDefault: (number[] | string[])[] = groupedNested.flat();
+const groupedDepth2: (number | string)[] = groupedNested.flat(2);
 const constDepth: number[] = nested.flat(2 as const);
 
 void keptDepth0;
@@ -48,6 +50,8 @@ void tupleDepth1;
 void chained;
 void importedDepth0;
 void importedMutableDepth2;
+void groupedDefault;
+void groupedDepth2;
 void constDepth;
 
 declare const maybe: readonly number[][][] | undefined;
