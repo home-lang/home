@@ -8,7 +8,9 @@ root = Path(__file__).resolve().parents[2]
 source = (root / 'scripts/run-bounded.pl').read_text()
 record = re.search(r'^sub process_footprint_record \{.*?^\}', source, re.M | re.S)
 match = re.search(r'^sub process_footprint_mb \{.*?^\}', source, re.M | re.S)
-assert record and match, 'supervisor parser not found'
+unit = re.search(r'^sub footprint_mb \{.*?^\}', source, re.M | re.S)
+unique = re.search(r'^sub unique_tree_footprint_mb \{.*?^\}', source, re.M | re.S)
+assert record and match and unit and unique, 'supervisor parser not found'
 # The first two headers and summary were captured from a real two-process
 # footprint probe. Auxiliary and aggregate lines must not add memory again.
 checks = r'''
@@ -34,3 +36,23 @@ die "invented summary process" if @summary;
 print "footprint parser: process headers counted once; summary/auxiliary totals ignored\n";
 '''
 subprocess.run(['perl', '-e', 'use strict; use warnings;\n' + record[0] + '\n' + match[0] + '\n' + checks], check=True)
+
+# The process sum can double-count shared dirty pages. The guard must accept
+# the kernel's de-duplicated summary only when it has complete report output,
+# and must fail closed on malformed or incomplete reports.
+dedup_checks = r'''
+our $report;
+sub capture_probe { return $report }
+$report = "zig [101]: 64-bit Footprint: 2045 MB\nzig [102]: 64-bit Footprint: 1948 MB\nSummary Footprint: 2180 MB\n";
+die "shared pages counted twice" unless unique_tree_footprint_mb(101, 102) == 2180;
+$report = "zig [101]: 64-bit Footprint: 2045 MB\n";
+die "single-process report lost" unless unique_tree_footprint_mb(101) == 2045;
+$report = "zig [101]: 64-bit Footprint: 2045 MB\nzig [102]: 64-bit Footprint: 1948 MB\n";
+die "missing summary accepted" if defined unique_tree_footprint_mb(101, 102);
+$report = "Summary Footprint: 1 MB\n";
+die "summary without process headers accepted" if defined unique_tree_footprint_mb(101, 102);
+$report = "zig [999]: 64-bit Footprint: 1 MB\nSummary Footprint: 1 MB\n";
+die "unrequested process accepted" if defined unique_tree_footprint_mb(101, 102);
+print "footprint parser: shared pages de-duplicated; incomplete reports rejected\n";
+'''
+subprocess.run(['perl', '-e', 'use strict; use warnings;\n' + record[0] + '\n' + unit[0] + '\n' + unique[0] + '\n' + dedup_checks], check=True)

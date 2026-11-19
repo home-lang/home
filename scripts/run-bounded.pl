@@ -334,6 +334,40 @@ sub process_footprint_mb {
     return $mb;
 }
 
+sub footprint_mb {
+    my ($number, $unit) = @_;
+    my %mult = ('B' => 1/1048576, 'KB' => 1/1024, 'MB' => 1, 'GB' => 1024, 'TB' => 1048576);
+    return $number * $mult{$unit};
+}
+
+# The fast libproc probe below counts shared dirty pages once per process.
+# When that conservative sum crosses the ceiling, footprint(1)'s Summary
+# Footprint is the kernel's de-duplicated total for the same process set.
+# Failure to obtain a complete summary must never turn into permission to run.
+sub unique_tree_footprint_mb {
+    my (@pids) = @_;
+    return undef unless @pids;
+    my @args = map { ('-p', $_) } @pids;
+    my $snapshot = capture_probe({allow_nonzero => 1}, '/usr/bin/footprint', '--noCategories', @args);
+    return undef unless defined $snapshot;
+    my ($summary, $found, $single) = (undef, 0, undef);
+    my %wanted = map { $_ => 1 } @pids;
+    for (split /\n/, $snapshot) {
+        if (/^Summary Footprint:\s+([\d.]+)\s+(B|KB|MB|GB|TB)\s*$/) {
+            $summary = footprint_mb($1, $2);
+            next;
+        }
+        my ($record_pid, $mb) = process_footprint_record($_);
+        next unless defined $record_pid && $wanted{$record_pid};
+        $found++;
+        $single = $mb;
+    }
+    return undef unless $found;
+    return $summary if defined $summary && $found > 1;
+    return $single if $found == 1 && !defined $summary;
+    return undef;
+}
+
 # Sum phys_footprint over the tree. Returns undef when it could not measure,
 # which the caller treats as a failure to be counted -- never as zero.
 my %last_footprint_by_pid;
@@ -464,6 +498,7 @@ my $tick       = 0;
 my $mem_fail   = 0;
 my $disk_fail  = 0;
 my $peak_mb    = 0;
+my $peak_unique_mb = 0;
 my $host_bad   = 0;
 my $worst_lvl  = 100;
 
@@ -482,6 +517,8 @@ while (1) {
         }
         printf STDERR "run-bounded: peak tree footprint %d MB (over-counts shared pages); host low-water %d%%\n",
             $peak_mb, $worst_lvl if $peak_mb > 0;
+        printf STDERR "run-bounded: peak de-duplicated tree footprint %.1f MB when the per-process sum crossed the ceiling\n",
+            $peak_unique_mb if $peak_unique_mb > 0;
         exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
     }
 
@@ -544,13 +581,24 @@ while (1) {
                 $host_bad = 0;
             }
 
-            # SECONDARY: runaway detector only. Loose ceiling; see note 5.
+            # SECONDARY: confirm a conservative sum with the de-duplicated
+            # kernel total before killing a run whose shared pages inflated it.
             if ($mb > $max_mb) {
-                printf STDERR "run-bounded: tree footprint %d MB exceeded the %d MB runaway ceiling (host was at %d%%)\n",
-                    $mb, $max_mb, (defined $level ? $level : -1);
-                report_largest_tree_process();
-                reap_tree($pid);
-                exit 125;
+                my $unique = unique_tree_footprint_mb(tree_pids($pid));
+                if (!defined $unique) {
+                    print STDERR "run-bounded: could not confirm de-duplicated tree footprint after the conservative sum crossed the ceiling; killing\n";
+                    report_largest_tree_process();
+                    reap_tree($pid);
+                    exit 125;
+                }
+                $peak_unique_mb = $unique if $unique > $peak_unique_mb;
+                if ($unique > $max_mb) {
+                    printf STDERR "run-bounded: de-duplicated tree footprint %.1f MB exceeded the %d MB runaway ceiling (per-process sum %d MB, host was at %d%%)\n",
+                        $unique, $max_mb, $mb, (defined $level ? $level : -1);
+                    report_largest_tree_process();
+                    reap_tree($pid);
+                    exit 125;
+                }
             }
         }
     }
