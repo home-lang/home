@@ -3,3 +3,8 @@ export declare const maybe: readonly number[][][] | undefined;
 export declare const depth: number;
 export declare const boundedDepth: 0 | 1;
 export declare const deeperDepth: 1 | 2;
+export declare const minusDepth: -1 | 0;
+export declare const highDepth: 0 | 22;
+export declare const fractionalDepth: 0 | 1.5;
+export declare const anyDepth: any;
+export declare const negativeDepth: -2 | 0;

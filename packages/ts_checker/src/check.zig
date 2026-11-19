@@ -114940,10 +114940,15 @@ pub const Checker = struct {
         if (receiver_raw == types.Primitive.none or receiver_raw >= self.interner.pool.typeCount()) return current;
         const receiver = self.subtractNullUndefined(receiver_raw) catch receiver_raw;
         if (try self.arrayElementType(receiver) == types.Primitive.none) return current;
+        const numeric_depth = self.staticNumericArgumentValue(depth_arg);
+        const deferred_mask: ?u32 = if (numeric_depth != null and numeric_depth.? < -1)
+            flat_all_deferred_depths
+        else
+            self.flatDeferredDepthMask(self.hir.typeOf(depth_arg));
         const flattened = if (self.flatCallDepthArgument(depth_arg)) |depth|
             try self.flatArrayAtDepth(receiver, depth)
-        else if (self.staticNumericArgumentValue(depth_arg) == null)
-            if (self.flatDeferredDepthMask(self.hir.typeOf(depth_arg))) |mask|
+        else if (numeric_depth == null or numeric_depth.? < -1)
+            if (deferred_mask) |mask|
                 try self.deferredFlatArrayElement(receiver, mask)
             else
                 return current
@@ -114961,15 +114966,29 @@ pub const Checker = struct {
     /// `FlatArray` call after the receiver has been unwrapped once.
     const flat_deferred_depth_order = [_]i32{ 0, 2, 1, -1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 };
     const flat_all_deferred_depths: u32 = (@as(u32, 1) << 22) - 1;
+    const flat_depth_minus_one: u32 = @as(u32, 1) << 22;
+    const flat_depth_undefined: u32 = @as(u32, 1) << 23;
+    const flat_depth_any: u32 = @as(u32, 1) << 24;
 
     fn flatDeferredDepthMask(self: *Checker, argument: TypeId) ?u32 {
+        if (argument == types.Primitive.any) return flat_depth_any;
         if (argument == types.Primitive.number_t) return flat_all_deferred_depths;
         if (argument >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(argument).is_union) return null;
         var mask: u32 = 0;
         for (self.interner.unionMembers(argument)) |member| {
             const value = self.numberLiteralValueFromType(member) orelse return null;
-            if (value != @trunc(value) or value < 0 or value > 21) return null;
-            mask |= @as(u32, 1) << @intFromFloat(value);
+            // TypeScript infers the whole depth parameter as `number` when a
+            // negative constituent falls below the decrement tuple's -1.
+            if (value < -1) return flat_all_deferred_depths;
+            if (value == -1) {
+                mask |= flat_depth_minus_one;
+            } else if (std.math.isNan(value) or std.math.isInf(value) or
+                value != @trunc(value) or value < 0 or value > 21)
+            {
+                mask |= flat_depth_undefined;
+            } else {
+                mask |= @as(u32, 1) << @intFromFloat(value);
+            }
         }
         return if (mask == 0) null else mask;
     }
@@ -114978,7 +114997,13 @@ pub const Checker = struct {
         // A finite union is expanded through its minimum depth before the
         // alias remains deferred. The next decrement then includes -1, as in
         // TypeScript's evaluation of the library's recursive conditional.
-        const minimum_depth: i32 = if (mask == flat_all_deferred_depths) 0 else @intCast(@ctz(mask));
+        const finite_depths = mask & flat_all_deferred_depths;
+        const minimum_depth: i32 = if ((mask & (flat_depth_any | flat_depth_minus_one)) != 0)
+            -1
+        else if (finite_depths != 0)
+            @intCast(@ctz(finite_depths))
+        else
+            0;
         const inner = try self.flatArrayAtDepth(receiver, minimum_depth);
         if (self.interner.objectNumberIndex(inner) == types.Primitive.none) return inner;
         var members: [22]TypeId = undefined;
@@ -114987,19 +115012,33 @@ pub const Checker = struct {
         const arena = self.diag_arena.allocator();
         // TypeScript's lib allocation order determines which branch its
         // relater explains first when several depths are possible.
-        for (flat_deferred_depth_order) |value| {
-            if (mask != flat_all_deferred_depths) {
-                const original_depth = value + minimum_depth + 1;
-                if (original_depth < 0 or original_depth > 21 or
-                    (mask & (@as(u32, 1) << @intCast(original_depth))) == 0) continue;
+        if (mask != flat_depth_any) {
+            for (flat_deferred_depth_order) |value| {
+                if (mask != flat_all_deferred_depths) {
+                    const original_depth = value + minimum_depth + 1;
+                    if (original_depth == -1) {
+                        if ((mask & flat_depth_minus_one) == 0) continue;
+                    } else if (original_depth < 0 or original_depth > 21 or
+                        (mask & (@as(u32, 1) << @intCast(original_depth))) == 0) continue;
+                }
+                members[count] = self.interner.internNumberLiteral(@floatFromInt(value)) catch
+                    return error.OutOfMemory;
+                count += 1;
+                if (depth_text.items.len != 0) try depth_text.appendSlice(arena, " | ");
+                try depth_text.appendSlice(arena, try std.fmt.allocPrint(arena, "{d}", .{value}));
             }
-            members[count] = self.interner.internNumberLiteral(@floatFromInt(value)) catch
-                return error.OutOfMemory;
+        }
+        if ((mask & flat_depth_undefined) != 0) {
+            members[count] = types.Primitive.undefined_t;
             count += 1;
             if (depth_text.items.len != 0) try depth_text.appendSlice(arena, " | ");
-            try depth_text.appendSlice(arena, try std.fmt.allocPrint(arena, "{d}", .{value}));
+            try depth_text.appendSlice(arena, "undefined");
         }
-        const depth = self.interner.internUnion(members[0..count]) catch return error.OutOfMemory;
+        const depth = if (mask == flat_depth_any)
+            types.Primitive.any
+        else
+            self.interner.internUnion(members[0..count]) catch return error.OutOfMemory;
+        if (mask == flat_depth_any) try depth_text.appendSlice(arena, "any");
         const declaration = &@import("flat_array_schema.zig").declaration;
         const deferred = self.programDeclarationReference(declaration, &.{ inner, depth }, &.{}) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -200131,6 +200170,7 @@ pub const Checker = struct {
                         var element_entry = try self.typeNotAssignableChainEntry(source_element, target_element, false);
                         const witness_chain = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
                         witness_chain[0] = try self.typeNotAssignableChainEntry(witness, target_element, false);
+                        if (depth < 3) witness_chain[0].children = try self.deferredFlatArrayWitnessChildren(witness, target_element, depth + 1);
                         element_entry.children = witness_chain;
                         const element_chain = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
                         element_chain[0] = element_entry;
@@ -200768,9 +200808,11 @@ pub const Checker = struct {
         if (instance.origin != definition or instance.args_len != 2) return null;
         const args = self.interner.pool.type_arg_pool.items[instance.args_start..][0..2];
         const depth = args[1];
+        if (depth == types.Primitive.any) return .{ .operand = args[0], .depth_mask = flat_all_deferred_depths };
         var mask: u32 = 0;
         if (depth < self.interner.pool.typeCount() and self.interner.pool.flagsOf(depth).is_union) {
             for (self.interner.unionMembers(depth)) |member| {
+                if (member == types.Primitive.undefined_t) continue;
                 const value = self.numberLiteralValueFromType(member) orelse return null;
                 if (value != @trunc(value) or value < -1 or value > 20) return null;
                 mask |= @as(u32, 1) << @intFromFloat(value + 1);
@@ -200800,6 +200842,25 @@ pub const Checker = struct {
         return null;
     }
 
+    fn deferredFlatArrayWitnessChildren(self: *Checker, witness: TypeId, target: TypeId, depth: u8) CheckError![]const DiagnosticChainEntry {
+        const ordinary = try self.buildAssignabilityElaborationChainDepth(witness, target, depth, false);
+        if (ordinary.len != 0 or target >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(target).is_union) return ordinary;
+        const members = try self.diag_arena.allocator().dupe(TypeId, self.interner.unionMembers(target));
+        self.sortUnionMembersForDisplay(members);
+        // For a readonly array against a union of mutable array levels,
+        // TypeScript explains the relation to the widest mutable member.
+        var index = members.len;
+        while (index > 0) {
+            index -= 1;
+            if (!self.readonlyArrayLikeAssignedToMutable(witness, members[index])) continue;
+            const child = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+            child[0] = try self.typeNotAssignableChainEntry(witness, members[index], false);
+            return child;
+        }
+        return ordinary;
+    }
+
     fn arrayOriginElementMismatchEntry(
         self: *Checker,
         source: TypeId,
@@ -200817,6 +200878,7 @@ pub const Checker = struct {
             var entry = try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
             const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
             children[0] = try self.typeNotAssignableChainEntry(witness, target_elem, false);
+            if (depth < 3) children[0].children = try self.deferredFlatArrayWitnessChildren(witness, target_elem, depth + 1);
             entry.children = children;
             return entry;
         }
@@ -222036,6 +222098,34 @@ test "checker: union flat depth includes every reachable array level" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: nonliteral flat depths retain early and out-of-range branches" {
+    const s = try newSetup(
+        \\declare const nested: readonly number[][][];
+        \\declare const minus: -1 | 0;
+        \\declare const high: 0 | 22;
+        \\declare const fraction: 0 | 1.5;
+        \\declare const negative: -2 | 0;
+        \\declare const arbitrary: any;
+        \\const a = nested.flat(minus);
+        \\const aSafe: (readonly number[][][] | number[][] | number[] | number)[] = a;
+        \\const aWrong: (readonly number[][][] | number[][] | number[])[] = a;
+        \\const b = nested.flat(high);
+        \\const bSafe: (number[][] | number[] | number)[] = b;
+        \\const bWrong: (number[][] | number[])[] = b;
+        \\const c = nested.flat(fraction);
+        \\const cSafe: (number[][] | number[] | number)[] = c;
+        \\const cWrong: (number[][] | number[])[] = c;
+        \\const d = nested.flat(arbitrary);
+        \\const dSafe: (readonly number[][][] | number[][] | number[] | number)[] = d;
+        \\const dWrong: (readonly number[][][] | number[][] | number[])[] = d;
+        \\const eWrong: number[][] = nested.flat(-2);
+        \\const fWrong: number[][] = nested.flat(negative);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: ReadonlyArray requires its method surface for structural assignment" {
