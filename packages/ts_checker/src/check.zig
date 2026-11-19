@@ -114917,8 +114917,7 @@ pub const Checker = struct {
         if (self.hir.kindOf(call.callee) != .member_access) return current;
         const member = hir_mod.memberOf(self.hir, call.callee);
         if (!std.mem.eql(u8, self.string_interner.get(member.name), "flat")) return current;
-        const depth = self.flatCallDepthArgument(self.hir.childSlice(call.args_start, call.args_len)[0]) orelse
-            return current;
+        const depth_arg = self.hir.childSlice(call.args_start, call.args_len)[0];
         // Only the synthetic array-prototype member carries the default-depth
         // return type that needs replacing; a user-declared `flat` keeps its
         // own signature.
@@ -114941,13 +114940,97 @@ pub const Checker = struct {
         if (receiver_raw == types.Primitive.none or receiver_raw >= self.interner.pool.typeCount()) return current;
         const receiver = self.subtractNullUndefined(receiver_raw) catch receiver_raw;
         if (try self.arrayElementType(receiver) == types.Primitive.none) return current;
-        const flattened = try self.flatArrayAtDepth(receiver, depth);
+        const flattened = if (self.flatCallDepthArgument(depth_arg)) |depth|
+            try self.flatArrayAtDepth(receiver, depth)
+        else if (self.staticNumericArgumentValue(depth_arg) == null)
+            if (self.flatDeferredDepthMask(self.hir.typeOf(depth_arg))) |mask|
+                try self.deferredFlatArrayElement(receiver, mask)
+            else
+                return current
+        else
+            return current;
         const result = self.interner.internArrayType(self.string_interner, flattened) catch
             return error.OutOfMemory;
         try self.array_origin_types.put(self.gpa, result, {});
         if (!widened_with_undefined) return result;
         return self.interner.internUnion(&.{ result, types.Primitive.undefined_t }) catch
             return error.OutOfMemory;
+    }
+
+    /// `[-1, 0, ..., 20][number]` is the depth passed to the first recursive
+    /// `FlatArray` call after the receiver has been unwrapped once.
+    const flat_deferred_depth_order = [_]i32{ 0, 2, 1, -1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 };
+    const flat_all_deferred_depths: u32 = (@as(u32, 1) << 22) - 1;
+
+    fn flatDeferredDepthMask(self: *Checker, argument: TypeId) ?u32 {
+        if (argument == types.Primitive.number_t) return flat_all_deferred_depths;
+        if (argument >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(argument).is_union) return null;
+        var mask: u32 = 0;
+        for (self.interner.unionMembers(argument)) |member| {
+            const value = self.numberLiteralValueFromType(member) orelse return null;
+            if (value != @trunc(value) or value < 0 or value > 21) return null;
+            mask |= @as(u32, 1) << @intFromFloat(value);
+        }
+        return if (mask == 0) null else mask;
+    }
+
+    fn deferredFlatArrayElement(self: *Checker, receiver: TypeId, mask: u32) CheckError!TypeId {
+        // A finite union is expanded through its minimum depth before the
+        // alias remains deferred. The next decrement then includes -1, as in
+        // TypeScript's evaluation of the library's recursive conditional.
+        const minimum_depth: i32 = if (mask == flat_all_deferred_depths) 0 else @intCast(@ctz(mask));
+        const inner = try self.flatArrayAtDepth(receiver, minimum_depth);
+        if (self.interner.objectNumberIndex(inner) == types.Primitive.none) return inner;
+        var members: [22]TypeId = undefined;
+        var count: usize = 0;
+        var depth_text: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        // TypeScript's lib allocation order determines which branch its
+        // relater explains first when several depths are possible.
+        for (flat_deferred_depth_order) |value| {
+            if (mask != flat_all_deferred_depths) {
+                const original_depth = value + minimum_depth + 1;
+                if (original_depth < 0 or original_depth > 21 or
+                    (mask & (@as(u32, 1) << @intCast(original_depth))) == 0) continue;
+            }
+            members[count] = self.interner.internNumberLiteral(@floatFromInt(value)) catch
+                return error.OutOfMemory;
+            count += 1;
+            if (depth_text.items.len != 0) try depth_text.appendSlice(arena, " | ");
+            try depth_text.appendSlice(arena, try std.fmt.allocPrint(arena, "{d}", .{value}));
+        }
+        const depth = self.interner.internUnion(members[0..count]) catch return error.OutOfMemory;
+        const declaration = &@import("flat_array_schema.zig").declaration;
+        const deferred = self.programDeclarationReference(declaration, &.{ inner, depth }, &.{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.UnsupportedProgramType => unreachable,
+        };
+        // An index of the decrement tuple through a depth union containing
+        // -1 also reaches its out-of-range recursive branch. For a concrete
+        // array operand, that branch visits each remaining array level. Cache
+        // the evaluated union so relations use those concrete possibilities;
+        // the alias instance still records the source-level identity.
+        var possibilities: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer possibilities.deinit(self.gpa);
+        var current = inner;
+        for (0..64) |_| {
+            try possibilities.append(self.gpa, current);
+            const next = try self.flatArrayAtDepth(current, 0);
+            if (next == current) break;
+            current = next;
+        }
+        const evaluated = self.interner.internUnion(possibilities.items) catch return error.OutOfMemory;
+        try self.generic_instances.put(self.gpa, deferred, evaluated);
+        const alias_name = self.string_interner.intern("FlatArray") catch return error.OutOfMemory;
+        try self.registerAliasDisplayNameInner(deferred, alias_name, &.{ inner, depth }, true);
+        const inner_name = (try self.allocSimpleTypeName(inner)) orelse "unknown";
+        const display = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "FlatArray<{s}, {s}>",
+            .{ inner_name, depth_text.items },
+        );
+        try self.alias_display_names.put(self.gpa, deferred, display);
+        return deferred;
     }
 
     /// TypeScript selects `filter<S extends T>(predicate: (value: T, index:
@@ -115299,12 +115382,7 @@ pub const Checker = struct {
     /// value for `flat(2)`; a widened-away literal type (`2 as const`,
     /// `2 as 2`, a `const` binding, an enum member) carries it in the type.
     fn staticNumericArgumentValue(self: *Checker, arg: NodeId) ?f64 {
-        if (self.interner.literalOfOrNull(self.hir.typeOf(arg))) |literal| {
-            switch (literal) {
-                .number_lit => |bits| return @bitCast(bits),
-                else => return null,
-            }
-        }
+        if (self.numberLiteralValueFromType(self.hir.typeOf(arg))) |value| return value;
         switch (self.hir.kindOf(arg)) {
             .literal_number => return hir_mod.literalNumberOf(self.hir, arg),
             .unary_op => {
@@ -200038,6 +200116,32 @@ pub const Checker = struct {
             slice[0] = argument_mismatch;
             return slice;
         }
+        if (source < self.interner.pool.typeCount() and target < self.interner.pool.typeCount() and
+            self.array_origin_types.contains(source) and self.interner.pool.flagsOf(target).is_union)
+        {
+            const source_element = self.interner.objectNumberIndex(source);
+            if (self.deferredFlatArrayInfo(source_element) != null) {
+                const target_members = try self.diag_arena.allocator().dupe(TypeId, self.interner.unionMembers(target));
+                self.sortUnionMembersForDisplay(target_members);
+                for (target_members) |target_member| {
+                    if (!self.array_origin_types.contains(target_member)) continue;
+                    const target_element = self.interner.objectNumberIndex(target_member);
+                    if (try self.deferredFlatArrayMismatchWitness(source_element, target_element)) |witness| {
+                        var array_entry = try self.typeNotAssignableChainEntry(source, target_member, false);
+                        var element_entry = try self.typeNotAssignableChainEntry(source_element, target_element, false);
+                        const witness_chain = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                        witness_chain[0] = try self.typeNotAssignableChainEntry(witness, target_element, false);
+                        element_entry.children = witness_chain;
+                        const element_chain = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                        element_chain[0] = element_entry;
+                        array_entry.children = element_chain;
+                        const array_chain = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                        array_chain[0] = array_entry;
+                        return array_chain;
+                    }
+                }
+            }
+        }
         const resolved_source = try self.resolveGenericType(source);
         const resolved_target = try self.resolveGenericType(target);
         if (resolved_source != source or resolved_target != target) {
@@ -200651,6 +200755,51 @@ pub const Checker = struct {
         return null;
     }
 
+    const DeferredFlatArrayInfo = struct { operand: TypeId, depth_mask: u32 };
+
+    fn deferredFlatArrayInfo(self: *Checker, t: TypeId) ?DeferredFlatArrayInfo {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_instantiation or flags.is_union or flags.is_intersection) return null;
+        const definition = self.program_generic_definitions.get(&@import("flat_array_schema.zig").declaration) orelse return null;
+        const index = self.interner.pool.payloadOf(t);
+        if (index >= self.interner.pool.instantiation_payloads.items.len) return null;
+        const instance = self.interner.pool.instantiation_payloads.items[index];
+        if (instance.origin != definition or instance.args_len != 2) return null;
+        const args = self.interner.pool.type_arg_pool.items[instance.args_start..][0..2];
+        const depth = args[1];
+        var mask: u32 = 0;
+        if (depth < self.interner.pool.typeCount() and self.interner.pool.flagsOf(depth).is_union) {
+            for (self.interner.unionMembers(depth)) |member| {
+                const value = self.numberLiteralValueFromType(member) orelse return null;
+                if (value != @trunc(value) or value < -1 or value > 20) return null;
+                mask |= @as(u32, 1) << @intFromFloat(value + 1);
+            }
+        } else {
+            const value = self.numberLiteralValueFromType(depth) orelse return null;
+            if (value != @trunc(value) or value < -1 or value > 20) return null;
+            mask = @as(u32, 1) << @intFromFloat(value + 1);
+        }
+        return .{ .operand = args[0], .depth_mask = mask };
+    }
+
+    /// The alias remains deferred for relations, but the first incompatible
+    /// branch explains a failed assignment. TypeScript visits its depth
+    /// constituents in library allocation order rather than numeric order.
+    fn deferredFlatArrayMismatchWitness(self: *Checker, alias_t: TypeId, target_t: TypeId) CheckError!?TypeId {
+        const info = self.deferredFlatArrayInfo(alias_t) orelse return null;
+        const saturated = try self.flatArrayAtDepth(info.operand, flat_saturating_depth);
+        if (!try self.checkerAssignableTo(saturated, target_t)) {
+            return saturated;
+        }
+        for (flat_deferred_depth_order) |depth| {
+            if ((info.depth_mask & (@as(u32, 1) << @intCast(depth + 1))) == 0) continue;
+            const candidate = try self.flatArrayAtDepth(info.operand, depth);
+            if (!try self.checkerAssignableTo(candidate, target_t)) return candidate;
+        }
+        return null;
+    }
+
     fn arrayOriginElementMismatchEntry(
         self: *Checker,
         source: TypeId,
@@ -200664,6 +200813,13 @@ pub const Checker = struct {
         const target_elem = self.interner.objectNumberIndex(target);
         if (source_elem == types.Primitive.none or target_elem == types.Primitive.none or
             try self.indexSignatureValueAssignable(source_elem, target_elem)) return null;
+        if (try self.deferredFlatArrayMismatchWitness(source_elem, target_elem)) |witness| {
+            var entry = try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
+            const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+            children[0] = try self.typeNotAssignableChainEntry(witness, target_elem, false);
+            entry.children = children;
+            return entry;
+        }
         // A tuple's number index combines its fixed elements. TypeScript
         // widens fresh element literals when it relates that index to an
         // array element, while retaining the tuple's literal display in the
@@ -221845,10 +222001,41 @@ test "checker: explicit flat depth leaves declared flat members alone" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    // A user-declared `flat` keeps its own return type, and a depth that is
-    // not statically known keeps the declared default-depth result.
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    // A user-declared `flat` keeps its own return type. An unknown depth on
+    // the built-in retains the recursive FlatArray alias and rejects the
+    // default-depth-only target.
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: variable flat depth keeps a deferred element" {
+    const s = try newSetup(
+        \\declare const nested: readonly number[][][];
+        \\declare const depth: number;
+        \\const result = nested.flat(depth);
+        \\const one: number[][] = result;
+        \\const all: number[] = result;
+        \\const anyDepth: number[][][] | number[][] | number[] = result;
+        \\const unknowns: unknown[] = result;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: union flat depth includes every reachable array level" {
+    const s = try newSetup(
+        \\declare const nested: readonly number[][][];
+        \\declare const depth: 0 | 1;
+        \\const result = nested.flat(depth);
+        \\const safe: (number[][] | number[] | number)[] = result;
+        \\const missingScalar: (number[][] | number[])[] = result;
+        \\const tooNested: number[][][] = result;
+        \\const tooFlat: number[][] = result;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: ReadonlyArray requires its method surface for structural assignment" {
