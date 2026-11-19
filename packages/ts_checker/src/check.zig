@@ -200911,6 +200911,28 @@ pub const Checker = struct {
         return .{ .alias = alias, .operand = inner, .depth = decremented };
     }
 
+    fn flatArrayConstraintWitnessEntry(self: *Checker, constraint: TypeId, target: TypeId) CheckError!DiagnosticChainEntry {
+        var entry = try self.typeNotAssignableChainEntry(constraint, target, false);
+        if (!self.array_origin_types.contains(constraint)) return entry;
+        const element = self.interner.objectNumberIndex(constraint);
+        if (element == types.Primitive.none) return entry;
+        const element_name = (try self.allocSimpleTypeName(element)) orelse return entry;
+        const target_name = (try self.allocSimpleTypeName(target)) orelse return entry;
+        const source_name = if (arrayElementDisplayNeedsParens(element_name))
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}({s})[]", .{
+                if (self.typeIsReadonlyArrayLike(constraint)) "readonly " else "", element_name,
+            })
+        else
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}{s}[]", .{
+                if (self.typeIsReadonlyArrayLike(constraint)) "readonly " else "", element_name,
+            });
+        entry.message = if (entry.code == TsCodes.readonly_type_to_mutable_type)
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "The type '{s}' is 'readonly' and cannot be assigned to the mutable type '{s}'.", .{ source_name, target_name })
+        else
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "Type '{s}' is not assignable to type '{s}'.", .{ source_name, target_name });
+        return entry;
+    }
+
     fn symbolicFlatArrayElaboration(
         self: *Checker,
         alias: TypeId,
@@ -200934,14 +200956,46 @@ pub const Checker = struct {
             return chain;
         }
         const next_mask = flatDecrementDepthMask(mask);
-        const expanded = if (may_done)
-            self.interner.internUnion(&.{ operand, next.?.alias }) catch return error.OutOfMemory
+        const schema = @import("flat_array_schema.zig");
+        const recur = if (self.interner.isDirectTypeParameter(operand))
+            self.lowerProgramExpression(&schema.unwrap, &schema.declaration, &.{ operand, depth }) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.UnsupportedProgramType => next.?.alias,
+            }
         else
             next.?.alias;
+        if (self.interner.isDirectTypeParameter(operand) and self.interner.pool.flagsOf(recur).is_conditional) {
+            const conditional = self.interner.conditionalPayload(recur);
+            const branch = conditional.true_branch;
+            if (branch < self.interner.pool.typeCount() and self.interner.pool.flagsOf(branch).is_instantiation) {
+                const instance = self.interner.pool.instantiation_payloads.items[self.interner.pool.payloadOf(branch)];
+                if (self.program_generic_definitions.get(&schema.declaration)) |definition| {
+                    if (instance.origin == definition and instance.args_len == 2) {
+                        const stored = self.interner.pool.type_arg_pool.items[instance.args_start..][0..2];
+                        const args = [2]TypeId{ stored[0], stored[1] };
+                        const name = self.string_interner.intern("FlatArray") catch return error.OutOfMemory;
+                        try self.registerAliasDisplayNameInner(branch, name, &args, true);
+                    }
+                }
+            }
+        }
+        const expanded = if (may_done)
+            self.interner.internUnion(&.{ operand, recur }) catch return error.OutOfMemory
+        else
+            recur;
         var entry = try self.typeNotAssignableChainEntry(expanded, target, false);
         if (may_done and !try self.checkerAssignableTo(operand, target)) {
             var leaf = try self.typeNotAssignableChainEntry(operand, target, false);
             if (leaf.code == TsCodes.type_not_assignable) leaf.children = try self.deferredFlatArrayWitnessChildren(operand, target, level);
+            if (leaf.children.len == 0 and self.interner.isDirectTypeParameter(operand)) {
+                if (self.typeParameterConstraint(operand)) |constraint| {
+                    if (constraint != operand and !try self.checkerAssignableTo(constraint, target)) {
+                        const witness = try arena.alloc(DiagnosticChainEntry, 1);
+                        witness[0] = try self.flatArrayConstraintWitnessEntry(constraint, target);
+                        leaf.children = witness;
+                    }
+                }
+            }
             if (explain_union_target and leaf.children.len == 1 and
                 leaf.children[0].code == TsCodes.readonly_type_to_mutable_type and
                 target < self.interner.pool.typeCount() and self.interner.pool.flagsOf(target).is_union)
@@ -200969,7 +201023,16 @@ pub const Checker = struct {
             children[0] = leaf;
             entry.children = children;
         } else {
-            entry.children = try self.symbolicFlatArrayElaboration(next.?.alias, next.?.operand, next.?.depth, next_mask, target, level + 1, false);
+            const nested = try self.symbolicFlatArrayElaboration(next.?.alias, next.?.operand, next.?.depth, next_mask, target, level + 1, false);
+            if (self.interner.isDirectTypeParameter(operand) and recur != next.?.alias) {
+                var branch = try self.typeNotAssignableChainEntry(next.?.alias, target, false);
+                branch.children = nested;
+                const branch_chain = try arena.alloc(DiagnosticChainEntry, 1);
+                branch_chain[0] = branch;
+                entry.children = branch_chain;
+            } else {
+                entry.children = nested;
+            }
         }
         const chain = try arena.alloc(DiagnosticChainEntry, 1);
         chain[0] = entry;
@@ -201055,6 +201118,7 @@ pub const Checker = struct {
             try self.indexSignatureValueAssignable(source_elem, target_elem)) return null;
         if (self.symbolicFlatArrayInfo(source_elem)) |info| {
             var entry = try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
+            if (self.interner.isDirectTypeParameter(target_elem) and entry.children.len != 0) return entry;
             entry.children = try self.symbolicFlatArrayElaboration(source_elem, info.operand, info.depth, info.depth_mask, target_elem, depth, true);
             return entry;
         }
@@ -206377,6 +206441,25 @@ pub const Checker = struct {
         return false;
     }
 
+    fn allocConditionalExtendsName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (self.infer_type_parameters.contains(t)) {
+            const name = (try self.allocSimpleTypeName(t)) orelse return null;
+            return std.fmt.allocPrint(self.diag_arena.allocator(), "infer {s}", .{name}) catch return error.OutOfMemory;
+        }
+        if (self.array_origin_types.contains(t)) {
+            const element = self.interner.objectNumberIndex(t);
+            if (self.infer_type_parameters.contains(element)) {
+                const name = (try self.allocSimpleTypeName(element)) orelse return null;
+                return std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "{s}(infer {s})[]",
+                    .{ if (self.typeIsReadonlyArrayLike(t)) "readonly " else "", name },
+                ) catch return error.OutOfMemory;
+            }
+        }
+        return self.allocSimpleTypeName(t);
+    }
+
     fn allocSimpleTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         // Defensive recursion cap. The evaluation guards above keep
         // types finite, but a self-referential structural shape that
@@ -206879,6 +206962,7 @@ pub const Checker = struct {
                         // matches upstream tsc for `unionTypeLiterals.ts`
                         // and `intersectionAndUnionTypes.ts(23,1)`.
                         const needs_parens = std.mem.indexOf(u8, member_name, "=>") != null or
+                            (member_flags.is_conditional and self.alias_display_names.get(member) == null) or
                             (member_flags.is_intersection and self.alias_display_names.get(member) == null and
                                 self.enumNameFromNominal(member) == null);
                         try entries.append(self.gpa, .{
@@ -207097,7 +207181,7 @@ pub const Checker = struct {
                     const c = self.interner.conditionalPayload(t);
                     if (try self.allocNonDistributiveInferConditionalName(c)) |name| break :blk name;
                     const check_name = (try self.allocSimpleTypeName(c.check_type)) orelse break :blk null;
-                    const ext_name = (try self.allocSimpleTypeName(c.extends_type)) orelse break :blk null;
+                    const ext_name = (try self.allocConditionalExtendsName(c.extends_type)) orelse break :blk null;
                     const true_name = (try self.allocSimpleTypeName(c.true_branch)) orelse break :blk null;
                     const false_name = (try self.allocSimpleTypeName(c.false_branch)) orelse break :blk null;
                     break :blk try std.fmt.allocPrint(
@@ -222336,6 +222420,37 @@ test "checker: generic flat depth retains its symbolic relation" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: generic readonly flat receiver follows its constraint" {
+    const s = try newSetup(
+        \\function broad<A extends readonly number[][][], D extends number>(array: A, depth: D) {
+        \\  const result = array.flat(depth);
+        \\  const toA: A[] = result;
+        \\  const toOne: number[][] = result;
+        \\  const toUnknown: unknown[] = result;
+        \\}
+        \\function bounded<A extends readonly number[][][], D extends 0 | 1>(array: A, depth: D) {
+        \\  const result = array.flat(depth);
+        \\  const toOne: number[][] = result;
+        \\  const valid: (A | number[][] | number[] | number)[] = result;
+        \\}
+        \\function fixed<A extends readonly number[][][], D extends 1>(array: A, depth: D) {
+        \\  const result = array.flat(depth);
+        \\  const toA: A[] = result;
+        \\  const toOne: number[][] = result;
+        \\}
+        \\function literal<A extends readonly number[][][]>(array: A) {
+        \\  const toOne: number[][] = array.flat(1);
+        \\  const toZero: number[][][] = array.flat(0);
+        \\}
+        \\function nestedReadonly<A extends readonly (readonly number[][])[], D extends 1>(array: A, depth: D) {
+        \\  const valid: number[][] = array.flat(depth);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: ReadonlyArray requires its method surface for structural assignment" {

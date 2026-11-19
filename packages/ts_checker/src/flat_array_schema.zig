@@ -38,7 +38,7 @@ const recur: schema.Expression = .{ .reference = .{
     .declaration = &declaration,
     .arguments = &.{ &inner, &decremented_depth },
 } };
-const unwrap: schema.Expression = .{ .conditional = .{
+pub const unwrap: schema.Expression = .{ .conditional = .{
     .check = &arr,
     .extends_type = &readonly_inner_array,
     .true_branch = &recur,
