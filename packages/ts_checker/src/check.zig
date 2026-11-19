@@ -114891,11 +114891,18 @@ pub const Checker = struct {
         // interfaces inheriting the method surface (and objects implementing
         // it) unwrap, while a bare index signature does not. The origin check
         // keeps actual arrays on the direct path.
-        const inner = self.interner.objectNumberIndex(t);
+        const inner = if (self.interner.isDirectTypeParameter(t))
+            try self.arrayElementType(t)
+        else
+            self.interner.objectNumberIndex(t);
         if (inner == types.Primitive.none) return t;
-        if (!self.array_origin_types.contains(t) and !self.isActualTupleType(t)) {
+        const array_candidate = if (self.interner.isDirectTypeParameter(t))
+            self.typeParameterConstraint(t) orelse t
+        else
+            t;
+        if (!self.array_origin_types.contains(array_candidate) and !self.isActualTupleType(array_candidate)) {
             const readonly_array = try self.readonlyArrayStructuralType(inner);
-            if (!try self.checkerAssignableTo(t, readonly_array)) return t;
+            if (!try self.checkerAssignableTo(array_candidate, readonly_array)) return t;
         }
         return self.flatArrayAtDepth(inner, remaining - 1);
     }
