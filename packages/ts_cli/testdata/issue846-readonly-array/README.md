@@ -79,10 +79,13 @@ calls compose, imported checked-JavaScript arrays (including a grouped union
 of arrays) follow the same rule, and an
 optional-chained receiver keeps its `undefined`. Both engines report only the
 two intentional TS2322 diagnostics at `flat-depth.ts(22,7)` and `(24,7)`,
-with identical elaborations and exit status. A depth that is not statically
-known still yields the default-depth result in Home, where TypeScript keeps an
-unresolved `FlatArray` conditional; that remaining difference is tracked in
-[#973](https://github.com/home-lang/home/issues/973).
+with identical elaborations and exit status. Variable numeric depths now retain
+the deferred `FlatArray` relation ([#1053](https://github.com/home-lang/home/issues/1053));
+generic depth parameters over concrete readonly arrays retain the symbolic
+alias and its recursive diagnostic chain
+([#1056](https://github.com/home-lang/home/issues/1056)). A generic receiver
+alongside a generic depth remains tracked in
+[#1057](https://github.com/home-lang/home/issues/1057).
 
 `tsconfig-concat.json` checks that readonly arrays can be concatenated into
 either readonly or mutable receivers while the result remains a mutable
