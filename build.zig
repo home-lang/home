@@ -5387,6 +5387,8 @@ pub fn build(b: *std.Build) void {
     });
     const run_ts_lsp_tests = b.addRunArtifact(ts_lsp_tests);
     dependOnTest(test_step, &run_ts_lsp_tests.step, test_filter, "ts_lsp");
+    // -Dfilter uses substring matching, so "ts_lsp" also selects the server
+    // artifact. Keep this exact step for bounded, single-artifact runs.
     const ts_lsp_step = b.step("test-ts-lsp", "Run only the TypeScript LSP package tests");
     ts_lsp_step.dependOn(&run_ts_lsp_tests.step);
 
@@ -5397,6 +5399,8 @@ pub fn build(b: *std.Build) void {
     const ts_lsp_server_tests = b.addTest(.{ .root_module = ts_lsp_server_pkg });
     const run_ts_lsp_server_tests = b.addRunArtifact(ts_lsp_server_tests);
     dependOnTest(test_step, &run_ts_lsp_server_tests.step, test_filter, "ts_lsp_server");
+    const ts_lsp_server_step = b.step("test-ts-lsp-server", "Run only the TypeScript LSP server tests");
+    ts_lsp_server_step.dependOn(&run_ts_lsp_server_tests.step);
 
     const bundler_tests = b.addTest(.{ .root_module = bundler_pkg });
     const run_bundler_tests = b.addRunArtifact(bundler_tests);

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Compile and run every test declared in ts_lsp.zig in disjoint, bounded
-// groups. The unfiltered test compile exceeds the agreed memory ceiling on
-// this machine; imported packages have their own full test steps.
+// Compile and run selected ts_lsp tests in disjoint, bounded groups when
+// isolating a failure. The full package suite fits the memory ceiling with
+// `zig build test-ts-lsp`; the broader `-Dfilter=ts_lsp` also selects the
+// separate ts_lsp_server test artifact.
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -42,8 +43,8 @@ for (const index of selected) {
   const shard = shards[index]
   console.log(`ts_lsp shard ${index + 1}/${shardCount}: ${shard.length} tests`)
   const result = spawnSync('perl', [
-    'scripts/run-bounded.pl', '1200', 'zig', 'build', 'test',
-    '-Dfilter=ts_lsp', `-Dts-lsp-test-filters=${shard.join(',')}`, '-j1',
+    'scripts/run-bounded.pl', '1200', 'zig', 'build', 'test-ts-lsp',
+    `-Dts-lsp-test-filters=${shard.join(',')}`, '-j1',
   ], {
     cwd: repo,
     stdio: 'inherit',
