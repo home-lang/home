@@ -94551,6 +94551,22 @@ pub const Checker = struct {
         return self.typeIsReadonlyArrayLike(source_t) and self.typeIsMutableArrayLike(target_t);
     }
 
+    /// Array variance reaches every nested element. The relation engine sees
+    /// only the structural type ids; readonly array origins live in the
+    /// checker's side table, so inspect each array layer before delegating.
+    fn nestedReadonlyArrayAssignedToMutable(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        var source = source_t;
+        var target = target_t;
+        var depth: usize = 0;
+        while (depth < 64 and self.array_origin_types.contains(source) and self.array_origin_types.contains(target)) : (depth += 1) {
+            if (self.readonlyArrayLikeAssignedToMutable(source, target)) return true;
+            source = self.interner.objectNumberIndex(source);
+            target = self.interner.objectNumberIndex(target);
+            if (source == types.Primitive.none or target == types.Primitive.none) break;
+        }
+        return false;
+    }
+
     fn typeIsReadonlyArrayLike(self: *Checker, t: TypeId) bool {
         if (!self.typeIsArrayLikeObject(t)) return false;
         return self.tupleTypeLooksReadonly(t) or self.typeHasReadonlyIndexSignature(t);
@@ -98750,6 +98766,7 @@ pub const Checker = struct {
         // a recursive callback member before this check re-enters the same
         // object relation without ever reaching the engine's cycle guard.
         if (source_t == target_t) return true;
+        if (self.nestedReadonlyArrayAssignedToMutable(source_t, target_t)) return false;
         const relation_key = (@as(u64, source_t) << 32) | @as(u64, target_t);
         const active = try self.checker_assignable_in_progress.getOrPut(self.gpa, relation_key);
         if (active.found_existing) {
@@ -99725,6 +99742,7 @@ pub const Checker = struct {
 
     fn indexSignatureValueAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         if (try self.genericIndexSignatureValueMismatch(source_t, target_t)) return false;
+        if (self.nestedReadonlyArrayAssignedToMutable(source_t, target_t)) return false;
         return self.engine.isAssignableTo(source_t, target_t) catch false;
     }
 
@@ -182346,8 +182364,14 @@ pub const Checker = struct {
         // `readonly` belongs to the argument's name here. The general
         // diagnostic namer prefers a bare alias or class name, which drops
         // the modifier and would print the two sides identically.
-        if (self.readonlyArrayLikeAssignedToMutable(arg_t, param_t)) {
-            if (try self.typeArgConstraintTypeName(arg_t, false)) |arg_name| {
+        if (self.readonlyArrayLikeAssignedToMutable(arg_t, param_t) or
+            self.nestedReadonlyArrayAssignedToMutable(arg_t, param_t))
+        {
+            const source_name = if (self.typeIsReadonlyArrayLike(arg_t))
+                try self.typeArgConstraintTypeName(arg_t, false)
+            else
+                try self.allocSimpleTypeName(arg_t);
+            if (source_name) |arg_name| {
                 if (try self.simpleDiagnosticTypeName(param_t)) |param_name| {
                     return try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -189045,7 +189069,8 @@ pub const Checker = struct {
         // parameter's own surface promises. The assignment position already
         // rejects the same pair, and the shared chain entry carries
         // TypeScript's readonly explanation underneath TS2345.
-        if (self.readonlyArrayLikeAssignedToMutable(arg_t, param_t)) return false;
+        if (self.readonlyArrayLikeAssignedToMutable(arg_t, param_t) or
+            self.nestedReadonlyArrayAssignedToMutable(arg_t, param_t)) return false;
         if (self.isContextualFunctionExpressionLike(arg_node) and
             self.interner.isSignature(arg_t) and
             self.interner.isSignature(param_t) and
@@ -221628,6 +221653,38 @@ test "checker: readonly array argument does not satisfy a mutable array paramete
         "The type 'readonly number[]' is 'readonly' and cannot be assigned to the mutable type 'number[]'.",
         diagnostic.chain[0].message,
     );
+}
+
+test "checker: nested readonly array element is not mutable" {
+    const s = try newSetup(
+        \\declare const nested: (readonly number[])[];
+        \\const mutable: number[][] = nested;
+        \\declare function takesMutable(items: number[][]): void;
+        \\takesMutable(nested);
+        \\const copied: (readonly number[])[] = nested.flat(0);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.argument_type_mismatch) {
+            try T.expectEqualStrings(
+                "Argument of type '(readonly number[])[]' is not assignable to parameter of type 'number[][]'.",
+                diagnostic.message,
+            );
+        }
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        try T.expectEqualStrings(
+            "Type '(readonly number[])[]' is not assignable to type 'number[][]'.",
+            diagnostic.message,
+        );
+        try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
+        try T.expectEqualStrings(
+            "The type 'readonly number[]' is 'readonly' and cannot be assigned to the mutable type 'number[]'.",
+            diagnostic.chain[0].message,
+        );
+    }
 }
 
 test "checker: array element display parenthesizes only looser syntax" {
