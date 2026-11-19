@@ -131,6 +131,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1048-readonly-mapped-array/') ||
   path.includes('/issue1049-tuple-array-elaboration/') ||
   path.includes('/issue1050-tuple-union-witness/') ||
+  path.includes('/issue1053-variable-flat-depth/') ||
   path.includes('/issue1054-nested-readonly-array/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
@@ -219,6 +220,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue1048-readonly-mapped-array/tsconfig.json',
   'packages/ts_cli/testdata/issue1049-tuple-array-elaboration/tsconfig.json',
   'packages/ts_cli/testdata/issue1050-tuple-union-witness/tsconfig.json',
+  'packages/ts_cli/testdata/issue1053-variable-flat-depth/tsconfig.json',
   'packages/ts_cli/testdata/issue1054-nested-readonly-array/tsconfig.json',
   'packages/ts_cli/testdata/issue1004-returned-literals/tsconfig.json',
   'packages/ts_cli/testdata/issue1008-union-unit-collapse/tsconfig.json',
