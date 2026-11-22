@@ -137922,6 +137922,20 @@ pub const Checker = struct {
         return false;
     }
 
+    fn overloadParameterTypeAtPosition(
+        self: *Checker,
+        params: []const TypeId,
+        variadic: bool,
+        position: usize,
+    ) TypeId {
+        const fixed_count = if (variadic and params.len > 0) params.len - 1 else params.len;
+        if (position < fixed_count) return params[position];
+        if (!variadic or params.len == 0) return types.Primitive.none;
+        const rest = params[params.len - 1];
+        if (self.isTupleShapedTarget(rest)) return self.tupleElementType(rest, position - fixed_count);
+        return self.interner.objectNumberIndex(rest);
+    }
+
     fn checkFailedOverloadArgumentContexts(
         self: *Checker,
         call_node: NodeId,
@@ -137935,17 +137949,10 @@ pub const Checker = struct {
         const params = try self.gpa.dupe(TypeId, self.interner.signatureParams(signature));
         defer self.gpa.free(params);
         const variadic = self.rest_signatures.contains(signature) and params.len > 0;
-        const fixed_count = if (variadic) params.len - 1 else params.len;
         for (args, 0..) |arg, index| {
             if (self.hir.kindOf(arg) != .array_literal) continue;
             const position = self.fixedParamPositionBeforeArg(args, arg_types, index);
-            const target = if (position < fixed_count)
-                params[position]
-            else if (variadic) blk: {
-                const rest = params[params.len - 1];
-                if (self.isTupleShapedTarget(rest)) break :blk self.tupleElementType(rest, position - fixed_count);
-                break :blk self.interner.objectNumberIndex(rest);
-            } else types.Primitive.none;
+            const target = self.overloadParameterTypeAtPosition(params, variadic, position);
             if (target == types.Primitive.none) continue;
             // A failed call still owns body diagnostics in its established
             // argument context. Applicability/error-chain queries cannot
@@ -138207,12 +138214,14 @@ pub const Checker = struct {
             break :blk stack_params[0..borrowed_params.len];
         };
         const is_variadic = self.rest_signatures.contains(sig) and param_ts.len > 0;
-        const fixed_count: usize = if (is_variadic) param_ts.len - 1 else param_ts.len;
         const min_required = self.signatureMinRequiredArgsForCall(sig, param_ts, call_node);
         for (args, 0..) |arg, arg_i| {
             const fixed_pos = self.fixedParamPositionBeforeArg(args, arg_types, arg_i);
-            if (fixed_pos >= fixed_count) break;
-            const param_t = param_ts[fixed_pos];
+            const param_t = self.overloadParameterTypeAtPosition(param_ts, is_variadic, fixed_pos);
+            if (param_t == types.Primitive.none) {
+                if (!is_variadic) break;
+                continue;
+            }
             if (param_t >= self.interner.pool.typeCount()) continue;
             if (self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
             if (self.taggedTemplateStringsArrayArg(call_node, args, arg_i, param_t)) continue;
@@ -184004,6 +184013,7 @@ pub const Checker = struct {
         const params = self.interner.signatureParams(sig);
         for (params, 0..) |p, i| {
             if (i > 0) try buf.appendSlice(arena, ", ");
+            if (self.rest_signatures.contains(sig) and i == params.len - 1) try buf.appendSlice(arena, "...");
             try buf.appendSlice(arena, try self.signatureParamNameAt(sig, i));
             try buf.appendSlice(arena, ": ");
             const pn = (try self.allocSignatureConstituentDisplayName(p)) orelse
