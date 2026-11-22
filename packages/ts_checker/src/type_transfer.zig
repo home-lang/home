@@ -502,6 +502,7 @@ const Builder = struct {
                 target.pool.object_type_payloads.items[target.pool.payloadOf(mapped_id)] = .{
                     .members_start = if (source_members.len == 0) 0 else members_start,
                     .members_len = p.members_len,
+                    .is_array_origin = p.is_array_origin,
                     .call_sig = try self.signaturePayload(p.call_sig),
                     .construct_sig = try self.signaturePayload(p.construct_sig),
                     .string_index_type = try self.typeId(p.string_index_type),

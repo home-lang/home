@@ -571,7 +571,7 @@ const Builder = struct {
         if (flags.is_object_type) {
             if (self.compilation.checked_types.tuple_origin_types.contains(typ)) return self.checkedTuple(typ);
             const payload = interner.pool.object_type_payloads.items[interner.pool.payloadOf(typ)];
-            if (self.compilation.checked_types.array_origin_types.contains(typ) and
+            if ((self.compilation.checked_types.array_origin_types.contains(typ) or interner.objectIsArrayType(typ)) and
                 payload.number_index_type != Primitive.none)
             {
                 const element = try self.lower(payload.number_index_type);
