@@ -20681,26 +20681,34 @@ pub const Checker = struct {
     }
 
     fn checkAsyncPromiseConstructorValue(self: *Checker, node: NodeId) CheckError!void {
-        if (self.rootHasTopLevelGlobalValueDecl(node, "Promise")) return;
-        if (!self.sourceTargetExcludesLib("es2015")) return;
+        if (self.hasGlobalValueDecl(node, "Promise")) return;
+        // Async functions require a constructor only when downlevel emit
+        // needs one. A target of ES2015 or later does not acquire TS2705
+        // merely because a project selected an older `lib`.
+        if (self.configured_target_lib_tier) |tier| {
+            if (tier >= 2015) return;
+        } else if (!self.sourceTargetExcludesLib("es2015")) return;
         try self.reportAsyncRequiresPromiseConstructor(node);
     }
 
     fn checkAsyncInferredPromiseAvailability(self: *Checker, node: NodeId) CheckError!void {
-        if (self.sourceHasNoLibTrueDirective() and !self.rootHasTopLevelGlobalTypeDecl(node, "Promise")) {
+        const no_lib = self.sourceHasNoLibTrueDirective() or self.configured_no_lib;
+        if (no_lib and !self.hasGlobalTypeDecl(node, "Promise")) {
             try self.reportMissingGlobalTypeOnce(node, "Promise");
             try self.reportAsyncReturnMissingPromiseType(node);
             return;
         }
-        if (self.rootHasTopLevelGlobalValueDecl(node, "Promise")) return;
-        const no_lib_missing_ctor = self.sourceHasNoLibTrueDirective() and self.rootHasTopLevelGlobalTypeDecl(node, "Promise");
+        if (self.hasGlobalValueDecl(node, "Promise")) return;
         const parent = self.hir.parentOf(node);
         const is_contextual_call_argument = parent != hir_mod.none_node_id and
             (self.hir.kindOf(parent) == .call_expr or self.hir.kindOf(parent) == .new_expr) and
             hir_mod.callOf(self.hir, parent).callee != node;
-        const lib_missing_ctor = self.sourceTargetExcludesLib("es2015") or
-            (is_contextual_call_argument and self.sourceLibDirectiveExcludes("es2015"));
-        if (!no_lib_missing_ctor and !lib_missing_ctor) return;
+        const target_is_es5 = if (self.configured_target_lib_tier) |tier|
+            tier < 2015
+        else
+            self.sourceTargetExcludesLib("es2015");
+        if (!no_lib and !target_is_es5 and
+            !(is_contextual_call_argument and !self.effectiveLibraryProvidesConstructor("es2015.promise"))) return;
         try self.reportMissingGlobalValueOnce(node, "Promise");
         try self.reportAsyncRequiresPromiseConstructor(node);
     }
@@ -41443,16 +41451,15 @@ pub const Checker = struct {
     }
 
     fn checkNoLibDynamicImportPromiseValue(self: *Checker, node: NodeId) CheckError!void {
-        if (self.sourceHasNoLibTrueDirective() and !self.rootHasTopLevelGlobalTypeDecl(node, "Promise")) {
+        const lacks_constructor = !self.effectiveLibraryProvidesConstructor("es2015.promise");
+        if ((self.sourceHasNoLibTrueDirective() or self.configured_no_lib) and !self.hasGlobalTypeDecl(node, "Promise")) {
             try self.reportMissingGlobalTypeOnce(node, "Promise");
             try self.reportDynamicImportReturnsPromiseMissingType(node);
             return;
         }
-        if (self.rootHasTopLevelGlobalValueDecl(node, "Promise")) return;
-        const no_lib_missing_ctor = self.sourceHasNoLibTrueDirective() and self.rootHasTopLevelGlobalTypeDecl(node, "Promise");
-        const lib_missing_ctor = self.sourceLibDirectiveExcludes("es2015");
-        if (!no_lib_missing_ctor and !lib_missing_ctor) return;
-        if (no_lib_missing_ctor) try self.reportMissingGlobalValueOnce(node, "Promise");
+        if (self.hasGlobalValueDecl(node, "Promise")) return;
+        if (!lacks_constructor) return;
+        try self.reportMissingGlobalValueOnce(node, "Promise");
         try self.reportDynamicImportRequiresPromiseConstructor(node);
     }
 
@@ -41501,6 +41508,28 @@ pub const Checker = struct {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         return self.topLevelGlobalTypeDecl(hir_mod.blockStmts(self.hir, root), name) != null;
+    }
+
+    fn hasGlobalTypeDecl(self: *Checker, anchor: NodeId, name: []const u8) bool {
+        if (self.rootHasTopLevelGlobalTypeDecl(anchor, name)) return true;
+        for (self.program_global_type_names) |global_name| {
+            if (std.mem.eql(u8, global_name, name)) return true;
+        }
+        for (self.program_global_types) |binding| {
+            if (std.mem.eql(u8, self.string_interner.get(binding.name), name)) return true;
+        }
+        return false;
+    }
+
+    fn hasGlobalValueDecl(self: *Checker, anchor: NodeId, name: []const u8) bool {
+        if (self.rootHasTopLevelGlobalValueDecl(anchor, name)) return true;
+        for (self.program_global_var_names) |global_name| {
+            if (std.mem.eql(u8, global_name, name)) return true;
+        }
+        for (self.program_global_value_types) |binding| {
+            if (std.mem.eql(u8, self.string_interner.get(binding.name), name)) return true;
+        }
+        return false;
     }
 
     fn rootHasTopLevelGlobalValueDecl(self: *Checker, anchor: NodeId, name: []const u8) bool {
@@ -108124,6 +108153,7 @@ pub const Checker = struct {
 
     fn checkGlobalSymbolConstructorVarMerge(self: *Checker, node: NodeId) CheckError!bool {
         if (!self.isGlobalSymbolConstructorVarDecl(node)) return false;
+        if (!self.effectiveLibraryProvidesConstructor("es2015.symbol")) return false;
         const v = hir_mod.varDeclOf(self.hir, node);
         if (v.type_annotation == hir_mod.none_node_id) return false;
         if (self.hir.kindOf(v.type_annotation) == .type_ref) {
@@ -108157,14 +108187,7 @@ pub const Checker = struct {
         if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, v.name);
         if (!std.mem.eql(u8, self.string_interner.get(id.name), "Promise")) return false;
-        if (self.sourceHasNoLibTrueDirective()) return false;
-
-        const has_lib_directive = self.sourceMarkerPosition("@lib") != null;
-        const has_promise_constructor = if (has_lib_directive)
-            !self.sourceLibDirectiveExcludes("es2015")
-        else
-            !self.sourceTargetExcludesLib("es2015");
-        if (!has_promise_constructor) return false;
+        if (!self.effectiveLibraryProvidesConstructor("es2015.promise")) return false;
 
         if (v.type_annotation != hir_mod.none_node_id and self.hir.kindOf(v.type_annotation) == .type_ref) {
             const ref = hir_mod.typeRefOf(self.hir, v.type_annotation);
@@ -150514,6 +150537,22 @@ pub const Checker = struct {
             return tier < required_rank;
         }
         return self.sourceTargetExcludesLib(required);
+    }
+
+    /// Constructor values live in individual ES2015 fragments. Selecting one
+    /// fragment does not implicitly select every other ES2015 API.
+    fn effectiveLibraryProvidesConstructor(self: *Checker, fragment: []const u8) bool {
+        if (self.sourceHasNoLibTrueDirective() or self.configured_no_lib) return false;
+        if (self.sourceHasReferenceLibDirective(fragment)) return true;
+        if (self.sourceMarkerPosition("@lib") != null) return !self.sourceLibDirectiveExcludes("es2015");
+        if (self.configured_libs) |libs| {
+            for (libs) |selected| {
+                if (std.ascii.eqlIgnoreCase(selected, fragment) or
+                    configuredLibraryCoversRequired(selected, "es2015")) return true;
+            }
+            return false;
+        }
+        return !self.effectiveLibraryExcludes("es2015");
     }
 
     fn configuredLibraryCoversRequired(name: []const u8, required: []const u8) bool {

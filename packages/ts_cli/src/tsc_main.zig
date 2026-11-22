@@ -5034,7 +5034,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
         const rendered_related: []ts_diagnostics.Related = mapDriverRelated(chain_arena.allocator(), ctx.program, f, d.related) catch &.{};
         for (rendered_related) |*info| info.file = ctx.paths.display(info.file) catch info.file;
         const fdiag: ts_diagnostics.Diagnostic = .{
-            .file = ctx.paths.display(f.path) catch f.path,
+            .file = if (d.is_global) "" else ctx.paths.display(f.path) catch f.path,
             .line = pos.line,
             .col = pos.col,
             .code = code,
@@ -7883,7 +7883,7 @@ test "tsc_main: TS1261 reports input files that differ only by casing" {
     );
 }
 
-test "tsc_main: TS1261 carries config-root related information for files and include" {
+test "tsc_main: TS1261 retains config-root related information outside plain output" {
     const mismatch = CaseOnlyInputFileMismatch{
         .file_name = "src/Foo.ts",
         .existing_file_name = "src/foo.ts",
@@ -7909,6 +7909,11 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     try std.testing.expectEqual(@as(usize, 2), files_related.len);
     try std.testing.expectEqual(@as(u32, 1410), files_related[0].code);
     try std.testing.expectEqualStrings("File is matched by 'files' list specified here.", files_related[0].message);
+    try std.testing.expectEqualStrings("/repo/tsconfig.json", files_related[0].file);
+    try std.testing.expectEqual(@as(u32, 2), files_related[0].line);
+    try std.testing.expectEqual(@as(u32, 13), files_related[0].col);
+    try std.testing.expectEqual(@as(u32, 2), files_related[1].line);
+    try std.testing.expectEqual(@as(u32, 27), files_related[1].col);
 
     var chain_top_buf: [1]ts_diagnostics.ChainEntry = undefined;
     var chain_child_buf: [1]ts_diagnostics.ChainEntry = undefined;
@@ -7923,8 +7928,8 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     const files_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related);
     defer std.testing.allocator.free(files_msg);
     try std.testing.expect(std.mem.indexOf(u8, files_msg, "\n  The file is in the program because:\n    Part of 'files' list in tsconfig.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,13): File is matched by 'files' list specified here.") != null);
-    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,27): File is matched by 'files' list specified here.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,13)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,27)") == null);
 
     const include = [_][]const u8{"src/**/*"};
     var include_related_buf: [2]ts_diagnostics.Related = undefined;
