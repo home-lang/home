@@ -369,6 +369,9 @@ pub const ObjectMember = struct {
     is_optional: bool,
     is_readonly: bool,
     is_method: bool,
+    /// Namespace exports reject writes, but TypeScript omits `readonly`
+    /// when it prints the namespace's structural type in diagnostics.
+    is_namespace_export: bool = false,
     visibility: MemberVisibility = .public,
     decl_node: hir.NodeId = hir.none_node_id,
     /// Source-qualified declaring-class identity for imported non-public
@@ -380,6 +383,10 @@ pub const ObjectMember = struct {
 pub const ObjectTypePayload = struct {
     members_start: u32,
     members_len: u32,
+    /// Set only by `Interner.internArrayType`. A matching length/index
+    /// structure declared by the user is not an Array<T> and must not gain
+    /// Array.prototype members through apparent-type lookup.
+    is_array_origin: bool = false,
     /// Index of a call-signature into `signature_payloads`, or 0.
     call_sig: u32,
     /// Index of a construct-signature, or 0.

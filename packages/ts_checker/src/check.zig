@@ -31455,6 +31455,7 @@ pub const Checker = struct {
             .is_optional = false,
             .is_readonly = true,
             .is_method = false,
+            .is_namespace_export = true,
         }};
         return self.interner.internObjectType(&members) catch return error.OutOfMemory;
     }
@@ -51854,6 +51855,7 @@ pub const Checker = struct {
             if (!self.typeUnionHasReadonlyMember(obj_t, name)) return false;
         } else if (obj_flags.is_object_type) {
             const info = self.interner.objectMemberInfo(obj_t, name) orelse blk: {
+                if (!self.typeHasArrayPrototype(obj_t)) return false;
                 const elem = try self.arrayElementType(obj_t);
                 if (elem == types.Primitive.none) return false;
                 const proto = try self.arrayPrototypeForReceiver(obj_t, elem);
@@ -90081,7 +90083,7 @@ pub const Checker = struct {
             }
             try self.appendUniqueKeyofName(out, member.name);
         }
-        if (self.isActualTupleType(t) or self.typeIsArrayLikeObject(t)) {
+        if (self.typeHasArrayPrototype(t)) {
             var elem_t = self.interner.objectNumberIndex(t);
             if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
             const proto = try self.arrayPrototypeForReceiver(t, elem_t);
@@ -90157,7 +90159,7 @@ pub const Checker = struct {
                 try self.memberNameKeyType(member);
             try self.appendUniqueTypeId(out, key);
         }
-        if (self.isActualTupleType(t) or self.typeIsArrayLikeObject(t)) {
+        if (self.typeHasArrayPrototype(t)) {
             var elem_t = self.interner.objectNumberIndex(t);
             if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
             const proto = try self.arrayPrototypeForReceiver(t, elem_t);
@@ -94585,6 +94587,11 @@ pub const Checker = struct {
         return self.interner.objectMember(t, length_id) != null;
     }
 
+    fn typeHasArrayPrototype(self: *Checker, t: TypeId) bool {
+        return self.array_origin_types.contains(t) or self.interner.objectIsArrayType(t) or
+            self.tuple_origin_types.contains(t) or self.isActualTupleType(t);
+    }
+
     fn reportTupleIndexOutOfBounds(self: *Checker, index_node: NodeId, target: TypeId, index: u64, length: u64) CheckError!void {
         if (index <= std.math.maxInt(usize)) {
             if (try self.tupleAliasUnionIndexAccess(target, @intCast(index))) |access| {
@@ -98792,8 +98799,19 @@ pub const Checker = struct {
         if (target_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target_t).is_union)
         {
-            for (self.interner.unionMembers(target_t)) |member| {
+            const targets = try self.gpa.dupe(TypeId, self.interner.unionMembers(target_t));
+            defer self.gpa.free(targets);
+            for (targets) |member| {
                 if (source_t == member) return true;
+            }
+            // The relation engine lacks the apparent Array<T> methods that
+            // live in the checker. Only actual array sources need the
+            // checker-level branch; expanding every union here is expensive
+            // for non-array intersections and template literal products.
+            if (self.typeHasArrayPrototype(source_t)) {
+                for (targets) |member| {
+                    if (try self.checkerAssignableTo(source_t, member)) return true;
+                }
             }
         }
         if (self.intersectionHasConstituentWithinTarget(source_t, target_t)) return true;
@@ -98931,7 +98949,7 @@ pub const Checker = struct {
         const target_flags = self.interner.pool.flagsOf(target_t);
         if (!source_flags.is_object_type or source_flags.is_union or source_flags.is_intersection or source_flags.is_signature or
             !target_flags.is_object_type or target_flags.is_union or target_flags.is_intersection or target_flags.is_signature) return false;
-        if (!self.array_origin_types.contains(source_t) and !self.tuple_origin_types.contains(source_t) and !self.isActualTupleType(source_t)) return false;
+        if (!self.typeHasArrayPrototype(source_t)) return false;
         const iterator_name = self.string_interner.intern("Symbol.iterator") catch return error.OutOfMemory;
         if (self.interner.objectMember(target_t, iterator_name) != null) {
             const element = self.interner.objectNumberIndex(source_t);
@@ -115519,7 +115537,8 @@ pub const Checker = struct {
         const flat_elem = try self.flatArrayElementAtDefaultDepth(element);
         if (self.typeIsReadonlyArrayLike(receiver)) {
             const readonly_array = try self.internReadonlyArrayType(element);
-            const proto = lib.readonlyArrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, flat_elem, readonly_array, &self.rest_signatures) catch return error.OutOfMemory;
+            const concat_item = try self.concatItemArrayType(element);
+            const proto = lib.readonlyArrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, flat_elem, readonly_array, concat_item, &self.rest_signatures) catch return error.OutOfMemory;
             const unscopables_name = self.string_interner.intern("Symbol.unscopables") catch return error.OutOfMemory;
             if (self.interner.objectMember(proto, unscopables_name)) |unscopables| {
                 try self.readonly_index_types.put(self.gpa, unscopables, .{ .string = false, .number = true, .symbol = false });
@@ -115745,6 +115764,7 @@ pub const Checker = struct {
         }
         if (!flags.is_object_type or flags.is_intersection) return null;
         if (try self.isIteratorObjectType(t)) return try self.iteratorHelperMember(t, name);
+        if (!self.typeHasArrayPrototype(t)) return null;
         const elem_t = try self.arrayElementType(t);
         if (elem_t == types.Primitive.none) return null;
         const proto = try self.arrayPrototypeForReceiver(t, elem_t);
@@ -124925,13 +124945,14 @@ pub const Checker = struct {
                         break :blk types.Primitive.any;
                     }
                 }
-                // Lib lookup: array shapes (object types with a
-                // number indexer) consult `Array<T>.prototype` for
+                // Actual arrays consult `Array<T>.prototype` for
                 // `push`, `map`, `filter`, ÃÂ¢ÃÂÃÂ¦ using the indexer's
                 // element type as `T`.
                 if (self.interner.pool.flagsOf(access_obj_t).is_object_type) {
                     const num_idx = try self.arrayElementType(access_obj_t);
-                    if (num_idx != types.Primitive.none and !try self.isIteratorObjectType(access_obj_t)) {
+                    if (self.typeHasArrayPrototype(access_obj_t) and
+                        num_idx != types.Primitive.none and !try self.isIteratorObjectType(access_obj_t))
+                    {
                         const proto = try self.arrayPrototypeForReceiver(access_obj_t, num_idx);
                         if (self.interner.objectMember(proto, m.name)) |t| {
                             break :blk try self.optionalChainResult(t, member_is_optional_chain);
@@ -138184,6 +138205,64 @@ pub const Checker = struct {
         return try self.signatureArgumentErrorEntry(call_node, args, arg_types, effective_sig);
     }
 
+    fn soleObjectUnionMember(self: *Checker, t: TypeId) ?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_object_type and !flags.is_union and !flags.is_intersection) return t;
+        if (!flags.is_union) return null;
+        var object: ?TypeId = null;
+        for (self.interner.unionMembers(t)) |member| {
+            if (member >= self.interner.pool.typeCount()) continue;
+            const member_flags = self.interner.pool.flagsOf(member);
+            if (!member_flags.is_object_type or member_flags.is_union or member_flags.is_intersection) continue;
+            if (object != null) return null;
+            object = member;
+        }
+        return object;
+    }
+
+    fn missingStructuralMembersChain(self: *Checker, source: TypeId, target: TypeId) CheckError!?DiagnosticChainEntry {
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(source).is_object_type or
+            !self.interner.pool.flagsOf(target).is_object_type) return null;
+        var missing: [5]hir_mod.StringId = undefined;
+        var count: usize = 0;
+        for (self.interner.objectMembers(target)) |required| {
+            if (required.is_optional or self.interner.objectMemberInfo(source, required.name) != null) continue;
+            if (count < missing.len) missing[count] = required.name;
+            count += 1;
+        }
+        if (count == 0) return null;
+        const source_name = (try self.simpleDiagnosticTypeName(source)) orelse
+            (try self.allocObjectTypeShape(source)) orelse return null;
+        const target_name = (try self.simpleDiagnosticTypeName(target)) orelse
+            (try self.allocObjectTypeShape(target)) orelse return null;
+        if (count == 1) {
+            return .{
+                .code = TsCodes.property_missing_required,
+                .message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
+                    .{ self.string_interner.get(missing[0]), source_name, target_name },
+                ),
+            };
+        }
+        var names: std.ArrayListUnmanaged(u8) = .empty;
+        defer names.deinit(self.gpa);
+        const listed = if (count > 5) @as(usize, 4) else count;
+        for (missing[0..listed], 0..) |name, index| {
+            if (index != 0) try names.appendSlice(self.gpa, ", ");
+            try names.appendSlice(self.gpa, self.formatPropertyNameForDiagnostic(self.string_interner.get(name)));
+        }
+        return .{
+            .code = if (count > 5) TsCodes.type_missing_properties_truncated else TsCodes.type_missing_properties,
+            .message = if (count > 5)
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "Type '{s}' is missing the following properties from type '{s}': {s}, and {d} more.", .{ source_name, target_name, names.items, count - 4 })
+            else
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "Type '{s}' is missing the following properties from type '{s}': {s}", .{ source_name, target_name, names.items }),
+        };
+    }
+
     fn signatureArgumentErrorEntry(
         self: *Checker,
         call_node: NodeId,
@@ -138255,7 +138334,9 @@ pub const Checker = struct {
                 // established context. Elaborate the current element owners,
                 // as the ordinary call relation does, before reporting the
                 // provisional aggregate at the opening bracket.
-                if (try self.tryReportArrayLiteralTupleElementMismatchForCall(arg, param_t) and
+                const element_target = self.soleObjectUnionMember(param_t) orelse param_t;
+                if ((try self.tryReportArrayLiteralTupleElementMismatchForCall(arg, param_t) or
+                    try self.tryReportArrayLiteralArrayElementMismatch(arg, element_target)) and
                     self.diagnostics.items.len > before)
                 {
                     const element_error = self.diagnostics.items[before];
@@ -138310,11 +138391,26 @@ pub const Checker = struct {
             else
                 try self.formatArgumentNotAssignable(diagnostic_arg_t, display_param_t, arg_i);
 
+            var children: []const DiagnosticChainEntry = &.{};
+            if (!self.typeHasArrayPrototype(arg_t) and
+                arg_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(arg_t).is_object_type)
+            {
+                if (self.soleObjectUnionMember(param_t)) |object_target| {
+                    if (try self.missingStructuralMembersChain(arg_t, object_target)) |missing| {
+                        const entries = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                        entries[0] = missing;
+                        children = entries;
+                    }
+                }
+            }
+
             return .{
                 .node = arg,
                 .entry = .{
                     .code = TsCodes.argument_type_mismatch,
                     .message = msg,
+                    .children = children,
                 },
             };
         }
@@ -139388,7 +139484,7 @@ pub const Checker = struct {
             return;
         }
         const num_idx = try self.arrayElementType(t);
-        if (num_idx != types.Primitive.none) {
+        if (self.typeHasArrayPrototype(t) and num_idx != types.Primitive.none) {
             const proto = try self.arrayPrototypeForReceiver(t, num_idx);
             for (0..self.interner.objectMembers(proto).len) |borrow_index_4| {
                 const member = self.interner.objectMembers(proto)[borrow_index_4];
@@ -168700,7 +168796,6 @@ pub const Checker = struct {
     ) CheckError!bool {
         const name = self.string_interner.getOptional(member.name) orelse return false;
         const type_name = (try self.allocObjectShapeMemberTypeName(member.type)) orelse return false;
-        if (member.is_readonly) try buf.appendSlice(arena, "readonly ");
         if (!try self.appendObjectShapeMember(buf, arena, member)) return false;
         if (member.is_optional) try buf.append(arena, '?');
         try buf.appendSlice(arena, ": ");
@@ -168709,7 +168804,7 @@ pub const Checker = struct {
         if (add_undefined) try buf.appendSlice(arena, " | undefined");
         try buf.appendSlice(arena, "; ");
         if (approximate_length) |length| {
-            length.* += name.len + 1 + (if (member.is_readonly) @as(usize, 9) else 0) + type_name.len;
+            length.* += name.len + 1 + (if (member.is_readonly and !member.is_namespace_export) @as(usize, 9) else 0) + type_name.len;
             if (add_undefined) {
                 // The two union constituents each add two units; undefined
                 // adds nine. The emitted separator is one unit shorter.
@@ -174520,10 +174615,24 @@ pub const Checker = struct {
         return array_t;
     }
 
-    /// The memoized `ConcatArray<T>` surface for `concat`'s items.
+    /// The `ConcatArray<T>` declaration from lib.es5.d.ts, including the
+    /// methods required of structural arguments to `concat`.
     fn concatItemArrayType(self: *Checker, element: TypeId) CheckError!TypeId {
         if (self.lib_cache.concat_item_by_elem.get(element)) |cached| return cached;
-        const item = try self.internReadonlyArrayType(element);
+        const optional_string = self.interner.internUnion(&.{ types.Primitive.string_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+        const optional_number = self.interner.internUnion(&.{ types.Primitive.number_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+        const join_signature = self.interner.internSignature(&.{optional_string}, types.Primitive.string_t, false) catch return error.OutOfMemory;
+        const slice_signature = self.interner.internSignature(&.{ optional_number, optional_number }, try self.internMutableArrayType(element), false) catch return error.OutOfMemory;
+        const members = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("length") catch return error.OutOfMemory, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("join") catch return error.OutOfMemory, .type = join_signature, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("slice") catch return error.OutOfMemory, .type = slice_signature, .is_optional = false, .is_readonly = false, .is_method = true },
+        };
+        const item = self.interner.internObjectTypeWithIndex(&members, types.Primitive.none, element) catch return error.OutOfMemory;
+        try self.readonly_index_types.put(self.gpa, item, .{});
+        const element_name = (try self.allocSignatureConstituentDisplayName(element)) orelse "any";
+        const display = try std.fmt.allocPrint(self.diag_arena.allocator(), "ConcatArray<{s}>", .{element_name});
+        try self.alias_display_names.put(self.gpa, item, display);
         try self.lib_cache.concat_item_by_elem.put(self.gpa, element, item);
         return item;
     }
@@ -174587,6 +174696,7 @@ pub const Checker = struct {
     fn readonlyArrayStructuralType(self: *Checker, element: TypeId) CheckError!TypeId {
         const core = try self.internReadonlyArrayType(element);
         const flat_element = try self.flatArrayElementAtDefaultDepth(element);
+        const concat_item = try self.concatItemArrayType(element);
         const proto = lib.readonlyArrayProto(
             &self.lib_cache,
             self.interner,
@@ -174595,6 +174705,7 @@ pub const Checker = struct {
             element,
             flat_element,
             core,
+            concat_item,
             &self.rest_signatures,
         ) catch return error.OutOfMemory;
         const unscopables_name = self.string_interner.intern("Symbol.unscopables") catch return error.OutOfMemory;
@@ -183958,6 +184069,9 @@ pub const Checker = struct {
         }
         if (self.typeIsArrayLikeObject(t) and self.actualTupleLength(t) == null) {
             const elem_t = self.interner.objectNumberIndex(t);
+            if (self.lib_cache.concat_item_by_elem.get(elem_t)) |concat_item| {
+                if (concat_item == t) return self.alias_display_names.get(t);
+            }
             const elem_name = (try self.allocSignatureConstituentDisplayName(elem_t)) orelse return null;
             const wrap = arrayElementDisplayNeedsParens(elem_name);
             return if (wrap)
@@ -184994,7 +185108,7 @@ pub const Checker = struct {
                                 has_only_numeric_sdt = false;
                                 break;
                             }
-                            if (has_length_sdt and has_only_numeric_sdt) {
+                            if (self.typeHasArrayPrototype(t) and has_length_sdt and has_only_numeric_sdt) {
                                 const prefix_count_sdt = self.tupleFixedPrefixCount(t);
                                 if (prefix_count_sdt > 0) {
                                     var vbuf_sdt: std.ArrayListUnmanaged(u8) = .empty;
@@ -185267,11 +185381,11 @@ pub const Checker = struct {
 
     fn restArgumentAssignable(self: *Checker, arg_t: TypeId, target_t: TypeId) !bool {
         if (try self.templateLiteralSourceAssignableToTarget(arg_t, target_t)) return true;
-        if (self.engine.isAssignableTo(arg_t, target_t) catch false) return true;
+        if (try self.checkerAssignableTo(arg_t, target_t)) return true;
         if (arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_union) {
             for (self.interner.unionMembers(arg_t)) |member| {
                 if (try self.templateLiteralSourceAssignableToTarget(member, target_t)) return true;
-                if (self.engine.isAssignableTo(member, target_t) catch false) return true;
+                if (try self.checkerAssignableTo(member, target_t)) return true;
             }
         }
         return false;
@@ -188516,7 +188630,7 @@ pub const Checker = struct {
         if (object_t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(object_t).is_object_type) return null;
         if (try self.isIteratorObjectType(object_t)) return try self.iteratorHelperMember(object_t, key);
-        if (!self.isTupleShapedTarget(object_t) and !self.typeIsArrayLikeObject(object_t)) return null;
+        if (!self.typeHasArrayPrototype(object_t)) return null;
         var elem_t = try self.arrayElementType(object_t);
         if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
         const proto = try self.arrayPrototypeForReceiver(object_t, elem_t);
@@ -202243,6 +202357,7 @@ pub const Checker = struct {
 
     fn appendObjectShapeMember(self: *Checker, buf: *std.ArrayListUnmanaged(u8), arena: std.mem.Allocator, member: types.ObjectMember) !bool {
         const name = self.string_interner.getOptional(member.name) orelse return false;
+        if (member.is_readonly and !member.is_namespace_export) try buf.appendSlice(arena, "readonly ");
         if (self.objectMemberDeclaredNameText(member)) |declared| {
             if (declared.len >= 2 and (declared[0] == '\'' or declared[0] == '"')) {
                 // tsc preserves the declaration's quote style: a
@@ -206145,7 +206260,6 @@ pub const Checker = struct {
                 try buf.append(arena, ';');
                 continue;
             }
-            if (m.is_readonly) try buf.appendSlice(arena, "readonly ");
             if (!try self.appendObjectShapeMember(&buf, arena, m)) return null;
             if (m.is_optional) try buf.append(arena, '?');
             if (m.is_method and self.interner.isSignature(m.type)) {
@@ -206737,10 +206851,12 @@ pub const Checker = struct {
                         try tuple_buf.append(arena_t, ']');
                         break :blk tuple_buf.items;
                     }
-                    // Render array shapes (`T[]`) when the object type
-                    // has a number index signature, no string/symbol
+                    // Render array shapes (`T[]`) only for array or tuple
+                    // origins with a number index signature, no string/symbol
                     // index, and no own non-method, non-numeric, non-
-                    // `length` members. Mirrors upstream TS prose for
+                    // `length` members. A user-declared `{ length; [n] }`
+                    // remains a structural object, not an `Array<T>`.
+                    // Mirrors upstream TS prose for
                     // fixtures like
                     // `assignmentCompatBetweenTupleAndArray.ts(18,1)`
                     // and `strictTupleLength.ts(18,1)`.
@@ -206767,7 +206883,8 @@ pub const Checker = struct {
                         has_only_length_or_numeric = false;
                         break;
                     }
-                    if (has_only_length_or_numeric and
+                    if (self.typeHasArrayPrototype(t) and
+                        has_only_length_or_numeric and
                         has_length_member and
                         num_idx != types.Primitive.none and
                         self.interner.objectStringIndex(t) == types.Primitive.none and
@@ -216485,10 +216602,12 @@ test "checker: esModuleInterop namespace imports expose export-equals through de
         \\const value: { readonly default: () => void } = foo;
         \\function invoke(f: () => void) { f(); }
         \\invoke(foo);
+        \\foo.default = () => {};
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.readonly_property, "Cannot assign to 'default' because it is a read-only property."));
     try T.expect(hasDiagnosticCodeMessage(
         s,
         TsCodes.argument_type_mismatch,

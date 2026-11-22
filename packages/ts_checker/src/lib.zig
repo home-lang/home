@@ -849,12 +849,14 @@ pub fn arrayProto(
     const concat_array_rest = try ti.internArrayType(sint, concat_item_t);
     const sig_concat_arrays = try ti.internSignature(&[_]TypeId{concat_array_rest}, arr_t, false);
     try rest_set.put(gpa, sig_concat_arrays, {});
+    try cache.lib_param_names.put(gpa, sig_concat_arrays, &.{"items"});
     // `concat(...items: (T | ConcatArray<T>)[]): T[]` accepts both individual
     // values and arrays of values as varargs.
     const t_or_arr_t = try ti.internUnion(&[_]TypeId{ elem, concat_item_t });
     const concat_rest_arr = try ti.internArrayType(sint, t_or_arr_t);
     const sig_concat = try ti.internSignature(&[_]TypeId{concat_rest_arr}, arr_t, false);
     try rest_set.put(gpa, sig_concat, {});
+    try cache.lib_param_names.put(gpa, sig_concat, &.{"items"});
     const sig_reverse = try ti.internSignature(&[_]TypeId{}, arr_t, false);
     // `sort(compareFn?: (a: T, b: T) => number): T[]` — the comparator
     // is optional; upstream defaults to a string-coerce comparator.
@@ -1028,10 +1030,11 @@ pub fn readonlyArrayProto(
     elem: TypeId,
     flat_elem: TypeId,
     readonly_array: TypeId,
+    concat_item: TypeId,
     rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
 ) !TypeId {
     if (cache.readonly_array_proto_by_elem.get(.{ .elem = elem, .flat_elem = flat_elem })) |cached| return cached;
-    const mutable = try arrayProto(cache, ti, sint, gpa, elem, flat_elem, readonly_array, rest_set);
+    const mutable = try arrayProto(cache, ti, sint, gpa, elem, flat_elem, concat_item, rest_set);
     // Keep the declaration order of ReadonlyArray across lib.es5 and the
     // later array libraries. Missing-property diagnostics use this order;
     // Array<T>'s mutable declaration has a different method order.
@@ -1817,7 +1820,7 @@ test "lib: readonly array unscopables map keys to optional boolean flags" {
     var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
     defer rest_set.deinit(T.allocator);
     const array = try ti.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, types.Primitive.number_t, types.Primitive.none);
-    const proto = try readonlyArrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, array, &rest_set);
+    const proto = try readonlyArrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, types.Primitive.number_t, array, array, &rest_set);
     try T.expect(ti.objectMember(proto, try sint.intern("push")) == null);
     const ordered = ti.objectMembers(proto);
     for ([_][]const u8{ "length", "toString", "toLocaleString", "concat", "concat", "join", "slice", "indexOf" }, 0..) |name, i| {

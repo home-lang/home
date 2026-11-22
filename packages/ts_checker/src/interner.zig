@@ -1200,6 +1200,17 @@ pub const Interner = struct {
         number_index_type: TypeId,
         symbol_index_type: TypeId,
     ) !TypeId {
+        return self.internObjectTypeWithIndexAndSymbolOrigin(members, string_index_type, number_index_type, symbol_index_type, false);
+    }
+
+    fn internObjectTypeWithIndexAndSymbolOrigin(
+        self: *Interner,
+        members: []const types.ObjectMember,
+        string_index_type: TypeId,
+        number_index_type: TypeId,
+        symbol_index_type: TypeId,
+        is_array_origin: bool,
+    ) !TypeId {
         // Object types bypass dedup (every declaration site gets a
         // distinct id), so we just need to serialize the Pool append.
         // Preserve insertion order so diagnostic prose renders members
@@ -1226,6 +1237,7 @@ pub const Interner = struct {
         try self.pool.object_type_payloads.append(self.gpa, .{
             .members_start = member_start,
             .members_len = @intCast(members.len),
+            .is_array_origin = is_array_origin,
             .call_sig = 0,
             .construct_sig = 0,
             .string_index_type = string_index_type,
@@ -1259,7 +1271,16 @@ pub const Interner = struct {
             .is_readonly = false,
             .is_method = false,
         }};
-        return self.internObjectTypeWithIndex(&members, types.Primitive.none, element);
+        return self.internObjectTypeWithIndexAndSymbolOrigin(&members, types.Primitive.none, element, types.Primitive.none, true);
+    }
+
+    pub fn objectIsArrayType(self: *const Interner, id: TypeId) bool {
+        if (id >= self.pool.typeCount()) return false;
+        const flags = self.pool.flagsOf(id);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return false;
+        const payload = self.pool.payloadOf(id);
+        return payload < self.pool.object_type_payloads.items.len and
+            self.pool.object_type_payloads.items[payload].is_array_origin;
     }
 
     /// Look up the string-key index signature's value type, if
