@@ -1,5 +1,9 @@
 # Array stringification methods (#960)
 
+`tsconfig-indexed-access.json` verifies that a plain indexed object does not
+gain `join`, `slice`, or `push` from `Array<T>`, while real readonly and mutable
+arrays retain their declared methods.
+
 TypeScript 5.7.3 declares `toString` and `toLocaleString` directly on both `Array<T>` and `ReadonlyArray<T>`. The control checks that they are in each `keyof` set, that both calls return `string`, and that readonly arrays still reject `push`.
 
 `tsconfig-structural.json` checks the complete structural `ReadonlyArray<T>`

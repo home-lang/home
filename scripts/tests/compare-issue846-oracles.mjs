@@ -136,6 +136,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue1056-generic-flat-depth/') ||
   path.includes('/issue1057-generic-receiver-flat/') ||
   path.includes('/issue1058-rest-overload/') ||
+  path.includes('/issue1059-concat-array/') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-clean.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig-overlap.json') ||
   path.endsWith('/issue967-repeated-commonjs/tsconfig.json')).sort()
@@ -163,6 +164,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue960-readonly-own-methods/tsconfig-structural.json',
   'packages/ts_cli/testdata/issue960-readonly-own-methods/tsconfig-display.json',
   'packages/ts_cli/testdata/issue960-readonly-own-methods/tsconfig-arguments.json',
+  'packages/ts_cli/testdata/issue960-readonly-own-methods/tsconfig-indexed-access.json',
   'packages/ts_cli/testdata/issue972-generic-array-union-map/tsconfig.json',
   'packages/ts_cli/testdata/issue970-unique-symbol-keyof/tsconfig-arrays.json',
   'packages/ts_cli/testdata/issue970-unique-symbol-keyof/tsconfig-computed.json',
@@ -228,6 +230,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue1056-generic-flat-depth/tsconfig.json',
   'packages/ts_cli/testdata/issue1057-generic-receiver-flat/tsconfig.json',
   'packages/ts_cli/testdata/issue1058-rest-overload/tsconfig.json',
+  'packages/ts_cli/testdata/issue1059-concat-array/tsconfig.json',
   'packages/ts_cli/testdata/issue1004-returned-literals/tsconfig.json',
   'packages/ts_cli/testdata/issue1008-union-unit-collapse/tsconfig.json',
   'packages/ts_cli/testdata/issue1009-literal-union-widening/tsconfig.json',
