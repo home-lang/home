@@ -397,7 +397,7 @@ pub const CompileOptions = struct {
     /// exact mode enables this when it selects the ES5 baseline variant.
     report_deprecated_target_es5: bool = false,
     /// CLI `--strict` override. When null, defer to tsconfig or the
-    /// tsc default (`false`).
+    /// native tsgo default (`true`).
     strict: ?bool = null,
     /// CLI override; null defers to tsconfig or the TypeScript default.
     verbatim_module_syntax: ?bool = null,
@@ -2533,7 +2533,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     checker.strict_flags.resolve_json_module = tsconfig_mod.effectiveResolveJsonModule(jsonCompilerOptions(options, source));
     // Translate strictness flags. `strict: true` implies every
     // individual strict-family flag in TS; options.strict is the CLI
-    // override, then tsconfig, then tsc's default (`false`).
+    // override, then tsconfig, then native tsgo's default (`true`).
     if (options.strict_flags) |flags| {
         var merged_flags = flags;
         if (options.verbatim_module_syntax) |value| merged_flags.verbatim_module_syntax = value;
@@ -2542,7 +2542,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
         checker.setStrictFlags(merged_flags);
     } else if (options.pub_tsconfig) |cfg| {
         const co = cfg.compiler_options;
-        const strict_on = options.strict orelse (co.strict orelse false);
+        const strict_on = options.strict orelse (co.strict orelse true);
         const no_implicit_any = co.no_implicit_any orelse strict_on;
         const no_implicit_this = co.no_implicit_this orelse strict_on;
         const strict_fn_types = co.strict_function_types orelse strict_on;
@@ -2578,7 +2578,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             .always_strict = options.always_strict or (co.always_strict orelse false),
         });
     } else {
-        const strict_on = options.strict orelse false;
+        const strict_on = options.strict orelse true;
         checker.setStrictFlags(.{
             .no_implicit_any = strict_on,
             .no_implicit_this = strict_on,

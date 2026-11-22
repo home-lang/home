@@ -24218,7 +24218,8 @@ test "Program: declaration UMD globals reach script and module consumers" {
         "export {};\nlet z = Foo;\n",
     );
 
-    try program.compileAll(.{ .no_emit = true });
+    // This test isolates UMD name resolution from strict definite assignment.
+    try program.compileAll(.{ .no_emit = true, .strict = false });
 
     const script = program.fileById(script_id).compilation orelse return error.TestExpectedEqual;
     var script_used_before_assignment: usize = 0;
@@ -24236,6 +24237,30 @@ test "Program: declaration UMD globals reach script and module consumers" {
         if (diagnostic.code == 2686) module_umd_diagnostics += 1;
     }
     try T.expectEqual(@as(usize, 1), module_umd_diagnostics);
+}
+
+test "Program: omitted strictness uses the native strict default" {
+    const cases = [_]struct { strict: ?bool, expected_implicit_any: usize }{
+        .{ .strict = null, .expected_implicit_any = 1 },
+        .{ .strict = false, .expected_implicit_any = 0 },
+        .{ .strict = true, .expected_implicit_any = 1 },
+    };
+    for (cases) |case| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const id = try program.add("/entry.ts", "export function echo(value) { return value; }\n");
+        try program.compileAll(.{ .no_emit = true, .strict = case.strict });
+        const compilation = program.fileById(id).compilation orelse return error.TestUnexpectedResult;
+        var implicit_any: usize = 0;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == 7006) implicit_any += 1;
+        }
+        try T.expectEqual(case.expected_implicit_any, implicit_any);
+    }
 }
 
 test "Program: sibling script interfaces contribute global type names" {
