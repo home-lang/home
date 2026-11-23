@@ -176404,6 +176404,13 @@ pub const Checker = struct {
     /// object, while separate argument sites contribute separate objects.
     fn keyofInferenceShape(self: *Checker, source: TypeId) CheckError!?TypeId {
         if (source >= self.interner.pool.typeCount()) return null;
+        // `keyof U` carries its generic operand as an inference candidate:
+        // passing it to `keyof T` relates T to U, retaining U's field types.
+        // A concrete `keyof Shape` still contributes literal key members
+        // instead, so only a direct type-parameter operand takes this path.
+        if (self.directKeyofOperand(source)) |operand| {
+            if (self.interner.isDirectTypeParameter(operand)) return operand;
+        }
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         var broad_string = false;

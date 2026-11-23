@@ -16,6 +16,8 @@ errors and the invalid write without recursive key collection or a crash.
 `tsconfig-program.json` uses the installed TypeScript library to compare a
 direct generic `keyof` write, the same invalid key nested in a tuple element,
 numeric key widening, later writes to an existing tuple binding, and two
-inferred literal keys. The public Program test
+inferred literal keys. It also checks that a `keyof U` argument preserves the
+generic operand and its field types, while `keyof Concrete` still infers a
+literal-key shape. The public Program test
 embeds the shared source from `packages/ts_program/src/testdata` and
 checks each diagnostic's byte position, message, and nested relation reason.

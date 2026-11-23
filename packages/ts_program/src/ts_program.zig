@@ -20843,19 +20843,23 @@ test "Program: generic keyof writes keep tuple element errors and inferred keys 
     _ = try program.loadImportClosureParallel(options, null);
     try program.compileAllStreaming(options, {}, callback);
     const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
-    try T.expectEqual(@as(usize, 6), diagnostics.len);
+    try T.expectEqual(@as(usize, 8), diagnostics.len);
     try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
     try T.expectEqual(@as(u32, 2322), diagnostics[1].code);
     try T.expectEqual(@as(u32, 2322), diagnostics[2].code);
     try T.expectEqual(@as(u32, 2322), diagnostics[3].code);
     try T.expectEqual(@as(u32, 2322), diagnostics[4].code);
     try T.expectEqual(@as(u32, 2339), diagnostics[5].code);
+    try T.expectEqual(@as(u32, 2339), diagnostics[6].code);
+    try T.expectEqual(@as(u32, 2339), diagnostics[7].code);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "key: keyof T") orelse return error.TestUnexpectedResult)), diagnostics[0].pos);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "\"bad\"]") orelse return error.TestUnexpectedResult)), diagnostics[1].pos);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "42];") orelse return error.TestUnexpectedResult)), diagnostics[2].pos);
     try T.expectEqual(@as(u32, @intCast((std.mem.indexOf(u8, source, "keys = [\"bad\"]") orelse return error.TestUnexpectedResult) + "keys = [".len)), diagnostics[3].pos);
     try T.expectEqual(@as(u32, @intCast((std.mem.indexOf(u8, source, "keys = [\"missing\"]") orelse return error.TestUnexpectedResult) + "keys = [".len)), diagnostics[4].pos);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "missing;") orelse return error.TestUnexpectedResult)), diagnostics[5].pos);
+    try T.expectEqual(@as(u32, @intCast((std.mem.indexOf(u8, source, "inferred.missing;") orelse return error.TestUnexpectedResult) + "inferred.".len)), diagnostics[6].pos);
+    try T.expectEqual(@as(u32, @intCast((std.mem.indexOf(u8, source, "concrete.missing;") orelse return error.TestUnexpectedResult) + "concrete.".len)), diagnostics[7].pos);
     for (diagnostics[0..2]) |diagnostic| {
         try T.expectEqualStrings("Type 'string' is not assignable to type 'keyof T'.", diagnostic.message);
         try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
@@ -20871,6 +20875,8 @@ test "Program: generic keyof writes keep tuple element errors and inferred keys 
     try T.expectEqualStrings("Type '\"bad\"' is not assignable to type 'never'.", diagnostics[3].chain[0].message);
     try T.expectEqualStrings("Type '\"missing\"' is not assignable to type '\"present\"'.", diagnostics[4].chain[0].message);
     try T.expectEqualStrings("Property 'missing' does not exist on type '{ alpha: any; } & { beta: any; }'.", diagnostics[5].message);
+    try T.expectEqualStrings("Property 'missing' does not exist on type 'U'.", diagnostics[6].message);
+    try T.expectEqualStrings("Property 'missing' does not exist on type '{ left: any; right: any; }'.", diagnostics[7].message);
 }
 
 test "Program: relative module augmentation preserves missing member diagnostic" {

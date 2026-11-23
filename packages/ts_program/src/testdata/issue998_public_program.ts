@@ -28,4 +28,18 @@ value.alpha;
 value.beta;
 value.missing;
 
-void [write, guaranteed, assign, assignNamed];
+declare function fromGenericKey<T>(key: keyof T): T;
+function preserveSource<U extends { present: number }>(key: keyof U) {
+  const inferred = fromGenericKey(key);
+  const present: number = inferred.present;
+  inferred.missing;
+  return inferred;
+}
+type Concrete = { left: number; right: string };
+declare const concreteKey: keyof Concrete;
+const concrete = fromGenericKey(concreteKey);
+concrete.left;
+concrete.right;
+concrete.missing;
+
+void [write, guaranteed, assign, assignNamed, preserveSource];
