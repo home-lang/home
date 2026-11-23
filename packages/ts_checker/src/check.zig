@@ -126110,7 +126110,12 @@ pub const Checker = struct {
                         const obj_name = (try self.allocSimpleTypeName(obj_t)) orelse
                             (try self.allocObjectTypeShape(obj_t)) orelse
                             "{}";
-                        try self.reportElementImplicitAnyMissingIndexSignature(node, idx_t, idx_name, obj_name);
+                        const literal_index_t = try self.expressionLiteralType(e.index, idx_t);
+                        if (try self.elementAccessMissingPropertyChainName(obj_t, e.index, literal_index_t, null)) |missing_name| {
+                            try self.reportElementImplicitAnyMissingProperty(node, idx_name, obj_name, missing_name);
+                        } else {
+                            try self.reportElementImplicitAnyMissingIndexSignature(node, idx_t, idx_name, obj_name);
+                        }
                         break :blk types.Primitive.any;
                     }
                     if (idx_flags.is_symbol) {
@@ -126201,7 +126206,8 @@ pub const Checker = struct {
                                 try self.reportElementImplicitAnyDidYouMeanCall(node, obj_name, suggestion);
                                 break :blk types.Primitive.any;
                             }
-                            if (try self.elementAccessMissingPropertyChainName(obj_t, e.index, idx_t, literal_string_key)) |missing_name| {
+                            const literal_index_t = try self.expressionLiteralType(e.index, idx_t);
+                            if (try self.elementAccessMissingPropertyChainName(obj_t, e.index, literal_index_t, literal_string_key)) |missing_name| {
                                 try self.reportElementImplicitAnyMissingProperty(node, idx_name, obj_name, missing_name);
                                 break :blk types.Primitive.any;
                             }
@@ -176333,9 +176339,10 @@ pub const Checker = struct {
         return recorded;
     }
 
-    /// TypeScript's LiteralKeyof inference turns a string-literal key into
-    /// an object with that property of type any. A union of keys contributes
-    /// one object; separate argument sites contribute separate objects.
+    /// TypeScript's LiteralKeyof inference builds an object candidate from
+    /// literal keys. Only string literals create members; numeric and symbol
+    /// literals still create an empty candidate. A union contributes one
+    /// object, while separate argument sites contribute separate objects.
     fn keyofInferenceShape(self: *Checker, source: TypeId) CheckError!?TypeId {
         if (source >= self.interner.pool.typeCount()) return null;
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -176369,11 +176376,11 @@ pub const Checker = struct {
         }
         if (source >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(source);
-        if (!flags.is_literal or !flags.is_string or flags.is_union or flags.is_intersection) return false;
+        if (!flags.is_literal or flags.is_union or flags.is_intersection) return false;
         const literal = self.interner.literalOfOrNull(source) orelse return false;
         const name = switch (literal) {
             .string_lit => |sid| sid,
-            else => return false,
+            else => return true,
         };
         for (members.items) |member| if (member.name == name) return true;
         try members.append(self.gpa, .{
@@ -176449,6 +176456,42 @@ pub const Checker = struct {
         return try self.genericConstraintAssignable(source, keys);
     }
 
+    /// A call with an inferred `T` must check a `keyof T` argument against
+    /// the keys of that inferred type. LiteralKeyof inference also produces
+    /// an empty object candidate for numeric and symbol literals, so those
+    /// arguments fail against `keyof {}` instead of remaining unconstrained.
+    fn inferredCallKeyofTarget(
+        self: *Checker,
+        call_node: NodeId,
+        sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        target: TypeId,
+    ) CheckError!?TypeId {
+        if (hir_mod.callTypeArgs(self.hir, call_node).len != 0) return null;
+        const operand = self.directKeyofOperand(target) orelse return null;
+        if (!self.signatureOwnsTypeParameter(sig, operand)) return null;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferCallSubstitutions(sig, args, arg_types, &subs);
+        const inferred = subs.get(operand) orelse return null;
+        return try self.keyofTypeFromOperand(inferred);
+    }
+
+    fn inferCallArgumentWithKeyofSyntax(
+        self: *Checker,
+        target: TypeId,
+        source: TypeId,
+        argument: NodeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        const handled = try self.recordKeyofSyntaxCandidates(target, argument, source);
+        const prior_context = self.keyof_inference_context;
+        if (handled) self.keyof_inference_context = null;
+        defer self.keyof_inference_context = prior_context;
+        try self.inferFromArgument(target, source, argument, subs);
+    }
+
     fn inferCallSubstitutions(
         self: *Checker,
         sig: TypeId,
@@ -176499,7 +176542,7 @@ pub const Checker = struct {
                     }
                     continue;
                 }
-                try self.inferFromArgument(param_t, arg_t, args[i], subs);
+                try self.inferCallArgumentWithKeyofSyntax(param_t, arg_t, args[i], subs);
             }
             const rest_arr_t = param_ts[param_ts.len - 1];
             if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
@@ -176564,7 +176607,7 @@ pub const Checker = struct {
                     }
                     continue;
                 }
-                try self.inferFromArgument(param_t, arg_t, args[i], subs);
+                try self.inferCallArgumentWithKeyofSyntax(param_t, arg_t, args[i], subs);
             }
         }
         try self.applyParameterlessCallbackConstraintFallback(sig, param_ts, args, subs);
@@ -180015,6 +180058,7 @@ pub const Checker = struct {
             }
             const inferred_contextual_return_error = inferred_generic_callback and
                 self.contextualFunctionReturnDiagnosticAlreadyEmitted(args[i]);
+            const inferred_keyof_target = try self.inferredCallKeyofTarget(call_node, sig, args, arg_types, param_t);
             var argument_excess_property_diagnostic_emitted = false;
             const arg_diag_start = self.diagnostics.items.len;
             const imported_class_parameter_match = try self.argumentMatchesImportedClassParameter(sig, fixed_pos, arg_t);
@@ -180046,7 +180090,7 @@ pub const Checker = struct {
                         param_t,
                     )) orelse arg_t;
                 break :blk try self.functionExpressionAssignableToSignatureTarget(args[i], diagnostic_source_t, param_t);
-            } else self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
+            } else self.isArgumentAssignableToParam(args[i], arg_t, inferred_keyof_target orelse param_t) catch true;
             const predicate_assignable = if (declared_param_predicate) |target_pred|
                 try self.signaturePredicateAnnotationsAssignable(
                     try self.assignmentExpressionPredicate(args[i], arg_t),
@@ -180248,7 +180292,9 @@ pub const Checker = struct {
                     // non-union source, while union/nullish/unknown sources
                     // must still display the full `T | undefined` target.
                     const raw_display_param_t = param_t;
-                    const generic_display_param_t = if (union_composite)
+                    const generic_display_param_t = if (inferred_keyof_target) |key_t|
+                        key_t
+                    else if (union_composite)
                         raw_display_param_t
                     else
                         try self.genericCallDiagnosticDisplayType(call_node, raw_display_param_t);
