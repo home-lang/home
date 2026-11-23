@@ -47,7 +47,7 @@ def main() -> None:
     compilers = {"home": args.home.resolve(), "reference": args.reference.resolve()}
     summary = {"scope": "generic indexed return and result inference",
                "compiler_hashes": {name: digest(exe) for name, exe in compilers.items()},
-               "observations": [], "failures": [], "passed": False}
+               "observations": [], "stream_pairs": [], "failures": [], "passed": False}
 
     def save() -> None:
         (root / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
@@ -57,6 +57,7 @@ def main() -> None:
         for exact in (False, True):
             for planted in (False, True):
                 expected = [("main.ts", *error)] if planted and (name != "exact-write" or exact) else []
+                streams = {}
                 for engine, exe in compilers.items():
                     directory = root / name / str(exact) / ("negative" if planted else "valid") / engine
                     directory.mkdir(parents=True)
@@ -75,6 +76,7 @@ def main() -> None:
                     inputs = {str(p.relative_to(directory)): digest(p) for p in directory.rglob('*') if p.is_file()}
                     argv = [str(exe), "--project", "tsconfig.json", "--pretty", "false"]
                     result = subprocess.run(argv, cwd=directory, capture_output=True, text=True, timeout=45)
+                    streams[engine] = (result.stdout, result.stderr)
                     output = result.stdout + result.stderr
                     diagnostics = sorted((Path(file).name, int(line), int(column), int(code))
                         for file, line, column, code in re.findall(
@@ -91,6 +93,14 @@ def main() -> None:
                     if not passed:
                         summary["failures"].append(f"{name}/{exact}/{planted}/{engine}: {diagnostics}, exit {result.returncode}")
                     save()
+                stream_match = streams["home"] == streams["reference"]
+                summary["stream_pairs"].append({
+                    "case": name, "exactOptionalPropertyTypes": exact,
+                    "variant": "negative" if planted else "valid", "equal": stream_match,
+                })
+                if not stream_match:
+                    summary["failures"].append(f"{name}/{exact}/{planted}: stdout/stderr differ from native TypeScript")
+                save()
     summary["passed"] = not summary["failures"]
     save()
     if summary["failures"]:
