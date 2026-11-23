@@ -91006,6 +91006,10 @@ pub const Checker = struct {
     fn arrayLiteralVisibleTupleAnnotationAssignmentResult(self: *Checker, value_node: NodeId, target_node: NodeId) CheckError!?bool {
         if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .array_literal) return null;
         const tuple_node = self.visibleTupleAnnotationForIdentifier(target_node) orelse return null;
+        // The positional write already owns its TS2322 diagnostics; the
+        // enclosing assignment must not add an array-to-tuple error for the
+        // same fresh literal.
+        if (try self.reportTupleLiteralKeyWriteMismatches(value_node, tuple_node)) return true;
         return try self.checkArrayLiteralAgainstTupleAnnotation(value_node, tuple_node);
     }
 
