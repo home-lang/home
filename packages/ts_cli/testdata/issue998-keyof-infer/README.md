@@ -14,3 +14,7 @@ argument still rejects a missing key.
 both native compilers. They infer an empty object candidate, while a mixed
 string/numeric union keeps only the string property. The fixture also checks
 the resulting argument and indexed-access diagnostics.
+
+`tsconfig-dependent.json` checks parameters constrained by `keyof U`, concrete
+`keyof` constraints, and a plain `string` constraint. The first two infer
+different object shapes; the plain string constraint leaves the result unknown.

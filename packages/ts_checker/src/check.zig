@@ -176404,6 +176404,31 @@ pub const Checker = struct {
     /// object, while separate argument sites contribute separate objects.
     fn keyofInferenceShape(self: *Checker, source: TypeId) CheckError!?TypeId {
         if (source >= self.interner.pool.typeCount()) return null;
+        // A constrained type parameter is first viewed through its apparent
+        // type by TypeScript's inference engine. A `keyof U` constraint has
+        // the broad string key domain when U is still generic; a concrete
+        // operand contributes its actual literal keys instead.
+        if (self.interner.isDirectTypeParameter(source)) {
+            const declared = self.type_parameter_decl_nodes.get(source) orelse
+                self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(source));
+            if (declared) |declaration| {
+                if (self.hir.kindOf(declaration) == .type_parameter) {
+                    const constraint_node = hir_mod.typeParameterOf(self.hir, declaration).constraint;
+                    if (constraint_node != hir_mod.none_node_id and self.hir.kindOf(constraint_node) == .keyof_type) {
+                        if (self.typeParameterConstraint(source)) |constraint| {
+                            if (self.directKeyofOperand(constraint)) |operand| {
+                                if (self.interner.isDirectTypeParameter(operand))
+                                    return try self.keyofInferenceShape(types.Primitive.string_t);
+                                const keys = try self.keyofTypeFromOperand(operand);
+                                if (keys != source and keys != constraint) return try self.keyofInferenceShape(keys);
+                            } else if (constraint != source) {
+                                return try self.keyofInferenceShape(constraint);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // `keyof U` carries its generic operand as an inference candidate:
         // passing it to `keyof T` relates T to U, retaining U's field types.
         // A concrete `keyof Shape` still contributes literal key members
@@ -180392,6 +180417,17 @@ pub const Checker = struct {
                     }
                     if (display_param_t == types.Primitive.never) {
                         diagnostic_arg_t = self.expressionLiteralType(args[i], diagnostic_arg_t) catch diagnostic_arg_t;
+                    }
+                    // `K extends keyof U` is related to the inferred key
+                    // domain through its apparent constraint. Keep that
+                    // expanded domain in TS2345 and its symbol elaboration.
+                    if (inferred_keyof_target != null and self.interner.isDirectTypeParameter(diagnostic_arg_t)) {
+                        if (self.typeParameterConstraint(diagnostic_arg_t)) |constraint| {
+                            if (self.directKeyofOperand(constraint)) |key_operand| {
+                                if (self.interner.isDirectTypeParameter(key_operand))
+                                    diagnostic_arg_t = try self.propertyKeyUnionType();
+                            }
+                        }
                     }
                     // A bigint literal argument is a fresh literal, as a
                     // numeric one is; the formatter widens it against a
@@ -204824,6 +204860,22 @@ pub const Checker = struct {
                 const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
                 slice[0] = entry;
                 return slice;
+            }
+        }
+
+        // When a constrained type parameter is assigned to `never`, the
+        // constraint explains the failed relation. TypeScript keeps the
+        // parameter in the header and shows its constraint as the child.
+        if (target == types.Primitive.never and self.interner.isDirectTypeParameter(source)) {
+            if (self.typeParameterConstraint(source)) |constraint| {
+                if (constraint != source and constraint != types.Primitive.any and
+                    constraint != types.Primitive.unknown and constraint != types.Primitive.never and
+                    !self.interner.pool.flagsOf(constraint).is_union)
+                {
+                    const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                    slice[0] = try self.typeNotAssignableChainEntry(constraint, target, false);
+                    return slice;
+                }
             }
         }
 
