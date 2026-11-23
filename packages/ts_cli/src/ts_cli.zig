@@ -96,6 +96,8 @@ pub const Options = struct {
     project: ?[]const u8 = null,
     /// `--noEmit`. Null preserves the project setting; false overrides it.
     no_emit: ?bool = null,
+    /// `--noEmitOnError`. Null preserves the project setting.
+    no_emit_on_error: ?bool = null,
     no_lib: ?bool = null,
     no_resolve: ?bool = null,
     resolve_json_module: ?bool = null,
@@ -275,6 +277,7 @@ pub fn applyConfigOverrides(config: *tsconfig_mod.TsConfig, opts: Options) void 
     if (opts.allow_js) |value| compiler_options.allow_js = value;
     if (opts.check_js) |value| compiler_options.check_js = value;
     if (opts.no_emit) |value| compiler_options.no_emit = value;
+    if (opts.no_emit_on_error) |value| compiler_options.no_emit_on_error = value;
     if (opts.no_lib) |value| compiler_options.no_lib = value;
     if (opts.no_resolve) |value| compiler_options.no_resolve = value;
     if (opts.resolve_json_module) |value| compiler_options.resolve_json_module = value;
@@ -354,6 +357,8 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
         const a = args[i];
         if (optionIs(a, "--noEmit")) {
             opts.no_emit = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--noEmitOnError")) {
+            opts.no_emit_on_error = parseOptionalBooleanArg(args, &i);
         } else if (optionIs(a, "--noLib")) {
             opts.no_lib = parseOptionalBooleanArg(args, &i);
         } else if (optionIs(a, "--noResolve")) {
@@ -1751,10 +1756,11 @@ test "parseArgs: normal watch aliases consume booleans and retain source paths" 
 test "parseArgs: explicit boolean compiler values override project settings in every phase" {
     for ([_]bool{ false, true }) |enabled| {
         const value = if (enabled) "true" else "false";
-        const argv = [_][]const u8{ "-NOEMIT", value, "--TRACERESOLUTION", value, "--STRICT", value, "Src/Entry.TS" };
+        const argv = [_][]const u8{ "-NOEMIT", value, "--NOEMITONERROR", value, "--TRACERESOLUTION", value, "--STRICT", value, "Src/Entry.TS" };
         const opts = try parseArgs(T.allocator, &argv);
         defer T.allocator.free(opts.files);
         try T.expectEqual(@as(?bool, enabled), opts.no_emit);
+        try T.expectEqual(@as(?bool, enabled), opts.no_emit_on_error);
         try T.expectEqual(@as(?bool, enabled), opts.trace_resolution);
         try T.expectEqual(@as(?bool, enabled), opts.strict);
         try T.expectEqual(@as(usize, 1), opts.files.len);
@@ -1762,10 +1768,12 @@ test "parseArgs: explicit boolean compiler values override project settings in e
         defer loop_arena.deinit();
         var config = try tsconfig_mod.parseString(T.allocator, loop_arena.allocator(), "{}");
         config.compiler_options.no_emit = !enabled;
+        config.compiler_options.no_emit_on_error = !enabled;
         config.compiler_options.trace_resolution = !enabled;
         config.compiler_options.strict = !enabled;
         applyConfigOverrides(&config, opts);
         try T.expectEqual(@as(?bool, enabled), config.compiler_options.no_emit);
+        try T.expectEqual(@as(?bool, enabled), config.compiler_options.no_emit_on_error);
         try T.expectEqual(@as(?bool, enabled), config.compiler_options.trace_resolution);
         try T.expectEqual(@as(?bool, enabled), config.compiler_options.strict);
         var compile_opts: ts_driver.CompileOptions = .{ .no_emit = !enabled, .strict = !enabled };
@@ -1776,14 +1784,17 @@ test "parseArgs: explicit boolean compiler values override project settings in e
     const empty = try parseArgs(T.allocator, &.{});
     defer T.allocator.free(empty.files);
     try T.expectEqual(@as(?bool, null), empty.no_emit);
+    try T.expectEqual(@as(?bool, null), empty.no_emit_on_error);
     try T.expectEqual(@as(?bool, null), empty.trace_resolution);
     var default_arena = std.heap.ArenaAllocator.init(T.allocator);
     defer default_arena.deinit();
     var default_config = try tsconfig_mod.parseString(T.allocator, default_arena.allocator(), "{}");
     default_config.compiler_options.no_emit = true;
+    default_config.compiler_options.no_emit_on_error = true;
     default_config.compiler_options.trace_resolution = true;
     applyConfigOverrides(&default_config, empty);
     try T.expectEqual(@as(?bool, true), default_config.compiler_options.no_emit);
+    try T.expectEqual(@as(?bool, true), default_config.compiler_options.no_emit_on_error);
     try T.expectEqual(@as(?bool, true), default_config.compiler_options.trace_resolution);
     var default_compile_opts: ts_driver.CompileOptions = .{ .no_emit = true };
     applyCompileOptions(&default_compile_opts, empty);

@@ -896,7 +896,9 @@ fn buildOneProject(
         );
         if (composite_summary.error_count > 0) had_errors = true;
     }
-    if (compile_opts.no_emit) return if (had_errors) .errors_outputs_skipped else .built_dts_unchanged;
+    if (compile_opts.no_emit or (cfg.compiler_options.no_emit_on_error == true and had_errors)) {
+        return if (had_errors) .errors_outputs_skipped else .built_dts_unchanged;
+    }
 
     var reported_unchanged_timestamps = false;
     var changed_dts = false;
@@ -1128,6 +1130,7 @@ fn buildInfoOptionsJson(gpa: std.mem.Allocator, cfg: tsconfig_mod.TsConfig) ![]u
         .{ .name = "disableSizeLimit", .field = "disable_size_limit" },
         .{ .name = "removeComments", .field = "remove_comments" },
         .{ .name = "noEmit", .field = "no_emit" },
+        .{ .name = "noEmitOnError", .field = "no_emit_on_error" },
         .{ .name = "importHelpers", .field = "import_helpers" },
         .{ .name = "noEmitHelpers", .field = "no_emit_helpers" },
         .{ .name = "downlevelIteration", .field = "down_level_iteration" },
@@ -4245,6 +4248,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     else
         .{};
     ts_cli.applyCompileOptions(&compile_opts, opts);
+    const no_emit_on_error = if (loaded_cfg) |c|
+        c.compiler_options.no_emit_on_error orelse false
+    else
+        opts.no_emit_on_error orelse false;
     var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
     defer resolver_adapter.deinit();
     resolver_adapter.setProgramSources(&program, compile_opts);
@@ -4534,7 +4541,9 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // result is not marked emitSkipped merely because ordinary JS/d.ts output
     // was disabled. Diagnostics therefore exit 2 unless an actual emit block
     // was reported (the `--listFilesOnly` path exits separately above).
-    _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
+    if (!(no_emit_on_error and any_errors)) {
+        _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
+    }
 
     // §4.A.12 — write `.tsbuildinfo` when `compilerOptions.incremental: true`.
     if (loaded_cfg) |cfg_ptr| {
@@ -4730,7 +4739,9 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 }
             }
             reportWatchErrorStatus(watch_error_count);
-            _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
+            if (!(no_emit_on_error and watch_any_errors)) {
+                _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
+            }
             observation.commit(&watcher);
         }
     }
@@ -4739,7 +4750,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         const status = if (reported_command_line_errors)
             ts_cli.ExitCode.config_error
         else
-            ts_cli.diagnosticsExitCode(output_collision_count != 0);
+            ts_cli.diagnosticsExitCode(output_collision_count != 0 or (no_emit_on_error and !compile_opts.no_emit));
         std.process.exit(@backingInt(status));
     }
 }

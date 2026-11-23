@@ -273,6 +273,7 @@ pub const CompilerOptions = struct {
     disable_size_limit: ?bool = null,
     remove_comments: ?bool = null,
     no_emit: ?bool = null,
+    no_emit_on_error: ?bool = null,
     pretty: ?bool = null,
     import_helpers: ?bool = null,
     no_emit_helpers: ?bool = null,
@@ -2390,6 +2391,7 @@ fn fillCompilerOptions(
             .{ .name = "disableSizeLimit", .field = "disable_size_limit" },
             .{ .name = "removeComments", .field = "remove_comments" },
             .{ .name = "noEmit", .field = "no_emit" },
+            .{ .name = "noEmitOnError", .field = "no_emit_on_error" },
             .{ .name = "pretty", .field = "pretty" },
             .{ .name = "importHelpers", .field = "import_helpers" },
             .{ .name = "noEmitHelpers", .field = "no_emit_helpers" },
@@ -4462,9 +4464,9 @@ test "tsconfig.validate: misspelled compiler option reports TS5025 with suggesti
 }
 
 test "tsconfig.validate: known-but-unmodeled option is not flagged unknown" {
-    // `outFile`, `noEmitOnError`, `listFiles` are real tsc options Home
-    // does not yet materialize into typed fields (`pretty` now is). They land
-    // in `extra` but must NOT produce TS5023. (`outFile` additionally
+    // `outFile` and `listFiles` are real tsc options Home does not yet
+    // materialize into typed fields. They land in `extra` but must NOT
+    // produce TS5023. (`outFile` additionally
     // triggers the TS5102 removed-option diagnostic.)
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
@@ -4475,6 +4477,7 @@ test "tsconfig.validate: known-but-unmodeled option is not flagged unknown" {
     defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), countCode(diags, 5023));
     try t.expectEqual(@as(usize, 0), countCode(diags, 5025));
+    try t.expectEqual(@as(?bool, true), cfg.compiler_options.no_emit_on_error);
 }
 
 test "tsconfig.parse: pretty is a typed compiler option" {
