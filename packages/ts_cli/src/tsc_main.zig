@@ -485,7 +485,8 @@ fn projectConfigHasInputFiles(gpa: std.mem.Allocator, cfg_path: []const u8, cfg:
 
 fn projectBuildInfoFilePath(arena: std.mem.Allocator, cfg_path: []const u8, cfg: tsconfig_mod.TsConfig) !?[]const u8 {
     const co = cfg.compiler_options;
-    if (co.composite != true and co.incremental != true and co.ts_buildinfo_file == null) return null;
+    // `tsc --build` always writes build info, even when the project did not
+    // opt into incremental compilation in its own compilerOptions.
 
     const project_dir = std.fs.path.dirname(cfg_path) orelse ".";
     if (co.ts_buildinfo_file) |p| {
@@ -871,6 +872,13 @@ fn buildOneProject(
     compile_opts.external_resolver = .{ .ptr = &resolver_adapter, .vtable = &CheckerResolverAdapter.vtable };
     _ = program.loadImportClosureParallel(compile_opts, null) catch {};
 
+    // Build mode follows the same syntax preflight as the ordinary CLI:
+    // parser errors own the diagnostic stream before checker follow-ons.
+    // The Program retains its compiled results for output and build-info
+    // ownership, but only syntax diagnostics are published in this phase.
+    var syntax_probe: SyntaxDiagnosticProbe = .{};
+    program.compileAllStreaming(compile_opts, &syntax_probe, SyntaxDiagnosticProbe.receive) catch return .errors_outputs_skipped;
+
     var had_errors = config_errors;
     var diagnostic_paths = DiagnosticPaths.init(gpa) catch return .errors_outputs_skipped;
     defer diagnostic_paths.deinit();
@@ -880,7 +888,7 @@ fn buildOneProject(
         .paths = &diagnostic_paths,
         .use_pretty = project_pretty,
         .use_color = project_pretty,
-        .filter = if (config_errors) .syntax_only else .all,
+        .filter = if (config_errors or syntax_probe.has_errors) .syntax_only else .all,
         .any_errors = &had_errors,
     };
     program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch return .errors_outputs_skipped;
@@ -896,7 +904,12 @@ fn buildOneProject(
         );
         if (composite_summary.error_count > 0) had_errors = true;
     }
-    if (compile_opts.no_emit or (cfg.compiler_options.no_emit_on_error == true and had_errors)) {
+    const withheld_for_errors = cfg.compiler_options.no_emit_on_error == true and had_errors;
+    if (compile_opts.no_emit or withheld_for_errors) {
+        writeProjectBuildInfo(gpa, arena, config_path, cfg, &program, had_errors, withheld_for_errors and !compile_opts.no_emit, emit_dts) catch |err| {
+            std.debug.print("error writing build info for {s}: {s}\n", .{ config_path, @errorName(err) });
+            return .errors_outputs_skipped;
+        };
         return if (had_errors) .errors_outputs_skipped else .built_dts_unchanged;
     }
 
@@ -921,6 +934,10 @@ fn buildOneProject(
             if (writeProjectOutput(gpa, dts_path, dts_bytes, config_path, verbose, &reported_unchanged_timestamps)) changed_dts = true;
         }
     }
+    writeProjectBuildInfo(gpa, arena, config_path, cfg, &program, had_errors, false, emit_dts) catch |err| {
+        std.debug.print("error writing build info for {s}: {s}\n", .{ config_path, @errorName(err) });
+        return .errors_outputs_skipped;
+    };
     if (had_errors) return .errors_outputs_generated;
     return if (changed_dts) .built_dts_changed else .built_dts_unchanged;
 }
@@ -1403,6 +1420,139 @@ test "tsc_main: build-info spans use UTF-16 offsets" {
     try std.testing.expectEqual(@as(u32, 4), cursor.at(7));
     try std.testing.expectEqual(@as(u32, 5), cursor.at(8));
     try std.testing.expectEqual(@as(u32, 1), cursor.at(1));
+}
+
+fn savedDiagnosticChain(
+    arena: std.mem.Allocator,
+    entries: []const ts_driver.DiagnosticChainEntry,
+) ![]const ts_emit.tsbuildinfo.DiagnosticChain {
+    const out = try arena.alloc(ts_emit.tsbuildinfo.DiagnosticChain, entries.len);
+    for (entries, 0..) |entry, i| {
+        out[i] = .{
+            .message = entry.message,
+            .code = entry.code,
+            .children = try savedDiagnosticChain(arena, entry.children),
+        };
+    }
+    return out;
+}
+
+/// Materialize the state of the *compiled* Program. The scratch arena keeps
+/// borrowed diagnostic text alive through serialization and releases all
+/// temporary arrays at once; only the returned JSON belongs to `gpa`.
+fn buildInfoBytesForProgram(
+    gpa: std.mem.Allocator,
+    program: *const ts_program.Program,
+    cfg: tsconfig_mod.TsConfig,
+    had_errors: bool,
+    pending_emit: bool,
+    emit_dts: bool,
+) ![]u8 {
+    var scratch_state = std.heap.ArenaAllocator.init(gpa);
+    defer scratch_state.deinit();
+    const scratch = scratch_state.allocator();
+    var names: std.ArrayListUnmanaged([]const u8) = .empty;
+    var infos: std.ArrayListUnmanaged(ts_emit.tsbuildinfo.FileInfo) = .empty;
+    var roots: std.ArrayListUnmanaged(usize) = .empty;
+    var semantic: std.ArrayListUnmanaged(ts_emit.tsbuildinfo.FileDiagnostics) = .empty;
+    var emit_diagnostics: std.ArrayListUnmanaged(ts_emit.tsbuildinfo.FileDiagnostics) = .empty;
+    var pending: std.ArrayListUnmanaged(usize) = .empty;
+    var signatures: std.ArrayListUnmanaged(usize) = .empty;
+    for (program.files.items) |f| {
+        if (!f.present or f.redirect_target != null) continue;
+        try names.append(scratch, f.path);
+        try infos.append(scratch, .{
+            .version = try sourceSha1Hex(scratch, f.source),
+            .affects_global_scope = f.compiler_library_root,
+            .is_declaration = f.is_declaration,
+        });
+        const file_id = names.items.len;
+        if (f.root_input) try roots.append(scratch, file_id);
+        if (pending_emit and !f.is_declaration) {
+            try pending.append(scratch, file_id);
+            if (emit_dts) try signatures.append(scratch, file_id);
+        }
+        const compilation = f.compilation orelse continue;
+        // A parse-broken source has no stable semantic result to cache.
+        // Both installed compilers retain `errors` and pending emit for it,
+        // without serializing speculative follow-on checker diagnostics.
+        if (compilation.has_syntactic_parse_diagnostics) continue;
+        var source_cursor: Utf16PositionCursor = .{ .source = f.source };
+        var semantic_for_file: std.ArrayListUnmanaged(ts_emit.tsbuildinfo.SavedDiagnostic) = .empty;
+        var emit_for_file: std.ArrayListUnmanaged(ts_emit.tsbuildinfo.SavedDiagnostic) = .empty;
+        for (compilation.diagnostics.items) |diagnostic| {
+            // The official build-info format stores source syntax failures in
+            // `errors`, not in semanticDiagnosticsPerFile. Global/config
+            // errors have no source span to serialize here either.
+            if (diagnostic.isSyntactic() or diagnostic.is_global) continue;
+            const start = source_cursor.at(diagnostic.pos);
+            const end = source_cursor.at(@as(usize, diagnostic.pos) + diagnostic.span_len);
+            const related = try scratch.alloc(ts_emit.tsbuildinfo.RelatedDiagnostic, diagnostic.related.len);
+            for (diagnostic.related, 0..) |item, i| {
+                const related_source = if (item.file) |path| blk: {
+                    const related_id = program.lookupPath(path) orelse return error.UnknownRelatedSource;
+                    break :blk program.fileById(related_id).source;
+                } else f.source;
+                var related_cursor: Utf16PositionCursor = .{ .source = related_source };
+                const related_start = related_cursor.at(item.pos);
+                const related_end = related_cursor.at(@as(usize, item.pos) + item.span_len);
+                related[i] = .{
+                    .file = item.file,
+                    .start = related_start,
+                    .length = related_end - related_start,
+                    .code = item.code,
+                    .message = item.message,
+                };
+            }
+            const saved: ts_emit.tsbuildinfo.SavedDiagnostic = .{
+                .start = start,
+                .length = end - start,
+                .code = if (diagnostic.code != 0) diagnostic.code else mapPhaseToCode(diagnostic.phase),
+                .category = switch (diagnostic.category) {
+                    .error_ => 1,
+                    .warning => 0,
+                    .suggestion => 2,
+                },
+                .message = diagnostic.message,
+                .chain = try savedDiagnosticChain(scratch, diagnostic.chain),
+                .related = related,
+            };
+            if (diagnostic.phase == .emit) {
+                try emit_for_file.append(scratch, saved);
+            } else {
+                try semantic_for_file.append(scratch, saved);
+            }
+        }
+        if (semantic_for_file.items.len > 0) try semantic.append(scratch, .{ .file_id = file_id, .diagnostics = semantic_for_file.items });
+        if (emit_for_file.items.len > 0) try emit_diagnostics.append(scratch, .{ .file_id = file_id, .diagnostics = emit_for_file.items });
+    }
+    const options_json = try buildInfoOptionsJson(scratch, cfg);
+    return ts_emit.tsbuildinfo.emit(gpa, names.items, infos.items, options_json, .{
+        .state = .{
+            .roots = roots.items,
+            .semantic_diagnostics = semantic.items,
+            .emit_diagnostics = emit_diagnostics.items,
+            .affected_files_pending_emit = pending.items,
+            .emit_signatures = signatures.items,
+            .errors = had_errors,
+        },
+    });
+}
+
+fn writeProjectBuildInfo(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    cfg: tsconfig_mod.TsConfig,
+    program: *const ts_program.Program,
+    had_errors: bool,
+    pending_emit: bool,
+    emit_dts: bool,
+) !void {
+    const path = (try projectBuildInfoFilePath(arena, config_path, cfg)).?;
+    const bytes = try buildInfoBytesForProgram(gpa, program, cfg, had_errors, pending_emit, emit_dts);
+    defer gpa.free(bytes);
+    try RealFs.write(gpa, path, bytes);
 }
 
 fn projectNeedsTimestampUpdate(
@@ -6006,6 +6156,17 @@ test "tsc_main: project build info path follows Home default convention" {
     );
     const path = (try projectBuildInfoFilePath(arena, "/repo/app/tsconfig.json", cfg)).?;
     try std.testing.expectEqualStrings("/repo/app/dist/tsconfig.tsbuildinfo", path);
+}
+
+test "tsc_main: build mode writes info without an explicit incremental flag" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const cfg = try tsconfig_mod.parseString(std.testing.allocator, arena,
+        \\{ "compilerOptions": { "strict": true } }
+    );
+    const path = (try projectBuildInfoFilePath(arena, "/repo/app/tsconfig.json", cfg)).?;
+    try std.testing.expectEqualStrings("/repo/app/tsconfig.tsbuildinfo", path);
 }
 
 test "tsc_main: TS6377 referenced project build info overwrite diagnostic" {
