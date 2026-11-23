@@ -31295,17 +31295,7 @@ pub const Checker = struct {
     }
 
     fn buildIteratorResultType(self: *Checker, yield_type: TypeId, return_type: TypeId) CheckError!TypeId {
-        const value = self.string_interner.intern("value") catch return error.OutOfMemory;
-        const done = self.string_interner.intern("done") catch return error.OutOfMemory;
-        const yielded = try self.interner.internObjectType(&.{
-            .{ .name = value, .type = yield_type, .is_optional = false, .is_readonly = false, .is_method = false },
-            .{ .name = done, .type = types.Primitive.false_lit, .is_optional = true, .is_readonly = false, .is_method = false },
-        });
-        const completed = try self.interner.internObjectType(&.{
-            .{ .name = value, .type = return_type, .is_optional = false, .is_readonly = false, .is_method = false },
-            .{ .name = done, .type = types.Primitive.true_lit, .is_optional = false, .is_readonly = false, .is_method = false },
-        });
-        return self.interner.internUnion(&.{ yielded, completed });
+        return lib.iteratorResultType(self.interner, self.string_interner, yield_type, return_type) catch return error.OutOfMemory;
     }
 
     fn buildBuiltinIteratorCore(
@@ -31346,10 +31336,10 @@ pub const Checker = struct {
 
         if (args.len == 0) return null;
         const yield_t = args[0];
-        const return_t = if (args.len >= 2) args[1] else types.Primitive.any;
+        const return_t = if (args.len >= 2) args[1] else if (is_sync_iterator_object or is_async_iterator_object) types.Primitive.unknown else types.Primitive.any;
         const next_t = if (args.len >= 3) args[2] else types.Primitive.any;
         if (is_sync_iterator_object or is_async_iterator_object) {
-            const result_t = lib.iteratorObjectType(self.interner, self.string_interner, yield_t, is_async_iterator_object) catch return error.OutOfMemory;
+            const result_t = lib.iteratorObjectTypeWithReturn(self.interner, self.string_interner, yield_t, return_t, is_async_iterator_object) catch return error.OutOfMemory;
             try self.generator_type_info.put(self.gpa, result_t, .{
                 .yield_type = yield_t,
                 .return_type = return_t,
@@ -35084,6 +35074,7 @@ pub const Checker = struct {
             recv_t = self.program_contextual_member_projections.get(m.object) orelse recv_t;
         }
         if (try self.isIteratorObjectType(recv_t)) {
+            if (!self.iteratorHelpersAvailable()) return null;
             if (is_sort or param_index > 1) return null;
             return if (param_index == 0)
                 self.interner.objectNumberIndex(recv_t)
@@ -115594,6 +115585,7 @@ pub const Checker = struct {
     /// iterators, and only toArray returns an array.
     fn iteratorHelperMember(self: *Checker, receiver: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         if (!try self.isIteratorObjectType(receiver)) return null;
+        if (!self.iteratorHelpersAvailable()) return null;
         const elem = self.interner.objectNumberIndex(receiver);
         const method = self.string_interner.get(name);
         const number_t = types.Primitive.number_t;
@@ -115702,6 +115694,26 @@ pub const Checker = struct {
             return signature;
         }
         return null;
+    }
+
+    fn iteratorHelpersAvailable(self: *Checker) bool {
+        if (self.sourceHasNoLibTrueDirective() or self.configured_no_lib) return false;
+        if (self.sourceHasReferenceLibDirective("esnext.iterator")) return true;
+        if (self.sourceHasDirective("lib")) {
+            return self.sourceDirectiveValueMentions("lib", "es2025") or
+                self.sourceDirectiveValueMentions("lib", "esnext") or
+                self.sourceDirectiveValueMentions("lib", "esnext.iterator");
+        }
+        if (self.configured_libs) |libs| {
+            for (libs) |selected| {
+                if (std.ascii.eqlIgnoreCase(selected, "es2025") or
+                    std.ascii.eqlIgnoreCase(selected, "esnext") or
+                    std.ascii.eqlIgnoreCase(selected, "esnext.iterator")) return true;
+            }
+            return false;
+        }
+        if (self.configured_target_lib_tier) |tier| return tier >= 2025;
+        return true;
     }
 
     /// TypeScript 5.7.3 names each built-in iterator after its owner
@@ -306053,7 +306065,7 @@ test "checker: inferred async returns await nested promises and thenable unions"
 
 test "checker: structural iterable arguments include array prototype members" {
     const s = try newSetup(
-        \\type Sequence<T> = { [Symbol.iterator](): { next(): { value: T; done: boolean } } };
+        \\type Sequence<T> = { [Symbol.iterator](): { next(): { value: T | undefined; done?: boolean } } };
         \\declare function consume(values: Sequence<number>): void;
         \\declare const rows: number[];
         \\consume(rows);
@@ -306616,7 +306628,7 @@ test "checker: generic resolution defers structural display until requested" {
 test "checker: overload applicability observes array apparent members" {
     const s = try newSetup(
         \\interface Accept {
-        \\  (values: { [Symbol.iterator](): { next(): { value: number; done: boolean } } }): "iterable";
+        \\  (values: { [Symbol.iterator](): { next(): { value: number | undefined; done?: boolean } } }): "iterable";
         \\  (value: string): "text";
         \\}
         \\declare const take: Accept;

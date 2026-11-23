@@ -281,12 +281,36 @@ pub fn iteratorObjectType(
     elem: TypeId,
     is_async: bool,
 ) !TypeId {
+    return iteratorObjectTypeWithReturn(ti, sint, elem, types.Primitive.undefined_t, is_async);
+}
+
+pub fn iteratorResultType(
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    yield_type: TypeId,
+    return_type: TypeId,
+) !TypeId {
     const value_id = try sint.intern("value");
     const done_id = try sint.intern("done");
-    const result_t = try ti.internObjectType(&[_]types.ObjectMember{
-        .{ .name = value_id, .type = elem, .is_optional = false, .is_readonly = true, .is_method = false },
-        .{ .name = done_id, .type = types.Primitive.boolean_t, .is_optional = false, .is_readonly = true, .is_method = false },
+    const yielded = try ti.internObjectType(&[_]types.ObjectMember{
+        .{ .name = value_id, .type = yield_type, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = done_id, .type = types.Primitive.false_lit, .is_optional = true, .is_readonly = false, .is_method = false },
     });
+    const completed = try ti.internObjectType(&[_]types.ObjectMember{
+        .{ .name = value_id, .type = return_type, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = done_id, .type = types.Primitive.true_lit, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    return ti.internUnion(&.{ yielded, completed });
+}
+
+pub fn iteratorObjectTypeWithReturn(
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    elem: TypeId,
+    return_type: TypeId,
+    is_async: bool,
+) !TypeId {
+    const result_t = try iteratorResultType(ti, sint, elem, return_type);
     const next_result_t = if (is_async) types.Primitive.any else result_t;
     const next_sig = try ti.internSignature(&[_]TypeId{}, next_result_t, false);
     const iterator_sig = try ti.internSignature(&[_]TypeId{}, types.Primitive.any, false);
@@ -1883,9 +1907,14 @@ test "lib: array entries iterator preserves index and element tuple types" {
     const iterator = ti.signatureReturn(entries).?;
     const next = ti.objectMember(iterator, try sint.intern("next")).?;
     const result = ti.signatureReturn(next).?;
-    const entry = ti.objectMember(result, try sint.intern("value")).?;
+    const branches = ti.unionMembers(result);
+    try T.expectEqual(@as(usize, 2), branches.len);
+    const entry = ti.objectMember(branches[0], try sint.intern("value")).?;
     try T.expectEqual(types.Primitive.number_t, ti.objectMember(entry, try sint.intern("0")).?);
     try T.expectEqual(types.Primitive.string_t, ti.objectMember(entry, try sint.intern("1")).?);
+    try T.expectEqual(types.Primitive.false_lit, ti.objectMember(branches[0], try sint.intern("done")).?);
+    try T.expectEqual(types.Primitive.undefined_t, ti.objectMember(branches[1], try sint.intern("value")).?);
+    try T.expectEqual(types.Primitive.true_lit, ti.objectMember(branches[1], try sint.intern("done")).?);
 }
 
 test "lib: arrayProto map/flatMap/reduce signatures are generic over U" {
