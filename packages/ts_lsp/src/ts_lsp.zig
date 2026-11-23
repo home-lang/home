@@ -7797,6 +7797,43 @@ test "Service: diagnosticsStructured returns LspDiagnostic shape" {
     try T.expect(d.message.len > 0);
 }
 
+test "Service: iterator diagnostics follow the selected library (#969)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/legacy.ts",
+        \\// @lib: es2023
+        \\const values = [1, 2].values();
+        \\values.toArray();
+    );
+    _ = try program.add("/modern.ts",
+        \\// @lib: esnext
+        \\const result = [1, 2].values().next();
+        \\if (result.done) {
+        \\  const completed: undefined = result.value;
+        \\  void completed;
+        \\} else {
+        \\  const yielded: number = result.value;
+        \\  void yielded;
+        \\}
+    );
+    try program.compileAll(.{ .strict = true, .no_emit = true });
+
+    var svc = Service.init(T.allocator, &program);
+    const legacy = try svc.diagnosticsStructured(T.allocator, "/legacy.ts");
+    defer freeLspDiagnostics(T.allocator, legacy);
+    try T.expectEqual(@as(usize, 1), legacy.len);
+    try T.expectEqual(@as(u32, 2339), legacy[0].code);
+
+    const modern = try svc.diagnosticsStructured(T.allocator, "/modern.ts");
+    defer freeLspDiagnostics(T.allocator, modern);
+    try T.expectEqual(@as(usize, 0), modern.len);
+}
+
 test "Service: Home diagnostics preserve HM code space and source" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
