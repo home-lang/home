@@ -7546,6 +7546,43 @@ test "Program: an importer sees inferred functions, library values, bigints and 
     try T.expectEqual(@as(usize, 5), count);
 }
 
+test "Program: imported iterator preserves completion value narrowing (#969)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const owner = "export function steps() { return [1, 2].values(); }";
+    const app =
+        \\import { steps } from './owner';
+        \\const result = steps().next();
+        \\if (result.done) {
+        \\  const completed: undefined = result.value;
+        \\  void completed;
+        \\} else {
+        \\  const yielded: number = result.value;
+        \\  void yielded;
+        \\}
+    ;
+    try vfs.addFile("/owner.ts", owner);
+    try vfs.addFile("/app.ts", app);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var source_exports = SourceExportResolver{
+        .resolver = &resolver,
+        .program = &program,
+        .arena = std.heap.ArenaAllocator.init(T.allocator),
+    };
+    defer source_exports.arena.deinit();
+    const app_id = try program.add("/app.ts", app);
+    _ = try program.add("/owner.ts", owner);
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), program.fileById(app_id).compilation.?.diagnostics.items.len);
+}
+
 test "Program: imported class heritage retains base nominal identity" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
