@@ -4630,10 +4630,13 @@ const EvolvingAnyBlockCursor = struct {
     prefix_flows: std.ArrayListUnmanaged(?TypeId) = .empty,
 };
 
+const KeyofInferenceKind = enum { index, literal };
+
 const KeyofInferenceCandidate = struct {
     binder: TypeId,
     source: TypeId,
     shape: TypeId,
+    kind: KeyofInferenceKind = .literal,
 };
 
 const KeyofInferenceContext = struct {
@@ -176489,6 +176492,22 @@ pub const Checker = struct {
         return keys;
     }
 
+    fn directCompositeKeyofDiagnosticSource(self: *Checker, source: TypeId) CheckError!?TypeId {
+        const operand = self.directKeyofOperand(source) orelse return null;
+        const flags = self.interner.pool.flagsOf(operand);
+        if (flags.is_union) {
+            const apparent = try self.keyofConstraintBaseDomain(source);
+            return if (apparent != source) apparent else null;
+        }
+        if (!flags.is_intersection) return null;
+        const parts = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(operand));
+        defer self.gpa.free(parts);
+        var keys: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer keys.deinit(self.gpa);
+        for (parts) |part| try keys.append(self.gpa, try self.keyofTypeFromOperand(part));
+        return self.interner.internUnion(keys.items) catch return error.OutOfMemory;
+    }
+
     /// TypeScript's LiteralKeyof inference builds an object candidate from
     /// literal keys. Only string literals create members; numeric and symbol
     /// literals still create an empty candidate. A union contributes one
@@ -176571,12 +176590,55 @@ pub const Checker = struct {
         const operand = self.directKeyofOperand(target) orelse return false;
         const binder = self.resolvedTypeParameterPlaceholder(operand);
         if (std.mem.indexOfScalar(TypeId, context.binders, binder) == null) return false;
-        for (context.candidates.items) |candidate| {
-            if (candidate.binder == binder and candidate.source == source) return true;
+        if (self.directKeyofOperand(source)) |source_operand| {
+            if (self.interner.isDirectTypeParameter(source_operand)) {
+                try self.appendKeyofCandidate(context, binder, source, source_operand, .index);
+                return true;
+            }
+            if (self.interner.pool.flagsOf(source_operand).is_intersection) {
+                const parts = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(source_operand));
+                defer self.gpa.free(parts);
+                var recorded = false;
+                for (parts) |part| {
+                    if (self.interner.isDirectTypeParameter(part)) {
+                        try self.appendKeyofCandidate(context, binder, source, part, .index);
+                        recorded = true;
+                    } else {
+                        const keys = try self.keyofTypeFromOperand(part);
+                        if (try self.keyofInferenceShape(keys)) |shape| {
+                            try self.appendKeyofCandidate(context, binder, source, shape, .literal);
+                            recorded = true;
+                        }
+                    }
+                }
+                if (recorded) return true;
+            }
+            if (self.interner.pool.flagsOf(source_operand).is_union) {
+                const apparent = try self.keyofConstraintBaseDomain(source);
+                if (try self.keyofInferenceShape(apparent)) |shape| {
+                    try self.appendKeyofCandidate(context, binder, source, shape, .literal);
+                    return true;
+                }
+            }
         }
         const shape = (try self.keyofInferenceShape(source)) orelse return false;
-        try context.candidates.append(self.gpa, .{ .binder = binder, .source = source, .shape = shape });
+        try self.appendKeyofCandidate(context, binder, source, shape, .literal);
         return true;
+    }
+
+    fn appendKeyofCandidate(
+        self: *Checker,
+        context: *KeyofInferenceContext,
+        binder: TypeId,
+        source: TypeId,
+        shape: TypeId,
+        kind: KeyofInferenceKind,
+    ) CheckError!void {
+        for (context.candidates.items) |candidate| {
+            if (candidate.binder == binder and candidate.source == source and
+                candidate.shape == shape and candidate.kind == kind) return;
+        }
+        try context.candidates.append(self.gpa, .{ .binder = binder, .source = source, .shape = shape, .kind = kind });
     }
 
     fn applyKeyofInferenceCandidates(
@@ -176587,16 +176649,54 @@ pub const Checker = struct {
     ) CheckError!void {
         for (binders) |binder| {
             if (subs.contains(binder)) continue;
+            var indexes: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer indexes.deinit(self.gpa);
             var shapes: std.ArrayListUnmanaged(TypeId) = .empty;
             defer shapes.deinit(self.gpa);
             for (candidates) |candidate| {
-                if (candidate.binder == binder) try shapes.append(self.gpa, candidate.shape);
+                if (candidate.binder != binder) continue;
+                if (candidate.kind == .index)
+                    try indexes.append(self.gpa, candidate.shape)
+                else
+                    try shapes.append(self.gpa, candidate.shape);
             }
-            if (shapes.items.len == 0) continue;
-            const inferred = if (shapes.items.len == 1)
+            if (indexes.items.len == 0 and shapes.items.len == 0) continue;
+            if (indexes.items.len > 1) {
+                std.mem.sort(TypeId, indexes.items, self, struct {
+                    fn less(checker: *Checker, a: TypeId, b: TypeId) bool {
+                        const a_decl = checker.type_parameter_decl_nodes.get(a) orelse return a < b;
+                        const b_decl = checker.type_parameter_decl_nodes.get(b) orelse return a < b;
+                        if (checker.hir.parentOf(a_decl) != checker.hir.parentOf(b_decl)) return a < b;
+                        return checker.hir.spanOf(a_decl).start < checker.hir.spanOf(b_decl).start;
+                    }
+                }.less);
+            }
+            var inferred = if (indexes.items.len > 0)
+                indexes.items[0]
+            else if (shapes.items.len == 1)
                 shapes.items[0]
             else
                 self.interner.internIntersection(shapes.items) catch return error.OutOfMemory;
+            // Index-vs-Index inference has higher priority than LiteralKeyof.
+            // Contravariant candidates choose a common subtype, retaining
+            // the first when no candidate is a subtype of the other.
+            if (indexes.items.len > 1) for (indexes.items[1..]) |candidate| {
+                if (self.interner.isDirectTypeParameter(candidate) and self.interner.isDirectTypeParameter(inferred)) {
+                    var current = candidate;
+                    var steps: usize = 0;
+                    while (steps < self.interner.pool.typeCount()) : (steps += 1) {
+                        const constraint = self.typeParameterConstraint(current) orelse break;
+                        if (constraint == inferred) {
+                            inferred = candidate;
+                            break;
+                        }
+                        if (constraint == current or !self.interner.isDirectTypeParameter(constraint)) break;
+                        current = constraint;
+                    }
+                } else if (try self.genericConstraintAssignable(candidate, inferred)) {
+                    inferred = candidate;
+                }
+            };
             if (self.typeParameterConstraint(binder)) |raw_constraint| {
                 const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
                 if (constraint != types.Primitive.any and constraint != types.Primitive.unknown and
@@ -180521,6 +180621,8 @@ pub const Checker = struct {
                                 }
                             }
                         }
+                    } else if (inferred_keyof_target != null) {
+                        diagnostic_arg_t = (try self.directCompositeKeyofDiagnosticSource(diagnostic_arg_t)) orelse diagnostic_arg_t;
                     }
                     // A bigint literal argument is a fresh literal, as a
                     // numeric one is; the formatter widens it against a
@@ -183446,6 +183548,33 @@ pub const Checker = struct {
                     "Argument of type '{s}' is not assignable to parameter of type 'Function'.",
                     .{text},
                 );
+            }
+        }
+        // A distributed `keyof (A & B)` is a union of symbolic index
+        // types. Those constituents have precise names even though the
+        // general simple-name path avoids rendering arbitrary unions.
+        if (display_arg_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(display_arg_t).is_union and
+            self.directKeyofOperand(param_t) != null)
+        {
+            const members = self.interner.unionMembers(display_arg_t);
+            var all_index_types = members.len > 0;
+            for (members) |member| {
+                if (self.directKeyofOperand(member) == null) {
+                    all_index_types = false;
+                    break;
+                }
+            }
+            if (all_index_types) {
+                if (try self.allocSimpleTypeName(display_arg_t)) |arg_name| {
+                    if (try self.allocSimpleTypeName(param_t)) |param_name| {
+                        return try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                            .{ arg_name, param_name },
+                        );
+                    }
+                }
             }
         }
         const literal_key_target = if (self.unionHasBroadPropertyKeyMember(param_t))
@@ -200589,6 +200718,68 @@ pub const Checker = struct {
         return null;
     }
 
+    /// An index type first relates through its property-key base. When the
+    /// target is another symbolic index, the failing primitive key is then
+    /// checked against the keys guaranteed by the target's constraint. The
+    /// original index must be related to that guarantee as well: its base
+    /// includes keys that the other parameter need not have.
+    fn indexTypeRelationExplanation(
+        self: *Checker,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError!?DiagnosticChainEntry {
+        const source_operand = self.directKeyofOperand(source) orelse return null;
+        const target_operand = self.directKeyofOperand(target) orelse return null;
+        if (!self.interner.isDirectTypeParameter(source_operand) or
+            !self.interner.isDirectTypeParameter(target_operand) or
+            source_operand == target_operand) return null;
+        const constraint = self.terminalTypeParameterConstraint(target_operand) orelse return null;
+        const guaranteed = try self.keyofTypeFromOperand(constraint);
+        if (self.directKeyofOperand(guaranteed) != null or guaranteed == types.Primitive.never) return null;
+
+        const base = try self.propertyKeyUnionType();
+        var base_to_target = try self.typeNotAssignableChainEntry(base, target, false);
+        if (base_to_target.children.len != 1) return null;
+        var key_to_target = base_to_target.children[0];
+        var witness: ?TypeId = null;
+        const base_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(base));
+        defer self.gpa.free(base_members);
+        for (base_members) |member| {
+            const assignable = self.engine.isAssignableTo(member, target) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => false,
+            };
+            if (!assignable) {
+                witness = member;
+                break;
+            }
+        }
+        const key = witness orelse return null;
+        const key_fits = self.engine.isAssignableTo(key, guaranteed) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => false,
+        };
+        if (key_fits) return null;
+
+        var key_to_guaranteed = try self.typeNotAssignableChainEntry(key, guaranteed, false);
+        var source_to_guaranteed = try self.typeNotAssignableChainEntry(source, guaranteed, false);
+        const base_to_guaranteed = try self.typeNotAssignableChainEntry(base, guaranteed, false);
+        const arena = self.diag_arena.allocator();
+        const source_children = try arena.alloc(DiagnosticChainEntry, 1);
+        source_children[0] = base_to_guaranteed;
+        source_to_guaranteed.children = source_children;
+        const guaranteed_children = try arena.alloc(DiagnosticChainEntry, 1);
+        guaranteed_children[0] = source_to_guaranteed;
+        key_to_guaranteed.children = guaranteed_children;
+        const target_children = try arena.alloc(DiagnosticChainEntry, 1);
+        target_children[0] = key_to_guaranteed;
+        key_to_target.children = target_children;
+        const base_children = try arena.alloc(DiagnosticChainEntry, 1);
+        base_children[0] = key_to_target;
+        base_to_target.children = base_children;
+        return base_to_target;
+    }
+
     fn typeNotAssignableChainEntry(
         self: *Checker,
         source: TypeId,
@@ -200617,6 +200808,11 @@ pub const Checker = struct {
             "Type '{s}' is not assignable to type '{s}'.",
             .{ src_t, tgt_t },
         );
+        if (try self.indexTypeRelationExplanation(source, target)) |child| {
+            const children = try arena.alloc(DiagnosticChainEntry, 1);
+            children[0] = child;
+            return .{ .code = TsCodes.type_not_assignable, .message = msg, .children = children };
+        }
         if (try self.assignmentTypeParameterInstantiationChainEntry(source, target)) |child| {
             const children = try arena.alloc(DiagnosticChainEntry, 1);
             children[0] = child;
@@ -200640,7 +200836,9 @@ pub const Checker = struct {
             !self.interner.pool.flagsOf(target).is_union)
         {
             var incompatible: ?TypeId = null;
-            for (self.interner.unionMembers(source)) |member| {
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(source));
+            defer self.gpa.free(members);
+            for (members) |member| {
                 if (incompatible == null and !(self.engine.isAssignableTo(member, target) catch false)) {
                     incompatible = member;
                 }
@@ -207441,28 +207639,24 @@ pub const Checker = struct {
                     }
                 }
                 const flags = self.interner.pool.flagsOf(t);
-                if (flags.is_keyof) {
-                    const payload_idx = self.interner.pool.payloadOf(t);
-                    if (payload_idx < self.interner.pool.keyof_payloads.items.len) {
-                        const k = self.interner.pool.keyof_payloads.items[payload_idx];
-                        const operand_name = (try self.allocSimpleTypeName(k.operand)) orelse break :blk null;
-                        const operand_flags = if (k.operand < self.interner.pool.typeCount())
-                            self.interner.pool.flagsOf(k.operand)
-                        else
-                            std.mem.zeroes(types.TypeFlags);
-                        break :blk if (operand_flags.is_union or operand_flags.is_intersection)
-                            try std.fmt.allocPrint(
-                                self.diag_arena.allocator(),
-                                "keyof ({s})",
-                                .{operand_name},
-                            )
-                        else
-                            try std.fmt.allocPrint(
-                                self.diag_arena.allocator(),
-                                "keyof {s}",
-                                .{operand_name},
-                            );
-                    }
+                if (self.directKeyofOperand(t)) |operand| {
+                    const operand_name = (try self.allocSimpleTypeName(operand)) orelse break :blk null;
+                    const operand_flags = if (operand < self.interner.pool.typeCount())
+                        self.interner.pool.flagsOf(operand)
+                    else
+                        std.mem.zeroes(types.TypeFlags);
+                    break :blk if (operand_flags.is_union or operand_flags.is_intersection)
+                        try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "keyof ({s})",
+                            .{operand_name},
+                        )
+                    else
+                        try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "keyof {s}",
+                            .{operand_name},
+                        );
                 }
                 // Render fixed-width tuples (`[any]`, `[undefined, null]`)
                 // so TS2322 prose includes the literal element shape.
@@ -301888,6 +302082,10 @@ test "checker: compound keyof flags cannot read a colliding direct payload (#998
     }
     try T.expectEqual(@as(?TypeId, null), s.checker.directKeyofOperand(union_t));
     try T.expectEqual(@as(?TypeId, null), s.checker.directKeyofOperand(intersection_t));
+    const union_name = (try s.checker.allocSimpleTypeName(union_t)) orelse return error.TestUnexpectedResult;
+    try T.expect(std.mem.indexOf(u8, union_name, "keyof T") != null);
+    try T.expect(std.mem.indexOf(u8, union_name, "undefined") != null);
+    try T.expect(std.mem.indexOf(u8, union_name, "Collision") == null);
 }
 
 test "checker: only keys guaranteed by a type parameter constraint are writable (#998)" {
