@@ -90932,6 +90932,31 @@ pub const Checker = struct {
         return false;
     }
 
+    /// A tuple declaration writes each fresh literal to an already chosen
+    /// element type. In a generic `keyof T` slot there is no call-site
+    /// inference: the literal must be a key guaranteed by T's constraint.
+    /// Numeric tuple elements widen before this relation, unlike string keys.
+    fn reportTupleLiteralKeyWriteMismatches(self: *Checker, init_node: NodeId, tuple_node: NodeId) CheckError!bool {
+        const elements = hir_mod.arrayLiteralElements(self.hir, init_node);
+        var reported = false;
+        for (elements, 0..) |element, index| {
+            if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) continue;
+            const target = try self.tupleAnnotationElementTypeAt(tuple_node, index, elements.len);
+            const operand = self.directKeyofOperand(target) orelse continue;
+            if (!self.interner.isDirectTypeParameter(operand)) continue;
+            const literal = (try self.expressionNarrowLiteralType(element)) orelse continue;
+            if (!self.typeIsPropertyKeyLiteral(literal)) continue;
+            const source = if (self.hir.kindOf(element) == .literal_number)
+                types.Primitive.number_t
+            else
+                literal;
+            if (try self.typeArgSatisfiesKeyofConstrainedOperand(source, target)) continue;
+            try self.reportTypeNotAssignable(element, self.widenLiteralType(literal), target, "Type is not assignable to tuple element type.");
+            reported = true;
+        }
+        return reported;
+    }
+
     fn checkArrayLiteralAgainstTupleAnnotation(self: *Checker, init_node: NodeId, tuple_node: NodeId) CheckError!bool {
         const values = hir_mod.arrayLiteralElements(self.hir, init_node);
         const elems = hir_mod.tupleTypeElements(self.hir, tuple_node);
@@ -95873,6 +95898,7 @@ pub const Checker = struct {
                 if (self.hir.kindOf(v.init) == .array_literal) {
                     if (v.type_annotation != hir_mod.none_node_id) {
                         if (self.tupleAnnotationSourceNode(v.type_annotation)) |tuple_node| {
+                            if (try self.reportTupleLiteralKeyWriteMismatches(v.init, tuple_node)) break :blk false;
                             if (self.tupleTypeHasRestElement(tuple_node)) {
                                 break :blk try self.checkArrayLiteralAgainstTupleAnnotation(v.init, tuple_node);
                             }
@@ -198814,6 +198840,8 @@ pub const Checker = struct {
             }
             return false;
         }
+        // Call arguments may use this literal to infer T before relating
+        // `keyof T`. Declaration writes check guaranteed keys separately.
         if (flags.is_keyof) {
             return self.hir.kindOf(value_node) == .literal_string or
                 self.hir.kindOf(value_node) == .literal_number or
@@ -199706,7 +199734,14 @@ pub const Checker = struct {
         // private/public mismatch (TS2325) or a missing index signature
         // (TS2329). The chain renders as indented continuation lines and
         // never affects the header line, so this is purely additive.
-        const chain = self.buildAssignabilityElaborationChain(source, target) catch &.{};
+        var chain = self.buildAssignabilityElaborationChain(source, target) catch &.{};
+        if (chain.len == 0) {
+            if (try self.keyofLiteralWriteWitness(node, source, target)) |witness| {
+                const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                children[0] = witness;
+                chain = children;
+            }
+        }
         const related = try self.sourceTypeParameterConstraintHintRelated(source, target);
         try self.diagnostics.append(self.gpa, .{
             .node = node,
@@ -204137,7 +204172,7 @@ pub const Checker = struct {
                 target,
             ) catch &.{});
         if (chain.len == 0) {
-            if (try self.keyofLiteralWriteWitness(value_node, target)) |witness| {
+            if (try self.keyofLiteralWriteWitness(value_node, null, target)) |witness| {
                 const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
                 children[0] = witness;
                 chain = children;
@@ -204165,7 +204200,7 @@ pub const Checker = struct {
     /// A variable initializer widens to `string` in the TS2322 header, while
     /// TypeScript's nested relation uses the original literal against the
     /// keys guaranteed by the type parameter's constraint.
-    fn keyofLiteralWriteWitness(self: *Checker, value_node: NodeId, target: TypeId) CheckError!?DiagnosticChainEntry {
+    fn keyofLiteralWriteWitness(self: *Checker, value_node: NodeId, report_source: ?TypeId, target: TypeId) CheckError!?DiagnosticChainEntry {
         const operand = self.directKeyofOperand(target) orelse return null;
         if (!self.interner.isDirectTypeParameter(operand)) return null;
         const first_constraint = self.typeParameterConstraint(operand) orelse blk: {
@@ -204182,8 +204217,14 @@ pub const Checker = struct {
             break :blk types.Primitive.unknown;
         };
         if (first_constraint == operand) return null;
-        const literal = (try self.expressionNarrowLiteralType(value_node)) orelse return null;
-        if (!self.typeIsPropertyKeyLiteral(literal)) return null;
+        // Positional tuple elements compare the widened numeric element
+        // (`number`), while a direct string write retains its literal in the
+        // nested explanation. Use the actual relation source for that case.
+        const literal = if (report_source == @as(?TypeId, types.Primitive.number_t))
+            types.Primitive.number_t
+        else
+            (try self.expressionNarrowLiteralType(value_node)) orelse return null;
+        if (literal != types.Primitive.number_t and !self.typeIsPropertyKeyLiteral(literal)) return null;
         var parameter_links: std.ArrayListUnmanaged(TypeId) = .empty;
         defer parameter_links.deinit(self.gpa);
         var constraint = first_constraint;
