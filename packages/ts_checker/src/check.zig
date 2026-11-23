@@ -58045,6 +58045,11 @@ pub const Checker = struct {
                 !self.containsFreeTypeParameter(index_t))
             {
                 if (try self.resolveObjectIndexedAccessType(object_t, index_t)) |resolved| return resolved;
+                // Instantiation has no indexed-access syntax node to blame
+                // for a missing property. TypeScript's getIndexedAccessType
+                // returns unknown in this case (an indexed type node itself
+                // uses an error type instead).
+                return types.Primitive.unknown;
             }
             if (object_t == indexed.object and index_t == indexed.index) return t;
             return self.interner.internIndexedAccess(object_t, index_t) catch return t;
@@ -81107,9 +81112,15 @@ pub const Checker = struct {
         const source_t = try self.expressionLiteralType(value_node, value_t);
         const target_t = self.interner.internIndexedAccess(obj_t, idx_t) catch return error.OutOfMemory;
         if (try self.checkerAssignableTo(source_t, target_t)) return false;
-        const source_name = (try self.literalExpressionAssignmentName(value_node, source_t)) orelse
-            (try self.allocAssignmentDiagnosticTypeName(source_t)) orelse
-            (try self.allocObjectTypeShape(source_t)) orelse
+        // A fixed object's generic key is checked against the values of
+        // every possible key. TypeScript widens a fresh return literal in
+        // that relation, while a generic object's indexed value retains the
+        // literal: a subtype of its constraint may narrow the property.
+        const generic_object = self.typeIsGenericObjectType(obj_t, 0);
+        const report_source = if (generic_object) source_t else self.widenLiteralType(source_t);
+        const source_name = (try self.literalExpressionAssignmentName(value_node, report_source)) orelse
+            (try self.allocAssignmentDiagnosticTypeName(report_source)) orelse
+            (try self.allocObjectTypeShape(report_source)) orelse
             return false;
         const target_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(return_type_node));
         const msg = try std.fmt.allocPrint(
@@ -81117,10 +81128,29 @@ pub const Checker = struct {
             "Type '{s}' is not assignable to type '{s}'.",
             .{ source_name, target_name },
         );
+        var chain: []const DiagnosticChainEntry = &.{};
+        if (generic_object) {
+            const detail = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' could be instantiated with an arbitrary type which could be unrelated to '{s}'.",
+                .{ target_name, source_name },
+            );
+            chain = try self.diag_arena.allocator().dupe(DiagnosticChainEntry, &.{.{
+                .code = TsCodes.arbitrary_type_parameter_instantiation_unrelated,
+                .message = detail,
+            }});
+        } else if (try self.indexedAccessBaseConstraint(target_t, 0)) |constraint| {
+            if (!(try self.checkerAssignableTo(report_source, constraint))) {
+                chain = try self.diag_arena.allocator().dupe(DiagnosticChainEntry, &.{
+                    try self.plainTypeNotAssignableEntry(report_source, constraint),
+                });
+            }
+        }
         try self.diagnostics.append(self.gpa, .{
             .node = return_stmt,
             .code = TsCodes.type_not_assignable,
             .message = msg,
+            .chain = chain,
         });
         return true;
     }
@@ -178923,6 +178953,10 @@ pub const Checker = struct {
                 // substitution of the real argument.
                 if (!self.containsThisTypeParameter(new_obj) and !self.typeIsGenericObjectType(new_obj, 0)) {
                     if (try self.resolveObjectIndexedAccessType(new_obj, new_idx)) |resolved| return resolved;
+                    // A fully instantiated index with no matching member
+                    // becomes unknown; keep only still-generic accesses
+                    // symbolic for later substitution.
+                    return types.Primitive.unknown;
                 }
             }
             return self.interner.internIndexedAccess(new_obj, new_idx) catch return t;
@@ -183891,6 +183925,7 @@ pub const Checker = struct {
     /// in TypeScript, so `boolean | null` is not reduced. This changes
     /// diagnostic prose only, never assignability or the target type itself.
     fn singleNonNullishUnionDiagnosticTarget(self: *Checker, source: TypeId, target: TypeId) ?TypeId {
+        if (source == types.Primitive.unknown) return null;
         if (self.typeIncludesNull(source) or self.typeIncludesUndefined(source)) return null;
         if (source < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source).is_union) return null;
         if (target >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(target).is_union) return null;
@@ -249155,6 +249190,68 @@ test "checker: generic indexed return checks both object and index dependence" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: indexed return mismatches explain generic object and key constraints" {
+    const s = try newSetup(
+        \\interface Required { value: number }
+        \\interface Optional { value?: number }
+        \\interface Uniform { a: number; b: number }
+        \\function generic<T extends Required>(value: string): T["value"] { return value; }
+        \\function optional<T extends Optional>(): T["value"] { return "wrong"; }
+        \\function uniform<K extends keyof Uniform>(): Uniform[K] { return "wrong"; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    const expected = [_]struct { header: []const u8, detail: []const u8, code: u32 }{
+        .{
+            .header = "Type 'string' is not assignable to type 'T[\"value\"]'.",
+            .detail = "'T[\"value\"]' could be instantiated with an arbitrary type which could be unrelated to 'string'.",
+            .code = TsCodes.arbitrary_type_parameter_instantiation_unrelated,
+        },
+        .{
+            .header = "Type '\"wrong\"' is not assignable to type 'T[\"value\"]'.",
+            .detail = "'T[\"value\"]' could be instantiated with an arbitrary type which could be unrelated to '\"wrong\"'.",
+            .code = TsCodes.arbitrary_type_parameter_instantiation_unrelated,
+        },
+        .{
+            .header = "Type 'string' is not assignable to type 'Uniform[K]'.",
+            .detail = "Type 'string' is not assignable to type 'number'.",
+            .code = TsCodes.type_not_assignable,
+        },
+    };
+    var found = [3]bool{ false, false, false };
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        for (expected, 0..) |want, i| {
+            if (!std.mem.eql(u8, diagnostic.message, want.header)) continue;
+            try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
+            try T.expectEqual(want.code, diagnostic.chain[0].code);
+            try T.expectEqualStrings(want.detail, diagnostic.chain[0].message);
+            found[i] = true;
+        }
+    }
+    for (found) |present| try T.expect(present);
+}
+
+test "checker: instantiated indexed return without a property is unknown" {
+    const s = try newSetup(
+        \\interface Optional { value?: number }
+        \\declare function pick<T extends Optional>(o: T): T["value"];
+        \\const result = pick({});
+        \\const n: number | undefined = result;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'unknown' is not assignable to type 'number | undefined'.",
+    ));
 }
 
 test "checker: constrained optional indexed return preserves read undefined" {
