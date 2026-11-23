@@ -293,6 +293,8 @@ pub const BuildInfo = struct {
     version: []const u8,
     file_names: [][]const u8,
     file_infos: []FileInfo,
+    /// One-based indices into file_names for project roots.
+    root_file_ids: []usize,
     options_json: []const u8,
     has_pending_emit: bool = false,
     has_errors: bool = false,
@@ -303,6 +305,7 @@ pub const BuildInfo = struct {
         gpa.free(self.file_names);
         for (self.file_infos) |fi| gpa.free(fi.version);
         gpa.free(self.file_infos);
+        gpa.free(self.root_file_ids);
         gpa.free(self.options_json);
         self.* = undefined;
     }
@@ -400,10 +403,24 @@ pub fn read(gpa: std.mem.Allocator, json_bytes: []const u8) ReadError!BuildInfo 
         try gpa.dupe(u8, "{}");
     errdefer gpa.free(options_json);
 
+    const roots_src = if (root.get("root")) |value| blk: {
+        if (value != .array) return error.InvalidJson;
+        break :blk value.array.items;
+    } else &.{};
+    const root_file_ids = try gpa.alloc(usize, roots_src.len);
+    errdefer gpa.free(root_file_ids);
+    for (roots_src, 0..) |entry, i| {
+        if (entry != .integer or entry.integer < 1) return error.InvalidFileInfoIndex;
+        const index: usize = @intCast(entry.integer);
+        if (index > file_names.len) return error.InvalidFileInfoIndex;
+        root_file_ids[i] = index;
+    }
+
     return BuildInfo{
         .version = version_dup,
         .file_names = file_names,
         .file_infos = file_infos,
+        .root_file_ids = root_file_ids,
         .options_json = options_json,
         .has_pending_emit = buildInfoFieldIsPresent(root, "affectedFilesPendingEmit") or
             buildInfoFieldIsPresent(root, "pendingEmit") or
@@ -575,6 +592,7 @@ test "tsbuildinfo: round-trip emit then read preserves fields" {
     try T.expectEqualStrings("src/util.ts", info.file_names[2]);
 
     try T.expectEqual(@as(usize, 3), info.file_infos.len);
+    try T.expectEqual(@as(usize, 0), info.root_file_ids.len);
     try T.expectEqualStrings("lib-hash", info.file_infos[0].version);
     try T.expectEqual(true, info.file_infos[0].affects_global_scope);
     try T.expectEqual(true, info.file_infos[0].is_declaration);
@@ -646,6 +664,7 @@ test "tsbuildinfo: read official 5.7 and native 7 pending diagnostic state" {
         try T.expectEqualStrings("lib", info.file_infos[0].version);
         try T.expect(info.file_infos[0].affects_global_scope);
         try T.expectEqualStrings("main", info.file_infos[1].version);
+        try T.expectEqualSlices(usize, &.{2}, info.root_file_ids);
         try T.expect(info.has_errors);
         try T.expect(info.has_pending_emit);
     }
@@ -682,6 +701,13 @@ test "tsbuildinfo: retained declaration emit diagnostics require another build" 
 test "tsbuildinfo: parallel file-info length must match file names" {
     const json =
         \\{"version":"5.7.3","fileNames":["main.ts"],"fileInfos":[],"options":{}}
+    ;
+    try T.expectError(error.InvalidFileInfoIndex, read(T.allocator, json));
+}
+
+test "tsbuildinfo: root indices must refer to existing files" {
+    const json =
+        \\{"version":"5.7.3","fileNames":["main.ts"],"fileInfos":["hash"],"root":[2]}
     ;
     try T.expectError(error.InvalidFileInfoIndex, read(T.allocator, json));
 }
