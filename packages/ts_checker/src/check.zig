@@ -159281,6 +159281,21 @@ pub const Checker = struct {
         return self.resolvedTypeParameterPlaceholder(tp.constraint);
     }
 
+    /// Follow a chain of type-parameter constraints to its concrete base.
+    /// Every edge consumes a distinct TypeId in an acyclic chain, so the
+    /// interner's type count bounds traversal without rejecting long chains.
+    fn terminalTypeParameterConstraint(self: *Checker, start: TypeId) ?TypeId {
+        var current = start;
+        var steps: usize = 0;
+        while (steps < self.interner.pool.typeCount()) : (steps += 1) {
+            const constraint = self.typeParameterConstraint(current) orelse return null;
+            if (constraint == current) return null;
+            if (!self.interner.isDirectTypeParameter(constraint)) return constraint;
+            current = constraint;
+        }
+        return null;
+    }
+
     /// Resolve a type parameter to its base constraint (apparent type)
     /// for operator-operand validity checks. tsc's
     /// `checkBinaryLikeExpression` types operands via `getApparentType`,
@@ -160147,7 +160162,7 @@ pub const Checker = struct {
         {
             return false;
         }
-        const operand_constraint = self.typeParameterConstraint(operand_t) orelse return false;
+        const operand_constraint = self.terminalTypeParameterConstraint(operand_t) orelse return false;
         if (operand_constraint == operand_t) return false;
         // A type parameter declared `T extends any` is still free to be
         // instantiated with a type lacking this key. Its constraint does
@@ -189071,7 +189086,7 @@ pub const Checker = struct {
             return true;
         }
         if (self.directKeyofOperand(t)) |keyof_operand| {
-            const raw_operand = self.typeParameterConstraint(keyof_operand) orelse keyof_operand;
+            const raw_operand = self.terminalTypeParameterConstraint(keyof_operand) orelse keyof_operand;
             const operand = self.resolveGenericType(raw_operand) catch return false;
             if (operand >= self.interner.pool.typeCount()) return false;
             if (!self.interner.pool.flagsOf(operand).is_object_type) return false;
@@ -198391,7 +198406,7 @@ pub const Checker = struct {
             return (try self.stringLiteralAssignableToType(sid, c.true_branch)) and
                 (try self.stringLiteralAssignableToType(sid, c.false_branch));
         }
-        if (flags.is_type_parameter) {
+        if (self.interner.isDirectTypeParameter(target_t)) {
             const constraint = self.typeParameterConstraint(target_t) orelse return false;
             if (constraint == target_t) return false;
             return try self.stringLiteralAssignableToType(sid, constraint);
@@ -204139,7 +204154,7 @@ pub const Checker = struct {
     fn keyofLiteralWriteWitness(self: *Checker, value_node: NodeId, target: TypeId) CheckError!?DiagnosticChainEntry {
         const operand = self.directKeyofOperand(target) orelse return null;
         if (!self.interner.isDirectTypeParameter(operand)) return null;
-        const constraint = self.typeParameterConstraint(operand) orelse blk: {
+        const first_constraint = self.typeParameterConstraint(operand) orelse blk: {
             // `typeParameterConstraint` intentionally treats `unknown` as
             // unconstrained. The diagnostic still distinguishes an explicit
             // `extends unknown` from a parameter with no `extends` clause.
@@ -204152,15 +204167,36 @@ pub const Checker = struct {
             }
             break :blk types.Primitive.unknown;
         };
-        if (constraint == operand) return null;
+        if (first_constraint == operand) return null;
         const literal = (try self.expressionNarrowLiteralType(value_node)) orelse return null;
         if (!self.typeIsPropertyKeyLiteral(literal)) return null;
+        var parameter_links: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer parameter_links.deinit(self.gpa);
+        var constraint = first_constraint;
+        var steps: usize = 0;
+        while (self.interner.isDirectTypeParameter(constraint)) {
+            if (steps >= self.interner.pool.typeCount()) return null;
+            try parameter_links.append(self.gpa, constraint);
+            constraint = self.typeParameterConstraint(constraint) orelse return null;
+            steps += 1;
+        }
         const guaranteed = if (constraint == types.Primitive.any or constraint == types.Primitive.unknown)
             types.Primitive.never
         else
             try self.keyofTypeFromOperand(constraint);
         if (try self.genericConstraintAssignable(literal, guaranteed)) return null;
-        return try self.typeNotAssignableChainEntry(literal, guaranteed, false);
+        var entry = try self.typeNotAssignableChainEntry(literal, guaranteed, false);
+        var link_index = parameter_links.items.len;
+        while (link_index > 0) {
+            link_index -= 1;
+            const link_keyof = self.interner.internKeyof(parameter_links.items[link_index]) catch return error.OutOfMemory;
+            var parent = try self.typeNotAssignableChainEntry(types.Primitive.string_t, link_keyof, false);
+            const child = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+            child[0] = entry;
+            parent.children = child;
+            entry = parent;
+        }
+        return entry;
     }
 
     fn tryReportCheckJsElementAnimateAssignment(
