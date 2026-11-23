@@ -177,6 +177,8 @@ for (const config of [
   'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-guards.json',
   'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-next-result.json',
   'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-library-2023.json',
+  'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-library-2024.json',
+  'packages/ts_cli/testdata/issue969-iterator-helpers/tsconfig-library-fragment.json',
   'packages/ts_cli/testdata/issue987-array-statics/tsconfig-statics.json',
   'packages/ts_cli/testdata/issue987-array-statics/tsconfig-targets.json',
   'packages/ts_cli/testdata/issue987-array-statics/tsconfig-explicit.json',
