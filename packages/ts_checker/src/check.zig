@@ -90267,6 +90267,20 @@ pub const Checker = struct {
         t: TypeId,
         out: *std.ArrayListUnmanaged(TypeId),
     ) CheckError!void {
+        var active: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer active.deinit(self.gpa);
+        return self.collectKeyofBroadIndexKeysInner(t, out, &active);
+    }
+
+    fn collectKeyofBroadIndexKeysInner(
+        self: *Checker,
+        t: TypeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+        active: *std.AutoHashMapUnmanaged(TypeId, void),
+    ) CheckError!void {
+        if (active.contains(t)) return;
+        try active.put(self.gpa, t, {});
+        defer _ = active.remove(t);
         if (try self.keyofApparentSurface(t)) |surface| {
             // `lib.es5.d.ts` declares `String`'s `readonly [index: number]:
             // string`, so `keyof string` carries `number`. The synthesized
@@ -90274,24 +90288,24 @@ pub const Checker = struct {
             // `string` assignable to Home's structural `T[]` — so the key it
             // would contribute is added here instead.
             if (surface == self.lib_cache.string_proto) try self.appendUniqueTypeId(out, types.Primitive.number_t);
-            return try self.collectKeyofBroadIndexKeys(surface, out);
+            return try self.collectKeyofBroadIndexKeysInner(surface, out, active);
         }
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_instantiation and !flags.is_union and !flags.is_intersection) {
             const surface = try self.resolveGenericType(t);
-            if (surface != t) try self.collectKeyofBroadIndexKeys(surface, out);
+            if (surface != t) try self.collectKeyofBroadIndexKeysInner(surface, out, active);
             return;
         }
         if (self.interner.isDirectTypeParameter(t)) {
             const constraint = self.typeParameterConstraint(t) orelse return;
             if (constraint == t) return;
-            return try self.collectKeyofBroadIndexKeys(constraint, out);
+            return try self.collectKeyofBroadIndexKeysInner(constraint, out, active);
         }
         if (flags.is_union or flags.is_intersection) {
             const members = try self.gpa.dupe(TypeId, if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t));
             defer self.gpa.free(members);
-            for (members) |member| try self.collectKeyofBroadIndexKeys(member, out);
+            for (members) |member| try self.collectKeyofBroadIndexKeysInner(member, out, active);
             return;
         }
         if (!flags.is_object_type) return;

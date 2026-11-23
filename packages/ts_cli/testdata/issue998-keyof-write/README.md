@@ -9,3 +9,6 @@ status with TypeScript 5.7.3.
 `tsconfig-chain.json` checks a 21-parameter acyclic constraint chain. The
 guaranteed key passes, and the invalid key produces the same nested relation
 diagnostic as both native TypeScript compilers.
+
+`tsconfig-cycle.json` checks that a circular pair reports both declaration
+errors and the invalid write without recursive key collection or a crash.
