@@ -86,6 +86,7 @@ const configs = fixtureConfigs('packages/ts_cli/testdata').filter(path =>
   path.includes('/issue994-keyof-alias/') ||
   path.includes('/issue998-keyof-write/') ||
   path.includes('/issue998-keyof-infer/') ||
+  path.includes('/issue1063-indexed-return/') ||
   path.includes('/issue975-union-member-order/') ||
   path.includes('/issue1005-bigint-literal/') ||
   path.includes('/issue1006-qualified-enum/') ||
@@ -261,6 +262,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-cycle-composite.json',
   'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-cycle-three.json',
   'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-cycle-four.json',
+  'packages/ts_cli/testdata/issue1063-indexed-return/tsconfig.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
