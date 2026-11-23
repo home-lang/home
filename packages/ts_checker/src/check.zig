@@ -176432,9 +176432,11 @@ pub const Checker = struct {
         if (self.interner.pool.flagsOf(source).is_union) {
             const source_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(source));
             defer self.gpa.free(source_members);
+            var inferred_member = false;
             for (source_members) |member| {
-                if (!try self.appendKeyofInferenceMember(member, &members, &broad_string)) return null;
+                if (try self.appendKeyofInferenceMember(member, &members, &broad_string)) inferred_member = true;
             }
+            if (!inferred_member) return null;
         } else if (!try self.appendKeyofInferenceMember(source, &members, &broad_string)) {
             return null;
         }
@@ -180408,14 +180410,20 @@ pub const Checker = struct {
                     if (display_param_t == types.Primitive.never) {
                         diagnostic_arg_t = self.expressionLiteralType(args[i], diagnostic_arg_t) catch diagnostic_arg_t;
                     }
-                    // `K extends keyof U` is related to the inferred key
-                    // domain through its apparent constraint. Keep that
-                    // expanded domain in TS2345 and its symbol elaboration.
-                    if (inferred_keyof_target != null and self.interner.isDirectTypeParameter(diagnostic_arg_t)) {
-                        if (self.typeParameterConstraint(diagnostic_arg_t)) |constraint| {
-                            if (self.directKeyofOperand(constraint)) |key_operand| {
-                                if (self.interner.isDirectTypeParameter(key_operand))
-                                    diagnostic_arg_t = try self.propertyKeyUnionType();
+                    // A source parameter constrained to a key union is
+                    // related through that apparent union. Keep its expanded
+                    // domain in TS2345 and the failing-member elaboration.
+                    if (self.interner.isDirectTypeParameter(diagnostic_arg_t)) {
+                        if (self.directKeyofOperand(param_t)) |key_binder| {
+                            if (self.signatureOwnsTypeParameter(sig, key_binder)) {
+                                if (self.typeParameterConstraint(diagnostic_arg_t)) |constraint| {
+                                    if (self.directKeyofOperand(constraint)) |key_operand| {
+                                        if (self.interner.isDirectTypeParameter(key_operand))
+                                            diagnostic_arg_t = try self.propertyKeyUnionType();
+                                    } else if (self.interner.pool.flagsOf(constraint).is_union) {
+                                        diagnostic_arg_t = constraint;
+                                    }
+                                }
                             }
                         }
                     }

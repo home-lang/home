@@ -22,3 +22,7 @@ different object shapes; the plain string constraint leaves the result unknown.
 `tsconfig-constraint-alias.json` checks `keyof` aliases, a literal union
 constraint, and the single-key boundary. A single literal constraint leaves
 the inferred result unknown; a union of literal keys contributes members.
+
+`tsconfig-key-domains.json` checks broad string, number, and symbol members in
+source key constraints. Members that cannot form a LiteralKeyof candidate do
+not erase candidates contributed by string or string-literal members.
