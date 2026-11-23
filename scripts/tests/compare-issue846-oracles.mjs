@@ -259,6 +259,8 @@ for (const config of [
   'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-deep-composite.json',
   'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-long-composite.json',
   'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-cycle-composite.json',
+  'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-cycle-three.json',
+  'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-cycle-four.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
