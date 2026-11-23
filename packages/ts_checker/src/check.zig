@@ -110754,7 +110754,9 @@ pub const Checker = struct {
 
     fn unconstrainedTypeParameter(self: *Checker, t: TypeId) bool {
         if (!self.interner.isDirectTypeParameter(t)) return false;
-        return self.typeParameterConstraint(t) == null;
+        // A circular chain has no usable base constraint. Treat it like an
+        // unconstrained parameter for member access and inference checks.
+        return self.typeParameterBaseConstraint(t) == null;
     }
 
     fn typeParameterObjectPrototypeMember(self: *Checker, t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
@@ -110871,9 +110873,9 @@ pub const Checker = struct {
         // so callers don't fall through to the TS2339 path.
         if (flags.is_any) return types.Primitive.any;
         if (flags.is_type_parameter and !flags.is_union and !flags.is_intersection) {
-            const constraint = self.typeParameterConstraint(obj_t) orelse return null;
-            if (constraint == obj_t) return null;
-            return try self.lookupObjectMember(constraint, name);
+            const base = self.typeParameterBaseConstraint(obj_t) orelse return null;
+            if (base == obj_t) return null;
+            return try self.lookupObjectMember(base, name);
         }
         if (try self.refreshedGenericAliasObjectMember(obj_t, name)) |t| {
             return try self.refreshDeferredCallableReturns(t);
@@ -115888,9 +115890,9 @@ pub const Checker = struct {
             return self.interner.internUnion(resolved.items) catch return error.OutOfMemory;
         }
         if (self.interner.isDirectTypeParameter(t)) {
-            const constraint = self.typeParameterConstraint(t) orelse return null;
-            if (constraint == t) return null;
-            return self.lookupArrayLikePrototypeMember(constraint, name);
+            const base = self.typeParameterBaseConstraint(t) orelse return null;
+            if (base == t) return null;
+            return self.lookupArrayLikePrototypeMember(base, name);
         }
         if (!flags.is_object_type or flags.is_intersection) return null;
         if (try self.isIteratorObjectType(t)) return try self.iteratorHelperMember(t, name);
@@ -138652,9 +138654,12 @@ pub const Checker = struct {
             return;
         }
         if (flags.is_type_parameter) {
-            if (self.typeParameterConstraint(t)) |constraint| {
-                if (constraint != t) try self.collectConstructSignatures(constraint, out);
-            }
+            // Constructor signatures of a parameter come from its concrete
+            // base. Following one constraint per recursive call loops forever
+            // on a circular pair (`T extends U, U extends T`); the shared
+            // base resolver detects that cycle without limiting valid depth.
+            const base = self.typeParameterBaseConstraint(t) orelse return;
+            if (base != t) try self.collectConstructSignatures(base, out);
             return;
         }
         if (!flags.is_object_type) return;
@@ -159379,14 +159384,19 @@ pub const Checker = struct {
         const initial_flags = self.interner.pool.flagsOf(t);
         if (!initial_flags.is_type_parameter or initial_flags.is_union or initial_flags.is_intersection) return null;
         var cur = self.typeParameterConstraint(t) orelse return null;
-        var depth: usize = 0;
-        while (depth < 16) : (depth += 1) {
-            if (cur >= self.interner.pool.typeCount()) return cur;
-            const flags = self.interner.pool.flagsOf(cur);
-            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) return cur;
+        // A valid constraint chain may be longer than 16 links. Use two
+        // runners to detect cycles without allocating or losing its concrete
+        // base when the chain is acyclic.
+        var slow = cur;
+        var fast = cur;
+        while (self.interner.isDirectTypeParameter(cur)) {
             const next = self.typeParameterConstraint(cur) orelse return cur;
-            if (next == cur) return cur;
+            if (next == cur) return null;
             cur = next;
+            slow = self.typeParameterConstraint(slow) orelse types.Primitive.none;
+            const fast_one = self.typeParameterConstraint(fast) orelse types.Primitive.none;
+            fast = self.typeParameterConstraint(fast_one) orelse types.Primitive.none;
+            if (fast != types.Primitive.none and slow == fast) return null;
         }
         return cur;
     }
@@ -183581,22 +183591,30 @@ pub const Checker = struct {
                 );
             }
         }
-        // A distributed `keyof (A & B)` is a union of symbolic index
-        // types. Those constituents have precise names even though the
-        // general simple-name path avoids rendering arbitrary unions.
+        // A distributed `keyof (A & B)` contains symbolic index types and
+        // may also contain concrete property names from a fixed member.
+        // Those constituents have precise names even though the general
+        // simple-name path avoids rendering arbitrary unions.
         if (display_arg_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(display_arg_t).is_union and
             self.directKeyofOperand(param_t) != null)
         {
             const members = self.interner.unionMembers(display_arg_t);
-            var all_index_types = members.len > 0;
+            var all_key_types = members.len > 0;
+            var has_index_type = false;
             for (members) |member| {
-                if (self.directKeyofOperand(member) == null) {
-                    all_index_types = false;
-                    break;
+                if (self.directKeyofOperand(member) != null) {
+                    has_index_type = true;
+                    continue;
                 }
+                if (member < self.interner.pool.typeCount()) {
+                    const flags = self.interner.pool.flagsOf(member);
+                    if (flags.is_literal and (flags.is_string or flags.is_number or flags.is_symbol)) continue;
+                }
+                all_key_types = false;
+                break;
             }
-            if (all_index_types) {
+            if (all_key_types and has_index_type) {
                 if (try self.allocSimpleTypeName(display_arg_t)) |arg_name| {
                     if (try self.allocSimpleTypeName(param_t)) |param_name| {
                         return try std.fmt.allocPrint(
@@ -200901,7 +200919,9 @@ pub const Checker = struct {
             children[0] = child;
             return .{ .code = TsCodes.type_not_assignable, .message = msg, .children = children };
         }
-        if (target == types.Primitive.never and self.interner.isDirectTypeParameter(source)) {
+        if (target == types.Primitive.never and self.interner.isDirectTypeParameter(source) and
+            self.typeParameterBaseConstraint(source) != null)
+        {
             var constraints: std.ArrayListUnmanaged(TypeId) = .empty;
             defer constraints.deinit(self.gpa);
             var seen: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
@@ -201285,7 +201305,21 @@ pub const Checker = struct {
                 // Wrapping a nullish member in another nullish child would
                 // print the same "Type 'null' ..." explanation twice.
                 const display_target = self.singleNonNullishUnionDiagnosticTarget(member, target) orelse target;
-                entries[0] = try self.typeNotAssignableChainEntry(member, display_target, false);
+                // When a composite keyof distributes into a symbolic index
+                // and a concrete key, the failed key is related through its
+                // primitive property-key base ("fixed" -> string). Keep the
+                // literal in the union header, but use that base for the
+                // relation explanation, as TypeScript does.
+                var relation_member = member;
+                if (self.directKeyofOperand(display_target) != null and self.typeIsPropertyKeyLiteral(member)) {
+                    for (members) |candidate| {
+                        if (self.directKeyofOperand(candidate) != null) {
+                            relation_member = self.widenLiteralType(member);
+                            break;
+                        }
+                    }
+                }
+                entries[0] = try self.typeNotAssignableChainEntry(relation_member, display_target, false);
                 // Readonly-to-mutable already states the reason for failure;
                 // tsc does not elaborate its element type underneath TS4104.
                 if (entries[0].code == TsCodes.type_not_assignable) {
@@ -205278,7 +205312,9 @@ pub const Checker = struct {
         // When a constrained type parameter is assigned to `never`, the
         // constraint explains the failed relation. TypeScript keeps the
         // parameter in the header and shows its constraint as the child.
-        if (target == types.Primitive.never and self.interner.isDirectTypeParameter(source)) {
+        if (target == types.Primitive.never and self.interner.isDirectTypeParameter(source) and
+            self.typeParameterBaseConstraint(source) != null)
+        {
             if (self.typeParameterConstraint(source)) |constraint| {
                 if (constraint != source and constraint != types.Primitive.any and
                     constraint != types.Primitive.unknown and constraint != types.Primitive.never and
@@ -211743,8 +211779,8 @@ pub const Checker = struct {
         const f = self.interner.pool.flagsOf(t);
         if (f.is_any or f.is_unknown) return false;
         if (self.isBareTypeParameter(t)) {
-            const constraint = self.typeParameterConstraint(t) orelse return false;
-            return constraint != t and self.typeIsPossiblyNullishStrict(constraint);
+            const base = self.typeParameterBaseConstraint(t) orelse return false;
+            return base != t and self.typeIsPossiblyNullishStrict(base);
         }
         if (f.is_union) {
             if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
