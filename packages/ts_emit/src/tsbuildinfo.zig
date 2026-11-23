@@ -2,13 +2,12 @@
 //!
 //! `tsc --incremental` writes a `.tsbuildinfo` JSON file recording
 //! the program's state so the *next* invocation can skip files
-//! whose source + dependencies haven't changed. The format is a
-//! ratified contract; downstream tools (Webpack's ts-loader,
-//! Bazel's ts_project, etc.) parse it.
+//! whose source + dependencies haven't changed. The reader accepts
+//! the indexed object emitted by Home and the parallel file-info array
+//! emitted by TypeScript 5.7.3 and native 7.0.2.
 //!
-//! tsc 5.x format (simplified — full schema includes affected-files
-//! tracking, semantic diagnostics, etc., which we add as we need
-//! them):
+//! Home's current writer format (simplified; #1065 tracks diagnostic and
+//! pending-emit serialization):
 //!
 //! ```json
 //! {
@@ -21,8 +20,8 @@
 //! }
 //! ```
 //!
-//! We emit a deterministic, byte-stable version so round-tripping
-//! through tsc's reader works out-of-the-box.
+//! Do not treat the writer's present output as a complete upstream build
+//! state: it does not yet retain diagnostic spans or pending output.
 
 const std = @import("std");
 
@@ -155,7 +154,7 @@ pub fn read(gpa: std.mem.Allocator, json_bytes: []const u8) ReadError!BuildInfo 
     if (names_val != .array) return error.MissingFileNames;
 
     const infos_val = root.get("fileInfos") orelse return error.MissingFileInfos;
-    if (infos_val != .object) return error.MissingFileInfos;
+    if (infos_val != .object and infos_val != .array) return error.MissingFileInfos;
 
     const names_src = names_val.array.items;
     const file_names = try gpa.alloc([]const u8, names_src.len);
@@ -183,35 +182,31 @@ pub fn read(gpa: std.mem.Allocator, json_bytes: []const u8) ReadError!BuildInfo 
         gpa.free(file_infos);
     }
 
-    var it = infos_val.object.iterator();
-    while (it.next()) |entry| {
-        const idx = std.fmt.parseInt(usize, entry.key_ptr.*, 10) catch
-            return error.InvalidFileInfoIndex;
-        if (idx >= file_infos.len) return error.InvalidFileInfoIndex;
-        if (entry.value_ptr.* != .object) return error.InvalidJson;
-        const fi_obj = entry.value_ptr.*.object;
-
-        const ver_val = fi_obj.get("version") orelse return error.InvalidJson;
-        if (ver_val != .string) return error.InvalidJson;
-        const ver_dup = try gpa.dupe(u8, ver_val.string);
-
-        var affects_global = false;
-        if (fi_obj.get("affectsGlobalScope")) |v| {
-            if (v == .bool) affects_global = v.bool;
-        }
-        var is_decl = false;
-        if (fi_obj.get("isDeclaration")) |v| {
-            if (v == .bool) is_decl = v.bool;
-        }
-
-        // Duplicate keys: free the prior allocation so we don't leak.
-        if (seen[idx]) gpa.free(file_infos[idx].version);
-        file_infos[idx] = .{
-            .version = ver_dup,
-            .affects_global_scope = affects_global,
-            .is_declaration = is_decl,
-        };
-        seen[idx] = true;
+    switch (infos_val) {
+        .object => |object| {
+            var it = object.iterator();
+            while (it.next()) |entry| {
+                const idx = std.fmt.parseInt(usize, entry.key_ptr.*, 10) catch
+                    return error.InvalidFileInfoIndex;
+                if (idx >= file_infos.len) return error.InvalidFileInfoIndex;
+                const info = try readFileInfo(gpa, entry.value_ptr.*);
+                // Duplicate keys: free the prior allocation so we don't leak.
+                if (seen[idx]) gpa.free(file_infos[idx].version);
+                file_infos[idx] = info;
+                seen[idx] = true;
+            }
+        },
+        .array => |array| {
+            // Official TypeScript 5.7 and native 7 use a parallel array.
+            // Their root and diagnostic indices are one-based, but the
+            // fileNames/fileInfos arrays themselves share zero-based slots.
+            if (array.items.len != file_infos.len) return error.InvalidFileInfoIndex;
+            for (array.items, 0..) |item, idx| {
+                file_infos[idx] = try readFileInfo(gpa, item);
+                seen[idx] = true;
+            }
+        },
+        else => unreachable,
     }
     for (seen) |s| if (!s) return error.InvalidFileInfoIndex;
 
@@ -234,8 +229,45 @@ pub fn read(gpa: std.mem.Allocator, json_bytes: []const u8) ReadError!BuildInfo 
             buildInfoFieldIsPresent(root, "programEmitPending"),
         .has_errors = buildInfoFieldIsTrue(root, "errors") or
             buildInfoFieldIsTrue(root, "hasErrors") or
-            buildInfoFieldIsTrue(root, "checkPending"),
+            buildInfoFieldIsTrue(root, "checkPending") or
+            hasRecordedDiagnostics(root, "semanticDiagnosticsPerFile") or
+            hasRecordedDiagnostics(root, "emitDiagnosticsPerFile"),
     };
+}
+
+fn readFileInfo(gpa: std.mem.Allocator, value: std.json.Value) ReadError!FileInfo {
+    // Official compilers write a bare version string when no other file-info
+    // field is needed; Home's earlier writer used only object entries.
+    if (value == .string) return .{ .version = try gpa.dupe(u8, value.string) };
+    if (value != .object) return error.InvalidJson;
+    const object = value.object;
+    const version = object.get("version") orelse return error.InvalidJson;
+    if (version != .string) return error.InvalidJson;
+    return .{
+        .version = try gpa.dupe(u8, version.string),
+        .affects_global_scope = if (object.get("affectsGlobalScope")) |v| v == .bool and v.bool else false,
+        .is_declaration = if (object.get("isDeclaration")) |v| v == .bool and v.bool else false,
+    };
+}
+
+fn hasRecordedDiagnostics(root: std.json.ObjectMap, field: []const u8) bool {
+    const value = root.get(field) orelse return false;
+    if (value != .array) return false;
+    for (value.array.items) |entry| {
+        // A bare file index means it was checked without errors. An entry
+        // [fileIndex, diagnostics] retains errors in both reference formats.
+        if (entry != .array or entry.array.items.len < 2) continue;
+        const diagnostics = entry.array.items[1];
+        if (diagnostics != .array) continue;
+        for (diagnostics.array.items) |diagnostic| {
+            if (diagnostic != .object) continue;
+            const category = diagnostic.object.get("category") orelse continue;
+            // DiagnosticCategory.Error is 1 in both TypeScript versions.
+            // Warnings and suggestions do not block an up-to-date build.
+            if (category == .integer and category.integer == 1) return true;
+        }
+    }
+    return false;
 }
 
 fn buildInfoFieldIsTrue(root: std.json.ObjectMap, name: []const u8) bool {
@@ -416,4 +448,59 @@ test "tsbuildinfo: read parses a hand-written minimal document" {
     try T.expectEqualStrings("{\"target\":7}", info.options_json);
     try T.expectEqual(true, info.has_pending_emit);
     try T.expectEqual(true, info.has_errors);
+}
+
+test "tsbuildinfo: read official 5.7 and native 7 pending diagnostic state" {
+    // Reduced from the actual composite/noEmitOnError outputs for TS2322.
+    // Both compilers use one-based indices in root and diagnostic records.
+    const reference_documents = [_][]const u8{
+        \\{"version":"5.7.3","fileNames":["./lib.d.ts","./main.ts"],"fileInfos":[{"version":"lib","affectsGlobalScope":true},"main"],"root":[2],"options":{},"semanticDiagnosticsPerFile":[1,[2,[{"start":13,"length":1,"code":2322,"category":1,"messageText":"Type 'string' is not assignable to type 'number'."}]]],"affectedFilesPendingEmit":[2],"emitSignatures":[2]}
+        ,
+        \\{"version":"7.0.2","fileNames":["./lib.d.ts","./main.ts"],"fileInfos":[{"version":"lib","affectsGlobalScope":true,"impliedNodeFormat":1},"main"],"root":[2],"options":{},"semanticDiagnosticsPerFile":[1,[2,[{"pos":13,"end":14,"code":2322,"category":1,"messageKey":"Type_0_is_not_assignable_to_type_1_2322","messageArgs":["string","number"]}]]],"affectedFilesPendingEmit":[2],"emitSignatures":[2]}
+    };
+    for (reference_documents) |json| {
+        var info = try read(T.allocator, json);
+        defer info.deinit(T.allocator);
+        try T.expectEqual(@as(usize, 2), info.file_infos.len);
+        try T.expectEqualStrings("lib", info.file_infos[0].version);
+        try T.expect(info.file_infos[0].affects_global_scope);
+        try T.expectEqualStrings("main", info.file_infos[1].version);
+        try T.expect(info.has_errors);
+        try T.expect(info.has_pending_emit);
+    }
+}
+
+test "tsbuildinfo: checked files without diagnostics remain clean" {
+    const json =
+        \\{"version":"5.7.3","fileNames":["main.ts"],"fileInfos":["version"],"root":[1],"options":{},"semanticDiagnosticsPerFile":[1]}
+    ;
+    var info = try read(T.allocator, json);
+    defer info.deinit(T.allocator);
+    try T.expect(!info.has_errors);
+    try T.expect(!info.has_pending_emit);
+}
+
+test "tsbuildinfo: retained warnings do not mark a build as errored" {
+    const json =
+        \\{"version":"5.7.3","fileNames":["main.ts"],"fileInfos":["version"],"options":{},"semanticDiagnosticsPerFile":[[1,[{"start":0,"length":1,"code":9000,"category":0,"messageText":"warning"}]]]}
+    ;
+    var info = try read(T.allocator, json);
+    defer info.deinit(T.allocator);
+    try T.expect(!info.has_errors);
+}
+
+test "tsbuildinfo: retained declaration emit diagnostics require another build" {
+    const json =
+        \\{"version":"5.7.3","fileNames":["main.ts"],"fileInfos":["version"],"options":{},"emitDiagnosticsPerFile":[[1,[{"start":0,"length":1,"code":4025,"category":1,"messageText":"Exported variable has or is using private name."}]]]}
+    ;
+    var info = try read(T.allocator, json);
+    defer info.deinit(T.allocator);
+    try T.expect(info.has_errors);
+}
+
+test "tsbuildinfo: parallel file-info length must match file names" {
+    const json =
+        \\{"version":"5.7.3","fileNames":["main.ts"],"fileInfos":[],"options":{}}
+    ;
+    try T.expectError(error.InvalidFileInfoIndex, read(T.allocator, json));
 }
