@@ -246,6 +246,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue994-keyof-alias/tsconfig.json',
   'packages/ts_cli/testdata/issue998-keyof-write/tsconfig.json',
   'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig.json',
+  'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-grouping.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)

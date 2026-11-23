@@ -172833,11 +172833,21 @@ pub const Checker = struct {
 
         const n = @min(param_ts.len, arg_ts.len);
         for (0..n) |i| {
-            const source = if (i < arg_nodes.len and self.directKeyofOperand(param_ts[i]) != null)
-                try self.expressionLiteralType(arg_nodes[i], arg_ts[i])
+            const handled_keyof = if (i < arg_nodes.len and self.rest_signatures.contains(sig) and i + 1 == param_ts.len)
+                try self.recordRestKeyofSyntaxCandidates(param_ts[i], arg_nodes[i..], arg_ts[i..])
+            else if (i < arg_nodes.len)
+                try self.recordKeyofSyntaxCandidates(param_ts[i], arg_nodes[i], arg_ts[i])
             else
-                arg_ts[i];
-            try self.inferFromPair(param_ts[i], source, &subs);
+                false;
+            // Structural inference still sees the argument. Once its
+            // literal-key candidate came from syntax, do not also record
+            // a widened string/array candidate for the same argument.
+            const prior_context = self.keyof_inference_context;
+            if (handled_keyof) self.keyof_inference_context = null;
+            {
+                defer self.keyof_inference_context = prior_context;
+                try self.inferFromPair(param_ts[i], arg_ts[i], &subs);
+            }
         }
         try self.applyKeyofInferenceCandidates(keyof_context.binders, keyof_candidates.items, &subs);
         // Apply defaults in declaration order even when a parameter appears
@@ -176249,6 +176259,80 @@ pub const Checker = struct {
         return true;
     }
 
+    /// Recover the literal-key candidate from an argument's syntax before
+    /// its ordinary expression type widens. Array elements contribute one
+    /// union-key object; fixed tuple positions contribute separately.
+    fn recordKeyofSyntaxCandidates(self: *Checker, target: TypeId, argument: NodeId, source: TypeId) CheckError!bool {
+        if (self.directKeyofOperand(target) != null) {
+            return try self.recordKeyofInferenceCandidate(target, try self.expressionLiteralType(argument, source));
+        }
+        if (self.hir.kindOf(argument) != .array_literal or target >= self.interner.pool.typeCount()) return false;
+        const elements = hir_mod.arrayLiteralElements(self.hir, argument);
+        if (self.isTupleShapedTarget(target)) {
+            var recorded = false;
+            for (elements, 0..) |element, index| {
+                if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) continue;
+                const element_target = self.tupleElementType(target, index);
+                if (self.directKeyofOperand(element_target) == null) continue;
+                const element_type = if (self.hir.typeOf(element) != types.Primitive.none)
+                    self.hir.typeOf(element)
+                else
+                    try self.checkExpression(element);
+                const literal = try self.expressionLiteralType(element, element_type);
+                if (try self.recordKeyofInferenceCandidate(element_target, literal)) recorded = true;
+            }
+            return recorded;
+        }
+        const element_target = self.interner.objectNumberIndex(target);
+        if (self.directKeyofOperand(element_target) == null) return false;
+        var literals: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer literals.deinit(self.gpa);
+        for (elements) |element| {
+            if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) return false;
+            const element_type = if (self.hir.typeOf(element) != types.Primitive.none)
+                self.hir.typeOf(element)
+            else
+                try self.checkExpression(element);
+            try literals.append(self.gpa, try self.expressionLiteralType(element, element_type));
+        }
+        if (literals.items.len == 0) return false;
+        const key_source = if (literals.items.len == 1)
+            literals.items[0]
+        else
+            self.interner.internUnion(literals.items) catch return error.OutOfMemory;
+        return try self.recordKeyofInferenceCandidate(element_target, key_source);
+    }
+
+    fn recordRestKeyofSyntaxCandidates(
+        self: *Checker,
+        rest_target: TypeId,
+        arguments: []const NodeId,
+        sources: []const TypeId,
+    ) CheckError!bool {
+        const element_target = self.interner.objectNumberIndex(rest_target);
+        if (self.directKeyofOperand(element_target) == null) return false;
+        var recorded = false;
+        const count = @min(arguments.len, sources.len);
+        for (arguments[0..count], sources[0..count]) |argument, source| {
+            if (self.hir.kindOf(argument) == .spread) {
+                if (self.isTupleShapedTarget(source)) {
+                    const fixed_count = self.tupleFixedPrefixCount(source);
+                    for (0..fixed_count) |index| {
+                        const element = self.tupleElementType(source, index);
+                        if (try self.recordKeyofInferenceCandidate(element_target, element)) recorded = true;
+                    }
+                } else {
+                    const element = try self.iterableElementType(source);
+                    if (try self.recordKeyofInferenceCandidate(element_target, element)) recorded = true;
+                }
+            } else {
+                const literal = try self.expressionLiteralType(argument, source);
+                if (try self.recordKeyofInferenceCandidate(element_target, literal)) recorded = true;
+            }
+        }
+        return recorded;
+    }
+
     /// TypeScript's LiteralKeyof inference turns a string-literal key into
     /// an object with that property of type any. A union of keys contributes
     /// one object; separate argument sites contribute separate objects.
@@ -176340,6 +176424,29 @@ pub const Checker = struct {
             }
             try subs.put(self.gpa, binder, inferred);
         }
+    }
+
+    /// A spread into a generic keyof rest slot is checked before the return
+    /// is instantiated. Relate the spread's whole element union to the keys
+    /// of the call's inferred T, including candidates from other arguments.
+    fn inferredRestSpreadKeyofAssignable(
+        self: *Checker,
+        call_node: NodeId,
+        sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError!bool {
+        if (hir_mod.callTypeArgs(self.hir, call_node).len != 0) return false;
+        const operand = self.directKeyofOperand(target) orelse return false;
+        if (!self.signatureOwnsTypeParameter(sig, operand)) return false;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferCallSubstitutions(sig, args, arg_types, &subs);
+        const inferred = subs.get(operand) orelse return false;
+        const keys = try self.keyofTypeFromOperand(inferred);
+        return try self.genericConstraintAssignable(source, keys);
     }
 
     fn inferCallSubstitutions(
@@ -180360,7 +180467,9 @@ pub const Checker = struct {
                             arg_t = try self.iterableElementType(arg_t);
                         }
                     }
-                    const ok = self.isArgumentAssignableToParam(args[j], arg_t, target_t) catch true;
+                    const inferred_keyof_ok = self.hir.kindOf(args[j]) == .spread and
+                        try self.inferredRestSpreadKeyofAssignable(call_node, sig, args, arg_types, arg_t, target_t);
+                    const ok = inferred_keyof_ok or (self.isArgumentAssignableToParam(args[j], arg_t, target_t) catch true);
                     if (!ok) {
                         if (self.hir.kindOf(args[j]) == .spread and
                             self.spreadExpressionAlreadyHasCallShapeDiagnostic(args[j]))
@@ -180382,7 +180491,18 @@ pub const Checker = struct {
                         // names. Matches upstream baselines for
                         // `iterableArrayPattern{13,17,18,29}` etc.
                         const diagnostic_arg_t = try self.expressionLiteralType(args[j], arg_t);
-                        const missing_relation_target = try self.missingPropertyRelationTarget(target_t);
+                        var diagnostic_target_t = target_t;
+                        if (self.directKeyofOperand(target_t)) |operand| {
+                            if (self.signatureOwnsTypeParameter(sig, operand)) {
+                                if (self.typeParameterConstraint(operand)) |constraint| {
+                                    const guaranteed_keys = try self.keyofTypeFromOperand(constraint);
+                                    if (!try self.genericConstraintAssignable(arg_t, guaranteed_keys)) {
+                                        diagnostic_target_t = guaranteed_keys;
+                                    }
+                                }
+                            }
+                        }
+                        const missing_relation_target = try self.missingPropertyRelationTarget(diagnostic_target_t);
                         if (self.actualTupleLength(missing_relation_target) == null and
                             !self.argumentMissingPropertyUsesArgumentHeader(diagnostic_arg_t) and
                             try self.tryReportSinglePropertyMissingWithDisplayTarget(
@@ -180390,13 +180510,13 @@ pub const Checker = struct {
                                 args[j],
                                 diagnostic_arg_t,
                                 missing_relation_target,
-                                target_t,
+                                diagnostic_target_t,
                             ))
                         {
                             emitted_rest_mismatch = true;
                             continue;
                         }
-                        const msg = try self.formatCallArgumentNotAssignable(args[j], diagnostic_arg_t, target_t, j);
+                        const msg = try self.formatCallArgumentNotAssignable(args[j], diagnostic_arg_t, diagnostic_target_t, j);
                         try self.diagnostics.append(self.gpa, .{
                             .node = args[j],
                             .code = TsCodes.argument_type_mismatch,
