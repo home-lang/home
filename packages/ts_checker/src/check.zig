@@ -98892,6 +98892,17 @@ pub const Checker = struct {
         if (resolved_source != source_t or resolved_target != target_t) return self.checkerAssignableTo(resolved_source, resolved_target);
         if (self.noInferInnerType(source_t)) |inner| return self.checkerAssignableTo(inner, target_t);
         if (self.noInferInnerType(target_t)) |inner| return self.checkerAssignableTo(source_t, inner);
+        // If T is constrained to extend S, every key guaranteed by S is
+        // also a key of T. Keep the symbolic operands here: reducing either
+        // side to its apparent string | number | symbol domain loses this
+        // subtype relation (notably T extends S & Extra).
+        if (self.directKeyofOperand(source_t)) |source_operand| {
+            if (self.directKeyofOperand(target_t)) |target_operand| {
+                if (self.interner.isDirectTypeParameter(source_operand) and
+                    self.interner.isDirectTypeParameter(target_operand) and
+                    try self.indexCandidateIsSubtypeOf(target_operand, source_operand)) return true;
+            }
+        }
         if ((self.synthetic_program_class_origins.contains(source_t) or
             self.synthetic_program_class_origins.contains(target_t)) and
             self.classPrivateStructuralMismatch(target_t, source_t)) return false;
@@ -176641,6 +176652,36 @@ pub const Checker = struct {
         try context.candidates.append(self.gpa, .{ .binder = binder, .source = source, .shape = shape, .kind = kind });
     }
 
+    /// A parameter constrained by an intersection is a subtype of each
+    /// constituent, including a type parameter buried behind another
+    /// constraint. Ordinary structural assignability is too permissive for
+    /// two unrelated type parameters here: each can have a different future
+    /// instantiation even when their object constraints happen to overlap.
+    fn indexCandidateIsSubtypeOf(self: *Checker, candidate: TypeId, target: TypeId) CheckError!bool {
+        var pending: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer pending.deinit(self.gpa);
+        var seen: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer seen.deinit(self.gpa);
+        try pending.append(self.gpa, candidate);
+        while (pending.items.len > 0) {
+            const current = pending.items[pending.items.len - 1];
+            pending.items.len -= 1;
+            if (current == target) return true;
+            if (current >= self.interner.pool.typeCount() or seen.contains(current)) continue;
+            try seen.put(self.gpa, current, {});
+            if (self.interner.isDirectTypeParameter(current)) {
+                if (self.typeParameterConstraint(current)) |constraint| {
+                    try pending.append(self.gpa, constraint);
+                }
+            } else if (self.interner.pool.flagsOf(current).is_intersection) {
+                for (self.interner.intersectionMembers(current)) |member| {
+                    try pending.append(self.gpa, member);
+                }
+            }
+        }
+        return false;
+    }
+
     fn applyKeyofInferenceCandidates(
         self: *Checker,
         binders: []const TypeId,
@@ -176682,17 +176723,7 @@ pub const Checker = struct {
             // the first when no candidate is a subtype of the other.
             if (indexes.items.len > 1) for (indexes.items[1..]) |candidate| {
                 if (self.interner.isDirectTypeParameter(candidate) and self.interner.isDirectTypeParameter(inferred)) {
-                    var current = candidate;
-                    var steps: usize = 0;
-                    while (steps < self.interner.pool.typeCount()) : (steps += 1) {
-                        const constraint = self.typeParameterConstraint(current) orelse break;
-                        if (constraint == inferred) {
-                            inferred = candidate;
-                            break;
-                        }
-                        if (constraint == current or !self.interner.isDirectTypeParameter(constraint)) break;
-                        current = constraint;
-                    }
+                    if (try self.indexCandidateIsSubtypeOf(candidate, inferred)) inferred = candidate;
                 } else if (try self.genericConstraintAssignable(candidate, inferred)) {
                     inferred = candidate;
                 }
@@ -200718,6 +200749,21 @@ pub const Checker = struct {
         return null;
     }
 
+    fn plainTypeNotAssignableEntry(self: *Checker, source: TypeId, target: TypeId) CheckError!DiagnosticChainEntry {
+        const source_name = (try self.allocSimpleTypeName(source)) orelse
+            (try self.allocObjectTypeShape(source)) orelse "unknown";
+        const target_name = (try self.allocSimpleTypeName(target)) orelse
+            (try self.allocObjectTypeShape(target)) orelse "unknown";
+        return .{
+            .code = TsCodes.type_not_assignable,
+            .message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ source_name, target_name },
+            ),
+        };
+    }
+
     /// An index type first relates through its property-key base. When the
     /// target is another symbolic index, the failing primitive key is then
     /// checked against the keys guaranteed by the target's constraint. The
@@ -200733,14 +200779,36 @@ pub const Checker = struct {
         if (!self.interner.isDirectTypeParameter(source_operand) or
             !self.interner.isDirectTypeParameter(target_operand) or
             source_operand == target_operand) return null;
-        const constraint = self.terminalTypeParameterConstraint(target_operand) orelse return null;
-        const guaranteed = try self.keyofTypeFromOperand(constraint);
-        if (self.directKeyofOperand(guaranteed) != null or guaranteed == types.Primitive.never) return null;
+        // Keep each symbolic constraint boundary. A `keyof U` target with
+        // `U extends Base` elaborates through `keyof Base` before the keys
+        // guaranteed by Base; jumping straight to the terminal object loses
+        // both that relation and the repeated source-index witness.
+        var targets: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer targets.deinit(self.gpa);
+        var seen: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer seen.deinit(self.gpa);
+        var operand = target_operand;
+        var index_type = target;
+        while (true) {
+            if (seen.contains(operand)) return null;
+            try seen.put(self.gpa, operand, {});
+            try targets.append(self.gpa, index_type);
+            const constraint = self.typeParameterConstraint(operand) orelse return null;
+            if (self.interner.isDirectTypeParameter(constraint)) {
+                operand = constraint;
+                index_type = self.interner.internKeyof(constraint) catch return error.OutOfMemory;
+                continue;
+            }
+            const guaranteed = try self.keyofTypeFromOperand(constraint);
+            if (self.directKeyofOperand(guaranteed) != null or guaranteed == types.Primitive.never) return null;
+            try targets.append(self.gpa, guaranteed);
+            break;
+        }
+        const guaranteed = targets.items[targets.items.len - 1];
 
         const base = try self.propertyKeyUnionType();
-        var base_to_target = try self.typeNotAssignableChainEntry(base, target, false);
-        if (base_to_target.children.len != 1) return null;
-        var key_to_target = base_to_target.children[0];
+        const outer_base_to_target = try self.typeNotAssignableChainEntry(base, target, false);
+        if (outer_base_to_target.children.len != 1) return null;
         var witness: ?TypeId = null;
         const base_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(base));
         defer self.gpa.free(base_members);
@@ -200761,23 +200829,43 @@ pub const Checker = struct {
         };
         if (key_fits) return null;
 
-        var key_to_guaranteed = try self.typeNotAssignableChainEntry(key, guaranteed, false);
         var source_to_guaranteed = try self.typeNotAssignableChainEntry(source, guaranteed, false);
         const base_to_guaranteed = try self.typeNotAssignableChainEntry(base, guaranteed, false);
         const arena = self.diag_arena.allocator();
         const source_children = try arena.alloc(DiagnosticChainEntry, 1);
         source_children[0] = base_to_guaranteed;
         source_to_guaranteed.children = source_children;
-        const guaranteed_children = try arena.alloc(DiagnosticChainEntry, 1);
-        guaranteed_children[0] = source_to_guaranteed;
-        key_to_guaranteed.children = guaranteed_children;
-        const target_children = try arena.alloc(DiagnosticChainEntry, 1);
-        target_children[0] = key_to_guaranteed;
-        key_to_target.children = target_children;
-        const base_children = try arena.alloc(DiagnosticChainEntry, 1);
-        base_children[0] = key_to_target;
-        base_to_target.children = base_children;
-        return base_to_target;
+        var next_source = source_to_guaranteed;
+        var stage = targets.items.len - 1;
+        while (stage > 0) {
+            stage -= 1;
+            const current_target = targets.items[stage];
+            var base_to_target = try self.typeNotAssignableChainEntry(base, current_target, false);
+            if (base_to_target.children.len != 1) return null;
+            var key_to_target = base_to_target.children[0];
+            var descent = next_source;
+            var next_stage = targets.items.len;
+            while (next_stage > stage + 1) {
+                next_stage -= 1;
+                var key_to_next = try self.typeNotAssignableChainEntry(key, targets.items[next_stage], false);
+                const children = try arena.alloc(DiagnosticChainEntry, 1);
+                children[0] = descent;
+                key_to_next.children = children;
+                descent = key_to_next;
+            }
+            const target_children = try arena.alloc(DiagnosticChainEntry, 1);
+            target_children[0] = descent;
+            key_to_target.children = target_children;
+            const base_children = try arena.alloc(DiagnosticChainEntry, 1);
+            base_children[0] = key_to_target;
+            base_to_target.children = base_children;
+            var source_to_current = try self.plainTypeNotAssignableEntry(source, current_target);
+            const current_children = try arena.alloc(DiagnosticChainEntry, 1);
+            current_children[0] = base_to_target;
+            source_to_current.children = current_children;
+            next_source = source_to_current;
+        }
+        return next_source.children[0];
     }
 
     fn typeNotAssignableChainEntry(
@@ -200812,6 +200900,39 @@ pub const Checker = struct {
             const children = try arena.alloc(DiagnosticChainEntry, 1);
             children[0] = child;
             return .{ .code = TsCodes.type_not_assignable, .message = msg, .children = children };
+        }
+        if (target == types.Primitive.never and self.interner.isDirectTypeParameter(source)) {
+            var constraints: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer constraints.deinit(self.gpa);
+            var seen: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+            defer seen.deinit(self.gpa);
+            var current = source;
+            while (self.interner.isDirectTypeParameter(current) and !seen.contains(current)) {
+                try seen.put(self.gpa, current, {});
+                const constraint = self.typeParameterConstraint(current) orelse break;
+                if (constraint == types.Primitive.any or constraint == types.Primitive.unknown or
+                    constraint == types.Primitive.never or constraint >= self.interner.pool.typeCount() or
+                    self.interner.pool.flagsOf(constraint).is_union or seen.contains(constraint)) break;
+                try constraints.append(self.gpa, constraint);
+                current = constraint;
+            }
+            if (constraints.items.len > 0) {
+                var descendant: ?DiagnosticChainEntry = null;
+                var i = constraints.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    var entry = try self.plainTypeNotAssignableEntry(constraints.items[i], target);
+                    if (descendant) |child| {
+                        const children = try arena.alloc(DiagnosticChainEntry, 1);
+                        children[0] = child;
+                        entry.children = children;
+                    }
+                    descendant = entry;
+                }
+                const children = try arena.alloc(DiagnosticChainEntry, 1);
+                children[0] = descendant.?;
+                return .{ .code = TsCodes.type_not_assignable, .message = msg, .children = children };
+            }
         }
         if (try self.assignmentTypeParameterInstantiationChainEntry(source, target)) |child| {
             const children = try arena.alloc(DiagnosticChainEntry, 1);
