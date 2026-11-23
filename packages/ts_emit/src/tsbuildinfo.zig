@@ -78,6 +78,7 @@ pub const FileDiagnostics = struct {
 pub const BuildState = struct {
     roots: []const usize = &.{},
     semantic_diagnostics: []const FileDiagnostics = &.{},
+    emit_diagnostics: []const FileDiagnostics = &.{},
     affected_files_pending_emit: []const usize = &.{},
     emit_signatures: []const usize = &.{},
     /// For diagnostics without a source-file owner (e.g. config errors).
@@ -98,6 +99,9 @@ pub fn emit(
     if (options.state) |state| {
         for (state.roots) |id| if (id == 0 or id > file_names.len) return error.InvalidFileInfoIndex;
         for (state.semantic_diagnostics) |file| {
+            if (file.file_id == 0 or file.file_id > file_names.len) return error.InvalidFileInfoIndex;
+        }
+        for (state.emit_diagnostics) |file| {
             if (file.file_id == 0 or file.file_id > file_names.len) return error.InvalidFileInfoIndex;
         }
         for (state.affected_files_pending_emit) |id| if (id == 0 or id > file_names.len) return error.InvalidFileInfoIndex;
@@ -146,8 +150,27 @@ pub fn emit(
 fn appendBuildState(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), state: BuildState) !void {
     try buf.appendSlice(gpa, "  \"root\":");
     try appendIndexArray(gpa, buf, state.roots);
-    try buf.appendSlice(gpa, ",\n  \"semanticDiagnosticsPerFile\":[");
-    for (state.semantic_diagnostics, 0..) |file, i| {
+    try buf.appendSlice(gpa, ",\n  \"semanticDiagnosticsPerFile\":");
+    try appendFileDiagnostics(gpa, buf, state.semantic_diagnostics);
+    if (state.emit_diagnostics.len > 0) {
+        try buf.appendSlice(gpa, ",\n  \"emitDiagnosticsPerFile\":");
+        try appendFileDiagnostics(gpa, buf, state.emit_diagnostics);
+    }
+    if (state.affected_files_pending_emit.len > 0) {
+        try buf.appendSlice(gpa, ",\n  \"affectedFilesPendingEmit\":");
+        try appendIndexArray(gpa, buf, state.affected_files_pending_emit);
+    }
+    if (state.emit_signatures.len > 0) {
+        try buf.appendSlice(gpa, ",\n  \"emitSignatures\":");
+        try appendIndexArray(gpa, buf, state.emit_signatures);
+    }
+    if (state.errors) try buf.appendSlice(gpa, ",\n  \"errors\":true");
+    try buf.append(gpa, '\n');
+}
+
+fn appendFileDiagnostics(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), files: []const FileDiagnostics) !void {
+    try buf.append(gpa, '[');
+    for (files, 0..) |file, i| {
         if (i > 0) try buf.append(gpa, ',');
         try buf.append(gpa, '[');
         try appendIndex(gpa, buf, file.file_id);
@@ -159,16 +182,6 @@ fn appendBuildState(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), st
         try buf.appendSlice(gpa, "]]");
     }
     try buf.append(gpa, ']');
-    if (state.affected_files_pending_emit.len > 0) {
-        try buf.appendSlice(gpa, ",\n  \"affectedFilesPendingEmit\":");
-        try appendIndexArray(gpa, buf, state.affected_files_pending_emit);
-    }
-    if (state.emit_signatures.len > 0) {
-        try buf.appendSlice(gpa, ",\n  \"emitSignatures\":");
-        try appendIndexArray(gpa, buf, state.emit_signatures);
-    }
-    if (state.errors) try buf.appendSlice(gpa, ",\n  \"errors\":true");
-    try buf.append(gpa, '\n');
 }
 
 fn appendIndexArray(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), indices: []const usize) !void {
@@ -747,4 +760,40 @@ test "tsbuildinfo: escapes control bytes in retained messages" {
     defer parsed.deinit();
     const saved = parsed.value.object.get("semanticDiagnosticsPerFile").?.array.items[0].array.items[1].array.items[0].object;
     try T.expectEqualStrings("bad\x00value", saved.get("messageText").?.string);
+}
+
+test "tsbuildinfo: syntax failure records error and pending emit without semantic diagnostics" {
+    const out = try emit(T.allocator, &.{"main.ts"}, &.{.{ .version = "hash" }}, "{}", .{
+        .state = .{
+            .roots = &.{1},
+            .affected_files_pending_emit = &.{1},
+            .emit_signatures = &.{1},
+            .errors = true,
+        },
+    });
+    defer T.allocator.free(out);
+    var info = try read(T.allocator, out);
+    defer info.deinit(T.allocator);
+    try T.expect(info.has_errors);
+    try T.expect(info.has_pending_emit);
+    var parsed = try std.json.parseFromSlice(std.json.Value, T.allocator, out, .{});
+    defer parsed.deinit();
+    try T.expectEqual(@as(usize, 0), parsed.value.object.get("semanticDiagnosticsPerFile").?.array.items.len);
+}
+
+test "tsbuildinfo: declaration emit diagnostics are retained separately" {
+    const diagnostics = [_]SavedDiagnostic{.{ .start = 0, .length = 1, .code = 4025, .message = "Private name." }};
+    const files = [_]FileDiagnostics{.{ .file_id = 1, .diagnostics = &diagnostics }};
+    const out = try emit(T.allocator, &.{"main.ts"}, &.{.{ .version = "hash" }}, "{}", .{
+        .state = .{ .emit_diagnostics = &files },
+    });
+    defer T.allocator.free(out);
+    var parsed = try std.json.parseFromSlice(std.json.Value, T.allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try T.expectEqual(@as(usize, 0), root.get("semanticDiagnosticsPerFile").?.array.items.len);
+    try T.expectEqual(@as(i64, 4025), root.get("emitDiagnosticsPerFile").?.array.items[0].array.items[1].array.items[0].object.get("code").?.integer);
+    var info = try read(T.allocator, out);
+    defer info.deinit(T.allocator);
+    try T.expect(info.has_errors);
 }

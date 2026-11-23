@@ -1365,6 +1365,46 @@ fn sourceSha1Hex(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
     return hex;
 }
 
+/// TypeScript build-info spans are UTF-16 code-unit offsets, while the driver
+/// owns UTF-8 byte offsets. A cursor keeps sorted diagnostics linear in the
+/// source length; an overlapping/earlier anchor rewinds before scanning.
+const Utf16PositionCursor = struct {
+    source: []const u8,
+    byte_pos: usize = 0,
+    code_units: u32 = 0,
+
+    fn at(self: *Utf16PositionCursor, byte_position: usize) u32 {
+        const limit = @min(byte_position, self.source.len);
+        if (limit < self.byte_pos) {
+            self.byte_pos = 0;
+            self.code_units = 0;
+        }
+        while (self.byte_pos < limit) {
+            const len = std.unicode.utf8ByteSequenceLength(self.source[self.byte_pos]) catch 1;
+            if (len > 1 and self.byte_pos + len <= limit) {
+                if (std.unicode.wtf8Decode(self.source[self.byte_pos .. self.byte_pos + len])) |codepoint| {
+                    self.code_units += if (codepoint > 0xffff) 2 else 1;
+                    self.byte_pos += len;
+                    continue;
+                } else |_| {}
+            }
+            self.code_units += 1;
+            self.byte_pos += 1;
+        }
+        return self.code_units;
+    }
+};
+
+test "tsc_main: build-info spans use UTF-16 offsets" {
+    var cursor: Utf16PositionCursor = .{ .source = "aé😀z" };
+    try std.testing.expectEqual(@as(u32, 0), cursor.at(0));
+    try std.testing.expectEqual(@as(u32, 1), cursor.at(1));
+    try std.testing.expectEqual(@as(u32, 2), cursor.at(3));
+    try std.testing.expectEqual(@as(u32, 4), cursor.at(7));
+    try std.testing.expectEqual(@as(u32, 5), cursor.at(8));
+    try std.testing.expectEqual(@as(u32, 1), cursor.at(1));
+}
+
 fn projectNeedsTimestampUpdate(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
