@@ -34,3 +34,8 @@ broad and finite domains, including a concrete single-key boundary.
 `tsconfig-direct-composite.json` checks the distinct Index-vs-Index inference
 path for direct `keyof (U & V)` arguments and apparent-domain inference for
 direct `keyof (U | V)` arguments, including raw nested call diagnostics.
+
+`tsconfig-deep-composite.json` checks several Index candidates, including a
+candidate constrained by an intersection of another candidate and an object.
+It also compares the full diagnostic chains through multiple type-parameter
+constraints and the symbolic `keyof` subtype relation at the call site.
