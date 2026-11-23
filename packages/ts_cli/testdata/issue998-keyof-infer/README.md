@@ -26,3 +26,7 @@ the inferred result unknown; a union of literal keys contributes members.
 `tsconfig-key-domains.json` checks broad string, number, and symbol members in
 source key constraints. Members that cannot form a LiteralKeyof candidate do
 not erase candidates contributed by string or string-literal members.
+
+`tsconfig-composite-constraints.json` checks base constraints of `keyof` over
+unions and intersections of generic and concrete operands. It compares the
+broad and finite domains, including a concrete single-key boundary.

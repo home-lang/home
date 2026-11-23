@@ -176398,6 +176398,97 @@ pub const Checker = struct {
         return recorded;
     }
 
+    fn keyofDomainUnion(self: *Checker, left: TypeId, right: TypeId) CheckError!TypeId {
+        const all = try self.propertyKeyUnionType();
+        if (left == all or right == all) return all;
+        if (left == types.Primitive.never) return right;
+        if (right == types.Primitive.never) return left;
+        return self.interner.internUnion(&.{ left, right }) catch return error.OutOfMemory;
+    }
+
+    fn keyofDomainIntersection(self: *Checker, left: TypeId, right: TypeId) CheckError!TypeId {
+        const all = try self.propertyKeyUnionType();
+        if (left == all) return right;
+        if (right == all) return left;
+        if (left == types.Primitive.never or right == types.Primitive.never) return types.Primitive.never;
+        const left_view = if (self.interner.pool.flagsOf(left).is_union) self.interner.unionMembers(left) else &.{left};
+        const right_view = if (self.interner.pool.flagsOf(right).is_union) self.interner.unionMembers(right) else &.{right};
+        const left_members = try self.gpa.dupe(TypeId, left_view);
+        defer self.gpa.free(left_members);
+        const right_members = try self.gpa.dupe(TypeId, right_view);
+        defer self.gpa.free(right_members);
+        var common: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer common.deinit(self.gpa);
+        for (left_members) |a| for (right_members) |b| {
+            const narrower = if (try self.genericConstraintAssignable(a, b))
+                a
+            else if (try self.genericConstraintAssignable(b, a))
+                b
+            else
+                continue;
+            try common.append(self.gpa, narrower);
+        };
+        return self.interner.internUnion(common.items) catch return error.OutOfMemory;
+    }
+
+    /// Compute the base constraint of a key type as the reference inference
+    /// engine does: `keyof (A & B)` joins the key domains and `keyof (A | B)`
+    /// intersects them. A symbolic `keyof U` has the full property-key base
+    /// constraint even when U itself has a narrower declared constraint.
+    fn keyofConstraintBaseDomain(self: *Checker, t: TypeId) CheckError!TypeId {
+        var active: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer active.deinit(self.gpa);
+        return self.keyofConstraintBaseDomainInner(t, &active);
+    }
+
+    fn keyofConstraintBaseDomainInner(self: *Checker, t: TypeId, active: *std.AutoHashMapUnmanaged(TypeId, void)) CheckError!TypeId {
+        if (t >= self.interner.pool.typeCount()) return t;
+        if (active.contains(t)) return types.Primitive.unknown;
+        try active.put(self.gpa, t, {});
+        defer _ = active.remove(t);
+
+        if (self.directKeyofOperand(t)) |operand| return self.keyofOperandBaseDomain(operand, active);
+        if (self.interner.isDirectTypeParameter(t)) {
+            const constraint = self.typeParameterConstraint(t) orelse return t;
+            return self.keyofConstraintBaseDomainInner(constraint, active);
+        }
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_union and !flags.is_intersection) return t;
+        const members = try self.gpa.dupe(TypeId, if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t));
+        defer self.gpa.free(members);
+        var result: TypeId = if (flags.is_union) types.Primitive.never else try self.propertyKeyUnionType();
+        for (members) |member| {
+            const domain = try self.keyofConstraintBaseDomainInner(member, active);
+            result = if (flags.is_union)
+                try self.keyofDomainUnion(result, domain)
+            else
+                try self.keyofDomainIntersection(result, domain);
+        }
+        return result;
+    }
+
+    fn keyofOperandBaseDomain(self: *Checker, operand: TypeId, active: *std.AutoHashMapUnmanaged(TypeId, void)) CheckError!TypeId {
+        if (operand >= self.interner.pool.typeCount()) return try self.propertyKeyUnionType();
+        if (self.interner.isDirectTypeParameter(operand)) return try self.propertyKeyUnionType();
+        const flags = self.interner.pool.flagsOf(operand);
+        if (flags.is_union or flags.is_intersection) {
+            const members = try self.gpa.dupe(TypeId, if (flags.is_union) self.interner.unionMembers(operand) else self.interner.intersectionMembers(operand));
+            defer self.gpa.free(members);
+            var result: TypeId = if (flags.is_union) try self.propertyKeyUnionType() else types.Primitive.never;
+            for (members) |member| {
+                const domain = try self.keyofOperandBaseDomain(member, active);
+                result = if (flags.is_union)
+                    try self.keyofDomainIntersection(result, domain)
+                else
+                    try self.keyofDomainUnion(result, domain);
+            }
+            return result;
+        }
+        const keys = try self.keyofTypeFromOperand(operand);
+        if (self.directKeyofOperand(keys) != null) return try self.propertyKeyUnionType();
+        return keys;
+    }
+
     /// TypeScript's LiteralKeyof inference builds an object candidate from
     /// literal keys. Only string literals create members; numeric and symbol
     /// literals still create an empty candidate. A union contributes one
@@ -176410,12 +176501,11 @@ pub const Checker = struct {
         // does not enter LiteralKeyof inference at all.
         if (self.interner.isDirectTypeParameter(source)) {
             if (self.typeParameterConstraint(source)) |constraint| {
-                if (self.directKeyofOperand(constraint)) |operand| {
-                    if (self.interner.isDirectTypeParameter(operand))
-                        return try self.keyofInferenceShape(types.Primitive.string_t);
-                }
-                if (constraint != source and self.interner.pool.flagsOf(constraint).is_union) {
-                    return try self.keyofInferenceShape(constraint);
+                const apparent = try self.keyofConstraintBaseDomain(constraint);
+                if (apparent != source and apparent < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(apparent).is_union)
+                {
+                    return try self.keyofInferenceShape(apparent);
                 }
             }
         }
@@ -180173,7 +180263,15 @@ pub const Checker = struct {
                         param_t,
                     )) orelse arg_t;
                 break :blk try self.functionExpressionAssignableToSignatureTarget(args[i], diagnostic_source_t, param_t);
-            } else self.isArgumentAssignableToParam(args[i], arg_t, inferred_keyof_target orelse param_t) catch true;
+            } else if (inferred_keyof_target) |key_target| blk: {
+                if (self.interner.isDirectTypeParameter(arg_t)) {
+                    if (self.typeParameterConstraint(arg_t)) |constraint| {
+                        const apparent = try self.keyofConstraintBaseDomain(constraint);
+                        if (apparent != arg_t and try self.genericConstraintAssignable(apparent, key_target)) break :blk true;
+                    }
+                }
+                break :blk self.isArgumentAssignableToParam(args[i], arg_t, key_target) catch true;
+            } else self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
             const predicate_assignable = if (declared_param_predicate) |target_pred|
                 try self.signaturePredicateAnnotationsAssignable(
                     try self.assignmentExpressionPredicate(args[i], arg_t),
@@ -180417,12 +180515,9 @@ pub const Checker = struct {
                         if (self.directKeyofOperand(param_t)) |key_binder| {
                             if (self.signatureOwnsTypeParameter(sig, key_binder)) {
                                 if (self.typeParameterConstraint(diagnostic_arg_t)) |constraint| {
-                                    if (self.directKeyofOperand(constraint)) |key_operand| {
-                                        if (self.interner.isDirectTypeParameter(key_operand))
-                                            diagnostic_arg_t = try self.propertyKeyUnionType();
-                                    } else if (self.interner.pool.flagsOf(constraint).is_union) {
-                                        diagnostic_arg_t = constraint;
-                                    }
+                                    const apparent = try self.keyofConstraintBaseDomain(constraint);
+                                    if (apparent < self.interner.pool.typeCount() and
+                                        self.interner.pool.flagsOf(apparent).is_union) diagnostic_arg_t = apparent;
                                 }
                             }
                         }
