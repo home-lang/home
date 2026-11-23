@@ -39,3 +39,11 @@ direct `keyof (U | V)` arguments, including raw nested call diagnostics.
 candidate constrained by an intersection of another candidate and an object.
 It also compares the full diagnostic chains through multiple type-parameter
 constraints and the symbolic `keyof` subtype relation at the call site.
+
+`tsconfig-long-composite.json` follows a 20-link acyclic parameter constraint
+chain. It checks that the final concrete base still supplies `present`, while
+the independent `other` key does not become a member of the inferred result.
+
+`tsconfig-cycle-composite.json` checks a two-parameter circular constraint.
+The checker must terminate and preserve the exact TS2313, TS2345, TS2322, and
+TS2339 diagnostic stream, including the widened property-key explanation.
