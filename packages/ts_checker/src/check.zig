@@ -39205,6 +39205,10 @@ pub const Checker = struct {
                 try self.type_parameter_placeholder_targets.put(self.gpa, placeholder, tp_id);
             }
             self.hir.setType(tp, tp_id);
+            try self.type_parameter_decl_nodes.put(self.gpa, tp_id, tp);
+            if (placeholder != types.Primitive.none and placeholder != tp_id) {
+                try self.type_parameter_decl_nodes.put(self.gpa, placeholder, tp);
+            }
             try self.recordNarrow(tpp.name, tp_id);
             try captured_tp_ids.append(self.gpa, tp_id);
         }
@@ -44011,6 +44015,10 @@ pub const Checker = struct {
                 try self.type_parameter_placeholder_targets.put(self.gpa, placeholder, tp_id);
             }
             self.hir.setType(tp, tp_id);
+            try self.type_parameter_decl_nodes.put(self.gpa, tp_id, tp);
+            if (placeholder != types.Primitive.none and placeholder != tp_id) {
+                try self.type_parameter_decl_nodes.put(self.gpa, placeholder, tp);
+            }
             try self.recordNarrow(tpp.name, tp_id);
             try class_param_ids.append(self.gpa, tp_id);
         }
@@ -95812,6 +95820,20 @@ pub const Checker = struct {
             // fall back to the target's number-key indexer for any
             // extras (variadic tuple rest).
             const ok = if (required_discriminant_mismatch) false else blk: {
+                // A declaration writes to an already chosen generic type;
+                // it cannot infer a new T from an arbitrary key literal.
+                // Call arguments use the literal below to infer T first.
+                if (self.directKeyofOperand(declared_type)) |operand| {
+                    if (self.interner.isDirectTypeParameter(operand)) {
+                        if (try self.expressionNarrowLiteralType(v.init)) |literal| {
+                            if (self.typeIsPropertyKeyLiteral(literal) and
+                                !try self.typeArgSatisfiesKeyofConstrainedOperand(literal, declared_type))
+                            {
+                                break :blk false;
+                            }
+                        }
+                    }
+                }
                 if (declared_type < self.interner.pool.typeCount() and
                     self.interner.pool.flagsOf(declared_type).is_unique_symbol and
                     init_type == types.Primitive.symbol_t and
@@ -160106,6 +160128,10 @@ pub const Checker = struct {
         }
         const operand_constraint = self.typeParameterConstraint(operand_t) orelse return false;
         if (operand_constraint == operand_t) return false;
+        // A type parameter declared `T extends any` is still free to be
+        // instantiated with a type lacking this key. Its constraint does
+        // not guarantee the keys of the concrete `any` type.
+        if (operand_constraint == types.Primitive.any or operand_constraint == types.Primitive.unknown) return false;
         const guaranteed_keys = try self.keyofTypeFromOperand(operand_constraint);
         return try self.genericConstraintAssignable(arg_t, guaranteed_keys);
     }
@@ -173788,15 +173814,21 @@ pub const Checker = struct {
     fn typeIsKeyofLikeLiteralConstraint(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_keyof) return true;
         if (flags.is_union) {
-            var saw_literal = false;
+            var saw_key = false;
             for (self.interner.unionMembers(t)) |member| {
-                if (!self.typeIsPropertyKeyLiteral(member)) return false;
-                saw_literal = true;
+                if (!self.typeIsKeyofLikeLiteralConstraint(member)) return false;
+                saw_key = true;
             }
-            return saw_literal;
+            return saw_key;
         }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeIsKeyofLikeLiteralConstraint(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_keyof) return true;
         return self.typeIsPropertyKeyLiteral(t);
     }
 
@@ -174035,7 +174067,6 @@ pub const Checker = struct {
         const source_flags = self.interner.pool.flagsOf(source_t);
         if (!source_flags.is_literal) return false;
         const target_flags = self.interner.pool.flagsOf(target_t);
-        if (target_flags.is_keyof) return self.typeIsPropertyKeyLiteral(source_t);
         if (target_flags.is_union) {
             for (self.interner.unionMembers(target_t)) |member| {
                 if (try self.literalTypeAssignableToLiteralConstraint(source_t, member)) return true;
@@ -174048,6 +174079,7 @@ pub const Checker = struct {
             }
             return true;
         }
+        if (target_flags.is_keyof) return self.typeIsPropertyKeyLiteral(source_t);
         if (!target_flags.is_literal) return false;
         const source_lit = self.interner.literalOfOrNull(source_t) orelse return false;
         const target_lit = self.interner.literalOfOrNull(target_t) orelse return false;
@@ -174254,13 +174286,14 @@ pub const Checker = struct {
     fn typeContainsKeyofOperand(self: *Checker, t: TypeId, operand_t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_keyof) {
-            return (self.directKeyofOperand(t) orelse return false) == operand_t;
-        }
         if (flags.is_intersection) {
             for (self.interner.intersectionMembers(t)) |member| {
                 if (self.typeContainsKeyofOperand(member, operand_t)) return true;
             }
+            return false;
+        }
+        if (flags.is_keyof) {
+            return (self.directKeyofOperand(t) orelse return false) == operand_t;
         }
         return false;
     }
@@ -174380,7 +174413,10 @@ pub const Checker = struct {
 
     fn directKeyofOperand(self: *Checker, t: TypeId) ?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
-        if (!self.interner.pool.flagsOf(t).is_keyof) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        // Compound flags include their members' bits, but their payload
+        // indices belong to the union/intersection pools, not keyof_payloads.
+        if (!flags.is_keyof or flags.is_union or flags.is_intersection) return null;
         const payload_idx = self.interner.pool.payloadOf(t);
         if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return null;
         const k = self.interner.pool.keyof_payloads.items[payload_idx];
@@ -188734,11 +188770,8 @@ pub const Checker = struct {
             }
             return true;
         }
-        if (flags.is_keyof) {
-            const payload_idx = self.interner.pool.payloadOf(t);
-            if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return false;
-            const k = self.interner.pool.keyof_payloads.items[payload_idx];
-            const raw_operand = self.typeParameterConstraint(k.operand) orelse k.operand;
+        if (self.directKeyofOperand(t)) |keyof_operand| {
+            const raw_operand = self.typeParameterConstraint(keyof_operand) orelse keyof_operand;
             const operand = self.resolveGenericType(raw_operand) catch return false;
             if (operand >= self.interner.pool.typeCount()) return false;
             if (!self.interner.pool.flagsOf(operand).is_object_type) return false;
@@ -203774,6 +203807,13 @@ pub const Checker = struct {
                 if (widen_literal_union) diagnostic_source else source,
                 target,
             ) catch &.{});
+        if (chain.len == 0) {
+            if (try self.keyofLiteralWriteWitness(value_node, target)) |witness| {
+                const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                children[0] = witness;
+                chain = children;
+            }
+        }
         if (chain.len == 0 and widen_literal_union and diagnostic_target == target) {
             if (try self.widenedLiteralUnionWitnessEntry(source, diagnostic_source, target)) |witness| {
                 const children = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
@@ -203791,6 +203831,36 @@ pub const Checker = struct {
             .related = related,
         });
         try self.attachDidYouMeanCallOrConstructRelated(value_node, related_source, target);
+    }
+
+    /// A variable initializer widens to `string` in the TS2322 header, while
+    /// TypeScript's nested relation uses the original literal against the
+    /// keys guaranteed by the type parameter's constraint.
+    fn keyofLiteralWriteWitness(self: *Checker, value_node: NodeId, target: TypeId) CheckError!?DiagnosticChainEntry {
+        const operand = self.directKeyofOperand(target) orelse return null;
+        if (!self.interner.isDirectTypeParameter(operand)) return null;
+        const constraint = self.typeParameterConstraint(operand) orelse blk: {
+            // `typeParameterConstraint` intentionally treats `unknown` as
+            // unconstrained. The diagnostic still distinguishes an explicit
+            // `extends unknown` from a parameter with no `extends` clause.
+            const decl = self.type_parameter_decl_nodes.get(operand) orelse
+                self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(operand)) orelse return null;
+            if (self.hir.kindOf(decl) != .type_parameter or
+                hir_mod.typeParameterOf(self.hir, decl).constraint == hir_mod.none_node_id)
+            {
+                return null;
+            }
+            break :blk types.Primitive.unknown;
+        };
+        if (constraint == operand) return null;
+        const literal = (try self.expressionNarrowLiteralType(value_node)) orelse return null;
+        if (!self.typeIsPropertyKeyLiteral(literal)) return null;
+        const guaranteed = if (constraint == types.Primitive.any or constraint == types.Primitive.unknown)
+            types.Primitive.never
+        else
+            try self.keyofTypeFromOperand(constraint);
+        if (try self.genericConstraintAssignable(literal, guaranteed)) return null;
+        return try self.typeNotAssignableChainEntry(literal, guaranteed, false);
     }
 
     fn tryReportCheckJsElementAnimateAssignment(
@@ -301245,6 +301315,46 @@ test "checker: keyof constrained operand proof rejects absent keys" {
 
     try T.expect(try s.checker.typeArgSatisfiesKeyofConstrainedOperand(guaranteed, constraint));
     try T.expect(!try s.checker.typeArgSatisfiesKeyofConstrainedOperand(missing, constraint));
+}
+
+test "checker: compound keyof flags cannot read a colliding direct payload (#998)" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const parameter = try s.ti.internTypeParameter(try s.sint.intern("T"), types.Primitive.none, types.Primitive.none);
+    const direct = try s.ti.internKeyof(parameter);
+    const union_t = try s.ti.internUnion(&.{ direct, types.Primitive.undefined_t });
+    const intersection_t = try s.ti.internIntersection(&.{ direct, types.Primitive.string_t });
+    try T.expectEqual(@as(?TypeId, parameter), s.checker.directKeyofOperand(direct));
+    try T.expect(s.ti.pool.flagsOf(union_t).is_keyof and s.ti.pool.flagsOf(union_t).is_union);
+    // Intersections own their flags rather than aggregating member flags.
+    try T.expect(s.ti.pool.flagsOf(intersection_t).is_intersection);
+    try T.expect(!s.ti.pool.flagsOf(intersection_t).is_keyof);
+
+    const last_payload = @max(s.ti.pool.payloadOf(union_t), s.ti.pool.payloadOf(intersection_t));
+    var ordinal: usize = 0;
+    while (s.ti.pool.keyof_payloads.items.len <= last_payload) : (ordinal += 1) {
+        const name = try std.fmt.allocPrint(T.allocator, "Collision{d}", .{ordinal});
+        defer T.allocator.free(name);
+        const other = try s.ti.internTypeParameter(try s.sint.intern(name), types.Primitive.none, types.Primitive.none);
+        _ = try s.ti.internKeyof(other);
+    }
+    try T.expectEqual(@as(?TypeId, null), s.checker.directKeyofOperand(union_t));
+    try T.expectEqual(@as(?TypeId, null), s.checker.directKeyofOperand(intersection_t));
+}
+
+test "checker: only keys guaranteed by a type parameter constraint are writable (#998)" {
+    const s = try newSetup(
+        \\function invalid<T extends any>() { const key: keyof T = "bad"; void key; }
+        \\function valid<T extends { a: number }>() { const key: keyof T = "a"; void key; }
+        \\function unknown<T extends unknown>() { const key: keyof T = "bad"; void key; }
+        \\function never<T extends never>() { const key: keyof T = "bad"; void key; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
 }
 
 test "checker: generic class heritage substitutes homomorphic mapped members" {
