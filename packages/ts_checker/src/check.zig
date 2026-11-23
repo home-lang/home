@@ -4630,6 +4630,17 @@ const EvolvingAnyBlockCursor = struct {
     prefix_flows: std.ArrayListUnmanaged(?TypeId) = .empty,
 };
 
+const KeyofInferenceCandidate = struct {
+    binder: TypeId,
+    source: TypeId,
+    shape: TypeId,
+};
+
+const KeyofInferenceContext = struct {
+    binders: []const TypeId,
+    candidates: *std.ArrayListUnmanaged(KeyofInferenceCandidate),
+};
+
 pub const Checker = struct {
     gpa: std.mem.Allocator,
     hir: *Hir,
@@ -5794,6 +5805,10 @@ pub const Checker = struct {
     /// Active structural-inference pairs. Recursive generic aliases can
     /// revisit the same pair without contributing a new candidate.
     active_inference_pairs: std.AutoHashMapUnmanaged(u64, void) = .empty,
+    /// The enclosing call owns these low-priority candidates. Recursive
+    /// inference reaches nested arrays and object members, while this scope
+    /// prevents an unrelated call's type parameters from receiving them.
+    keyof_inference_context: ?*KeyofInferenceContext = null,
     /// Hard-coded `lib.d.ts` substitute ÃÂ¢ÃÂÃÂ `String.prototype`,
     /// `Array<T>.prototype`, `Object` global. Populated lazily on
     /// first member-access against the corresponding receiver.
@@ -111558,7 +111573,7 @@ pub const Checker = struct {
             if (!accepts and !arity_ok) continue;
             const raw_ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
             const param_ts = self.interner.signatureParams(sig);
-            const instantiated = self.instantiateReturn(sig, hir_mod.none_node_id, param_ts, arg_types, raw_ret) catch raw_ret;
+            const instantiated = self.instantiateReturn(sig, hir_mod.none_node_id, args, param_ts, arg_types, raw_ret) catch raw_ret;
             try returns.append(self.gpa, instantiated);
         }
         if (returns.items.len == 0) return null;
@@ -124074,7 +124089,7 @@ pub const Checker = struct {
                             break :blk try self.optionalChainResult(ret, call_is_optional_chain);
                         }
                         const param_ts = self.interner.signatureParams(effective_callee_t);
-                        const instantiated = self.instantiateReturn(effective_callee_t, c.callee, param_ts, arg_types.items, ret) catch ret;
+                        const instantiated = self.instantiateReturn(effective_callee_t, c.callee, args, param_ts, arg_types.items, ret) catch ret;
                         break :blk try self.optionalChainResult(instantiated, call_is_optional_chain);
                     }
                 }
@@ -139967,7 +139982,7 @@ pub const Checker = struct {
             try self.checkArgsAgainstSignature(call_node, args, arg_types, selected_applicable);
             const ret = self.interner.signatureReturn(selected_applicable) orelse types.Primitive.any;
             const param_ts = self.interner.signatureParams(selected_applicable);
-            const instantiated = self.instantiateReturn(selected_applicable, callee, param_ts, arg_types, ret) catch ret;
+            const instantiated = self.instantiateReturn(selected_applicable, callee, args, param_ts, arg_types, ret) catch ret;
             return try self.optionalChainResult(instantiated, call_is_optional_chain);
         }
         var sole_arity_sig: TypeId = types.Primitive.none;
@@ -172794,6 +172809,7 @@ pub const Checker = struct {
         self: *Checker,
         sig: TypeId,
         callee: NodeId,
+        arg_nodes: []const NodeId,
         raw_param_ts: []const TypeId,
         raw_arg_ts: []const TypeId,
         ret_type: TypeId,
@@ -172805,11 +172821,25 @@ pub const Checker = struct {
         // Build a map: type-parameter-id -> inferred-type
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
+        var keyof_candidates: std.ArrayListUnmanaged(KeyofInferenceCandidate) = .empty;
+        defer keyof_candidates.deinit(self.gpa);
+        var keyof_context: KeyofInferenceContext = .{
+            .binders = self.generic_signature_params.get(sig) orelse &.{},
+            .candidates = &keyof_candidates,
+        };
+        const previous_keyof_context = self.keyof_inference_context;
+        self.keyof_inference_context = &keyof_context;
+        defer self.keyof_inference_context = previous_keyof_context;
 
         const n = @min(param_ts.len, arg_ts.len);
         for (0..n) |i| {
-            try self.inferFromPair(param_ts[i], arg_ts[i], &subs);
+            const source = if (i < arg_nodes.len and self.directKeyofOperand(param_ts[i]) != null)
+                try self.expressionLiteralType(arg_nodes[i], arg_ts[i])
+            else
+                arg_ts[i];
+            try self.inferFromPair(param_ts[i], source, &subs);
         }
+        try self.applyKeyofInferenceCandidates(keyof_context.binders, keyof_candidates.items, &subs);
         // Apply defaults in declaration order even when a parameter appears
         // only inside a symbolic return type, or only in a later default.
         try self.applyGenericSignatureDefaults(sig, &subs);
@@ -173206,6 +173236,7 @@ pub const Checker = struct {
             }
             return;
         }
+        if (try self.recordKeyofInferenceCandidate(param_t, arg_t)) return;
         if (p_flags.is_mapped and (a_flags.is_object_type or a_flags.is_intersection)) {
             if (try self.inferFromReverseMappedObjectLiteral(param_t, arg_t, subs)) return;
             if (try self.inferFromHomomorphicMappedTarget(param_t, arg_t, subs)) return;
@@ -176218,6 +176249,99 @@ pub const Checker = struct {
         return true;
     }
 
+    /// TypeScript's LiteralKeyof inference turns a string-literal key into
+    /// an object with that property of type any. A union of keys contributes
+    /// one object; separate argument sites contribute separate objects.
+    fn keyofInferenceShape(self: *Checker, source: TypeId) CheckError!?TypeId {
+        if (source >= self.interner.pool.typeCount()) return null;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        var broad_string = false;
+        if (self.interner.pool.flagsOf(source).is_union) {
+            const source_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(source));
+            defer self.gpa.free(source_members);
+            for (source_members) |member| {
+                if (!try self.appendKeyofInferenceMember(member, &members, &broad_string)) return null;
+            }
+        } else if (!try self.appendKeyofInferenceMember(source, &members, &broad_string)) {
+            return null;
+        }
+        const string_index = if (broad_string)
+            self.interner.internObjectType(&.{}) catch return error.OutOfMemory
+        else
+            types.Primitive.none;
+        return self.interner.internObjectTypeWithIndex(members.items, string_index, types.Primitive.none) catch return error.OutOfMemory;
+    }
+
+    fn appendKeyofInferenceMember(
+        self: *Checker,
+        source: TypeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+        broad_string: *bool,
+    ) CheckError!bool {
+        if (source == types.Primitive.string_t) {
+            broad_string.* = true;
+            return true;
+        }
+        if (source >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(source);
+        if (!flags.is_literal or !flags.is_string or flags.is_union or flags.is_intersection) return false;
+        const literal = self.interner.literalOfOrNull(source) orelse return false;
+        const name = switch (literal) {
+            .string_lit => |sid| sid,
+            else => return false,
+        };
+        for (members.items) |member| if (member.name == name) return true;
+        try members.append(self.gpa, .{
+            .name = name,
+            .type = types.Primitive.any,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        });
+        return true;
+    }
+
+    fn recordKeyofInferenceCandidate(self: *Checker, target: TypeId, source: TypeId) CheckError!bool {
+        const context = self.keyof_inference_context orelse return false;
+        const operand = self.directKeyofOperand(target) orelse return false;
+        const binder = self.resolvedTypeParameterPlaceholder(operand);
+        if (std.mem.indexOfScalar(TypeId, context.binders, binder) == null) return false;
+        for (context.candidates.items) |candidate| {
+            if (candidate.binder == binder and candidate.source == source) return true;
+        }
+        const shape = (try self.keyofInferenceShape(source)) orelse return false;
+        try context.candidates.append(self.gpa, .{ .binder = binder, .source = source, .shape = shape });
+        return true;
+    }
+
+    fn applyKeyofInferenceCandidates(
+        self: *Checker,
+        binders: []const TypeId,
+        candidates: []const KeyofInferenceCandidate,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        for (binders) |binder| {
+            if (subs.contains(binder)) continue;
+            var shapes: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer shapes.deinit(self.gpa);
+            for (candidates) |candidate| {
+                if (candidate.binder == binder) try shapes.append(self.gpa, candidate.shape);
+            }
+            if (shapes.items.len == 0) continue;
+            const inferred = if (shapes.items.len == 1)
+                shapes.items[0]
+            else
+                self.interner.internIntersection(shapes.items) catch return error.OutOfMemory;
+            if (self.typeParameterConstraint(binder)) |raw_constraint| {
+                const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
+                if (constraint != types.Primitive.any and constraint != types.Primitive.unknown and
+                    !try self.genericConstraintAssignable(inferred, constraint)) continue;
+            }
+            try subs.put(self.gpa, binder, inferred);
+        }
+    }
+
     fn inferCallSubstitutions(
         self: *Checker,
         sig: TypeId,
@@ -176229,6 +176353,15 @@ pub const Checker = struct {
         const borrowed_param_ts = self.interner.signatureParams(sig);
         const param_ts = try self.gpa.dupe(TypeId, borrowed_param_ts);
         defer self.gpa.free(param_ts);
+        var keyof_candidates: std.ArrayListUnmanaged(KeyofInferenceCandidate) = .empty;
+        defer keyof_candidates.deinit(self.gpa);
+        var keyof_context: KeyofInferenceContext = .{
+            .binders = self.generic_signature_params.get(sig) orelse &.{},
+            .candidates = &keyof_candidates,
+        };
+        const previous_keyof_context = self.keyof_inference_context;
+        self.keyof_inference_context = &keyof_context;
+        defer self.keyof_inference_context = previous_keyof_context;
         if (self.rest_signatures.contains(sig) and param_ts.len > 0) {
             const fixed_count: usize = param_ts.len - 1;
             const n = @min(fixed_count, arg_types.len);
@@ -176330,6 +176463,7 @@ pub const Checker = struct {
         try self.applyParameterlessCallbackConstraintFallback(sig, param_ts, args, subs);
         try self.refineRepeatedDirectInferences(param_ts, args, arg_types, subs);
         try self.inferDescriptorLikeReturnTypeParameter(sig, arg_types, subs);
+        try self.applyKeyofInferenceCandidates(keyof_context.binders, keyof_candidates.items, subs);
     }
 
     fn reportInferredGenericRestConstraintMismatch(
