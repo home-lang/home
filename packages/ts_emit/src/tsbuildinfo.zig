@@ -38,6 +38,50 @@ pub const Options = struct {
     /// Compiler version string written into the output. Should
     /// match the tsc version we're targeting (5.x compatible).
     compiler_version: []const u8 = "5.6.0",
+    /// Home's incremental state. When present it must describe the actual
+    /// diagnostics and outputs withheld by this compilation.
+    state: ?BuildState = null,
+};
+
+pub const DiagnosticChain = struct {
+    message: []const u8,
+    code: u32,
+    category: u8 = 1,
+    children: []const DiagnosticChain = &.{},
+};
+
+pub const RelatedDiagnostic = struct {
+    file: ?[]const u8 = null,
+    start: u32,
+    length: u32,
+    code: u32,
+    category: u8 = 3,
+    message: []const u8,
+};
+
+pub const SavedDiagnostic = struct {
+    start: u32,
+    length: u32,
+    code: u32,
+    category: u8 = 1,
+    message: []const u8,
+    chain: []const DiagnosticChain = &.{},
+    related: []const RelatedDiagnostic = &.{},
+};
+
+pub const FileDiagnostics = struct {
+    /// One-based index into `fileNames`, as in both official formats.
+    file_id: usize,
+    diagnostics: []const SavedDiagnostic,
+};
+
+pub const BuildState = struct {
+    roots: []const usize = &.{},
+    semantic_diagnostics: []const FileDiagnostics = &.{},
+    affected_files_pending_emit: []const usize = &.{},
+    emit_signatures: []const usize = &.{},
+    /// For diagnostics without a source-file owner (e.g. config errors).
+    errors: bool = false,
 };
 
 /// Emit a `.tsbuildinfo`-shaped JSON document. Caller owns the
@@ -51,6 +95,14 @@ pub fn emit(
     options: Options,
 ) ![]u8 {
     std.debug.assert(file_names.len == file_infos.len);
+    if (options.state) |state| {
+        for (state.roots) |id| if (id == 0 or id > file_names.len) return error.InvalidFileInfoIndex;
+        for (state.semantic_diagnostics) |file| {
+            if (file.file_id == 0 or file.file_id > file_names.len) return error.InvalidFileInfoIndex;
+        }
+        for (state.affected_files_pending_emit) |id| if (id == 0 or id > file_names.len) return error.InvalidFileInfoIndex;
+        for (state.emit_signatures) |id| if (id == 0 or id > file_names.len) return error.InvalidFileInfoIndex;
+    }
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa, "{\n");
@@ -82,12 +134,119 @@ pub fn emit(
     }
     try buf.appendSlice(gpa, "},\n");
     {
-        const line = try std.fmt.allocPrint(gpa, "  \"options\": {s}\n", .{config_options_json});
+        const line = try std.fmt.allocPrint(gpa, "  \"options\": {s}{s}\n", .{ config_options_json, if (options.state != null) "," else "" });
         defer gpa.free(line);
         try buf.appendSlice(gpa, line);
     }
+    if (options.state) |state| try appendBuildState(gpa, &buf, state);
     try buf.appendSlice(gpa, "}\n");
     return buf.toOwnedSlice(gpa);
+}
+
+fn appendBuildState(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), state: BuildState) !void {
+    try buf.appendSlice(gpa, "  \"root\":");
+    try appendIndexArray(gpa, buf, state.roots);
+    try buf.appendSlice(gpa, ",\n  \"semanticDiagnosticsPerFile\":[");
+    for (state.semantic_diagnostics, 0..) |file, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.append(gpa, '[');
+        try appendIndex(gpa, buf, file.file_id);
+        try buf.appendSlice(gpa, ",[");
+        for (file.diagnostics, 0..) |diag, j| {
+            if (j > 0) try buf.append(gpa, ',');
+            try appendSavedDiagnostic(gpa, buf, diag);
+        }
+        try buf.appendSlice(gpa, "]]");
+    }
+    try buf.append(gpa, ']');
+    if (state.affected_files_pending_emit.len > 0) {
+        try buf.appendSlice(gpa, ",\n  \"affectedFilesPendingEmit\":");
+        try appendIndexArray(gpa, buf, state.affected_files_pending_emit);
+    }
+    if (state.emit_signatures.len > 0) {
+        try buf.appendSlice(gpa, ",\n  \"emitSignatures\":");
+        try appendIndexArray(gpa, buf, state.emit_signatures);
+    }
+    if (state.errors) try buf.appendSlice(gpa, ",\n  \"errors\":true");
+    try buf.append(gpa, '\n');
+}
+
+fn appendIndexArray(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), indices: []const usize) !void {
+    try buf.append(gpa, '[');
+    for (indices, 0..) |index, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try appendIndex(gpa, buf, index);
+    }
+    try buf.append(gpa, ']');
+}
+
+fn appendIndex(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), index: usize) !void {
+    const text = try std.fmt.allocPrint(gpa, "{d}", .{index});
+    defer gpa.free(text);
+    try buf.appendSlice(gpa, text);
+}
+
+fn appendSavedDiagnostic(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), diag: SavedDiagnostic) !void {
+    try buf.append(gpa, '{');
+    try appendDiagnosticFields(gpa, buf, diag.start, diag.length, diag.code, diag.category);
+    try buf.appendSlice(gpa, ",\"messageText\":");
+    if (diag.chain.len == 0) {
+        try appendQuoted(gpa, buf, diag.message);
+    } else {
+        try appendMessageChain(gpa, buf, diag.message, diag.code, diag.category, diag.chain);
+    }
+    if (diag.related.len > 0) {
+        try buf.appendSlice(gpa, ",\"relatedInformation\":[");
+        for (diag.related, 0..) |related, i| {
+            if (i > 0) try buf.append(gpa, ',');
+            try buf.append(gpa, '{');
+            try appendDiagnosticFields(gpa, buf, related.start, related.length, related.code, related.category);
+            if (related.file) |file| {
+                try buf.appendSlice(gpa, ",\"file\":");
+                try appendQuoted(gpa, buf, file);
+            }
+            try buf.appendSlice(gpa, ",\"messageText\":");
+            try appendQuoted(gpa, buf, related.message);
+            try buf.append(gpa, '}');
+        }
+        try buf.append(gpa, ']');
+    }
+    try buf.append(gpa, '}');
+}
+
+fn appendMessageChain(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), message: []const u8, code: u32, category: u8, children: []const DiagnosticChain) !void {
+    try buf.appendSlice(gpa, "{\"messageText\":");
+    try appendQuoted(gpa, buf, message);
+    try buf.appendSlice(gpa, ",\"category\":");
+    try appendIndex(gpa, buf, category);
+    try buf.appendSlice(gpa, ",\"code\":");
+    try appendIndex(gpa, buf, code);
+    if (children.len > 0) {
+        try buf.appendSlice(gpa, ",\"next\":[");
+        for (children, 0..) |child, i| {
+            if (i > 0) try buf.append(gpa, ',');
+            try appendMessageChain(gpa, buf, child.message, child.code, child.category, child.children);
+        }
+        try buf.append(gpa, ']');
+    }
+    try buf.append(gpa, '}');
+}
+
+fn appendDiagnosticFields(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), start: u32, length: u32, code: u32, category: u8) !void {
+    try buf.appendSlice(gpa, "\"start\":");
+    try appendIndex(gpa, buf, start);
+    try buf.appendSlice(gpa, ",\"length\":");
+    try appendIndex(gpa, buf, length);
+    try buf.appendSlice(gpa, ",\"code\":");
+    try appendIndex(gpa, buf, code);
+    try buf.appendSlice(gpa, ",\"category\":");
+    try appendIndex(gpa, buf, category);
+}
+
+fn appendQuoted(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
+    try buf.append(gpa, '"');
+    try appendJsonString(gpa, buf, value);
+    try buf.append(gpa, '"');
 }
 
 /// JSON-escape a string (writes the body, no surrounding quotes).
@@ -98,7 +257,16 @@ fn appendJsonString(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), s:
         '\n' => try buf.appendSlice(gpa, "\\n"),
         '\r' => try buf.appendSlice(gpa, "\\r"),
         '\t' => try buf.appendSlice(gpa, "\\t"),
-        else => try buf.append(gpa, c),
+        else => {
+            if (c < 0x20) {
+                const hex = "0123456789abcdef";
+                try buf.appendSlice(gpa, "\\u00");
+                try buf.append(gpa, hex[c >> 4]);
+                try buf.append(gpa, hex[c & 0x0f]);
+            } else {
+                try buf.append(gpa, c);
+            }
+        },
     };
 }
 
@@ -503,4 +671,80 @@ test "tsbuildinfo: parallel file-info length must match file names" {
         \\{"version":"5.7.3","fileNames":["main.ts"],"fileInfos":[],"options":{}}
     ;
     try T.expectError(error.InvalidFileInfoIndex, read(T.allocator, json));
+}
+
+test "tsbuildinfo: writes retained diagnostics and pending emit without dropping chains" {
+    const chain = [_]DiagnosticChain{.{
+        .message = "'T[\"value\"]' could be instantiated with an arbitrary type.",
+        .code = 5082,
+    }};
+    const related = [_]RelatedDiagnostic{.{
+        .start = 2,
+        .length = 4,
+        .code = 1377,
+        .message = "Declared here.",
+    }};
+    const diagnostics = [_]SavedDiagnostic{.{
+        .start = 90,
+        .length = 6,
+        .code = 2322,
+        .message = "Type 'string' is not assignable to type 'T[\"value\"]'.",
+        .chain = &chain,
+        .related = &related,
+    }};
+    const per_file = [_]FileDiagnostics{.{ .file_id = 1, .diagnostics = &diagnostics }};
+    const out = try emit(T.allocator, &.{"./main.ts"}, &.{.{ .version = "source-hash" }}, "{\"strict\":true}", .{
+        .state = .{
+            .roots = &.{1},
+            .semantic_diagnostics = &per_file,
+            .affected_files_pending_emit = &.{1},
+            .emit_signatures = &.{1},
+        },
+    });
+    defer T.allocator.free(out);
+    var parsed = try std.json.parseFromSlice(std.json.Value, T.allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    const saved = root.get("semanticDiagnosticsPerFile").?.array.items[0].array.items[1].array.items[0].object;
+    try T.expectEqual(@as(i64, 90), saved.get("start").?.integer);
+    try T.expectEqual(@as(i64, 6), saved.get("length").?.integer);
+    try T.expectEqual(@as(i64, 2322), saved.get("code").?.integer);
+    const message = saved.get("messageText").?.object;
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'T[\"value\"]'.", message.get("messageText").?.string);
+    try T.expectEqualStrings("'T[\"value\"]' could be instantiated with an arbitrary type.", message.get("next").?.array.items[0].object.get("messageText").?.string);
+    try T.expectEqualStrings("Declared here.", saved.get("relatedInformation").?.array.items[0].object.get("messageText").?.string);
+    try T.expectEqual(@as(i64, 1), root.get("affectedFilesPendingEmit").?.array.items[0].integer);
+    try T.expectEqual(@as(i64, 1), root.get("emitSignatures").?.array.items[0].integer);
+
+    var read_back = try read(T.allocator, out);
+    defer read_back.deinit(T.allocator);
+    try T.expect(read_back.has_errors);
+    try T.expect(read_back.has_pending_emit);
+}
+
+test "tsbuildinfo: rejects state indices outside fileNames" {
+    const names = [_][]const u8{"main.ts"};
+    const infos = [_]FileInfo{.{ .version = "hash" }};
+    try T.expectError(error.InvalidFileInfoIndex, emit(T.allocator, &names, &infos, "{}", .{
+        .state = .{ .affected_files_pending_emit = &.{2} },
+    }));
+}
+
+test "tsbuildinfo: escapes control bytes in retained messages" {
+    const diagnostics = [_]SavedDiagnostic{.{
+        .start = 0,
+        .length = 1,
+        .code = 2322,
+        .message = "bad\x00value",
+    }};
+    const files = [_]FileDiagnostics{.{ .file_id = 1, .diagnostics = &diagnostics }};
+    const out = try emit(T.allocator, &.{"main.ts"}, &.{.{ .version = "hash" }}, "{}", .{
+        .state = .{ .semantic_diagnostics = &files },
+    });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "bad\\u0000value") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, T.allocator, out, .{});
+    defer parsed.deinit();
+    const saved = parsed.value.object.get("semanticDiagnosticsPerFile").?.array.items[0].array.items[1].array.items[0].object;
+    try T.expectEqualStrings("bad\x00value", saved.get("messageText").?.string);
 }
