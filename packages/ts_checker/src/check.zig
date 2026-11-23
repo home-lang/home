@@ -176404,28 +176404,18 @@ pub const Checker = struct {
     /// object, while separate argument sites contribute separate objects.
     fn keyofInferenceShape(self: *Checker, source: TypeId) CheckError!?TypeId {
         if (source >= self.interner.pool.typeCount()) return null;
-        // A constrained type parameter is first viewed through its apparent
-        // type by TypeScript's inference engine. A `keyof U` constraint has
-        // the broad string key domain when U is still generic; a concrete
-        // operand contributes its actual literal keys instead.
+        // TypeScript infers from the apparent source. A symbolic `keyof U`
+        // contributes a broad string index, while a union constraint is
+        // visited constituent by constituent. A single literal constraint
+        // does not enter LiteralKeyof inference at all.
         if (self.interner.isDirectTypeParameter(source)) {
-            const declared = self.type_parameter_decl_nodes.get(source) orelse
-                self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(source));
-            if (declared) |declaration| {
-                if (self.hir.kindOf(declaration) == .type_parameter) {
-                    const constraint_node = hir_mod.typeParameterOf(self.hir, declaration).constraint;
-                    if (constraint_node != hir_mod.none_node_id and self.hir.kindOf(constraint_node) == .keyof_type) {
-                        if (self.typeParameterConstraint(source)) |constraint| {
-                            if (self.directKeyofOperand(constraint)) |operand| {
-                                if (self.interner.isDirectTypeParameter(operand))
-                                    return try self.keyofInferenceShape(types.Primitive.string_t);
-                                const keys = try self.keyofTypeFromOperand(operand);
-                                if (keys != source and keys != constraint) return try self.keyofInferenceShape(keys);
-                            } else if (constraint != source) {
-                                return try self.keyofInferenceShape(constraint);
-                            }
-                        }
-                    }
+            if (self.typeParameterConstraint(source)) |constraint| {
+                if (self.directKeyofOperand(constraint)) |operand| {
+                    if (self.interner.isDirectTypeParameter(operand))
+                        return try self.keyofInferenceShape(types.Primitive.string_t);
+                }
+                if (constraint != source and self.interner.pool.flagsOf(constraint).is_union) {
+                    return try self.keyofInferenceShape(constraint);
                 }
             }
         }

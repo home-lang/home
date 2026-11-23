@@ -18,3 +18,7 @@ the resulting argument and indexed-access diagnostics.
 `tsconfig-dependent.json` checks parameters constrained by `keyof U`, concrete
 `keyof` constraints, and a plain `string` constraint. The first two infer
 different object shapes; the plain string constraint leaves the result unknown.
+
+`tsconfig-constraint-alias.json` checks `keyof` aliases, a literal union
+constraint, and the single-key boundary. A single literal constraint leaves
+the inferred result unknown; a union of literal keys contributes members.

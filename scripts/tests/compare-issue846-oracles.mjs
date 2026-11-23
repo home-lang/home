@@ -252,6 +252,7 @@ for (const config of [
   'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-grouping.json',
   'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-keys.json',
   'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-dependent.json',
+  'packages/ts_cli/testdata/issue998-keyof-infer/tsconfig-constraint-alias.json',
 ]) {
   if (!configs.includes(config)) {
     console.error(`Missing required oracle config: ${config}`)
