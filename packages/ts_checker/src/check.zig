@@ -99478,7 +99478,10 @@ pub const Checker = struct {
             }
         }
         if (try self.classStaticSatisfiesConstructorObjectConstraint(source_t, target_t)) return true;
-        if (self.engine.isAssignableTo(source_t, target_t) catch false) return true;
+        if (self.engine.isAssignableTo(source_t, target_t) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => false,
+        }) return true;
         if (target_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(target_t).is_object_type and
             !self.interner.pool.flagsOf(target_t).is_union)
         {
@@ -176739,7 +176742,7 @@ pub const Checker = struct {
                 }
             };
             if (self.typeParameterConstraint(binder)) |raw_constraint| {
-                const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
+                const constraint = try self.substituteType(raw_constraint, subs);
                 if (constraint != types.Primitive.any and constraint != types.Primitive.unknown and
                     !try self.genericConstraintAssignable(inferred, constraint)) continue;
             }
@@ -176950,7 +176953,7 @@ pub const Checker = struct {
         const candidate = subs.get(rest_param) orelse return false;
         if (candidate == types.Primitive.any or candidate == types.Primitive.unknown or candidate == types.Primitive.never) return false;
         const raw_constraint = self.typeParameterConstraint(rest_param) orelse return false;
-        const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
+        const constraint = try self.substituteType(raw_constraint, subs);
         if (constraint == types.Primitive.any or constraint == types.Primitive.unknown or
             try self.genericConstraintAssignable(candidate, constraint) or
             try self.argumentAssignableToReducedConditionalTarget(candidate, constraint))
@@ -177027,8 +177030,11 @@ pub const Checker = struct {
             {
                 continue;
             }
-            const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
-            if (self.engine.isAssignableTo(candidate, constraint) catch false) continue;
+            const constraint = try self.substituteType(raw_constraint, subs);
+            if (self.engine.isAssignableTo(candidate, constraint) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => false,
+            }) continue;
             try subs.put(self.gpa, return_t, constraint);
             if (resolved_return != return_t) try subs.put(self.gpa, resolved_return, constraint);
         }
@@ -178372,7 +178378,7 @@ pub const Checker = struct {
                 const subbed = try self.substituteType(m, subs);
                 try new.append(self.gpa, if (subbed < self.interner.pool.typeCount()) subbed else types.Primitive.unknown);
             }
-            return self.interner.internUnion(new.items) catch return t;
+            return self.interner.internUnion(new.items) catch return error.OutOfMemory;
         }
         if (flags.is_intersection) {
             if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return t;
@@ -178385,7 +178391,7 @@ pub const Checker = struct {
                 const subbed = try self.substituteType(m, subs);
                 try new.append(self.gpa, if (subbed < self.interner.pool.typeCount()) subbed else types.Primitive.unknown);
             }
-            const result = self.interner.internIntersection(new.items) catch return t;
+            const result = self.interner.internIntersection(new.items) catch return error.OutOfMemory;
             return try self.finishSubstitutedMappedType(t, result, subs);
         }
         if (flags.is_instantiation) {
@@ -190925,7 +190931,10 @@ pub const Checker = struct {
         const resolved = try self.evalConditionalWithDistribution(check_t, c.extends_type, c.true_branch, c.false_branch, true, c.is_distributive);
         if (resolved == param_t) return false;
         if (resolved >= self.interner.pool.typeCount()) return false;
-        if (self.engine.isAssignableTo(arg_t, resolved) catch false) return true;
+        if (self.engine.isAssignableTo(arg_t, resolved) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => false,
+        }) return true;
         return self.argumentAssignableToReducedConditionalTargetInner(arg_t, resolved, depth + 1);
     }
 
@@ -302257,6 +302266,180 @@ test "checker: only keys guaranteed by a type parameter constraint are writable 
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+}
+
+fn testKeyofInferenceCandidateAllocationFailures(allocator: std.mem.Allocator) !void {
+    const s = try newSetup("");
+    s.checker.gpa = allocator;
+    defer destroySetup(s);
+
+    const a = try s.sint.intern("a");
+    const b = try s.sint.intern("b");
+    const shape_a = try s.ti.internObjectType(&.{.{
+        .name = a,
+        .type = types.Primitive.any,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const shape_b = try s.ti.internObjectType(&.{.{
+        .name = b,
+        .type = types.Primitive.any,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const other = try s.ti.internTypeParameter(
+        try s.sint.intern("U"),
+        types.Primitive.none,
+        types.Primitive.none,
+    );
+    // Only the substituted constraint admits the inferred intersection;
+    // comparing against the raw U & { a } would reject this candidate.
+    const constraint = try s.ti.internIntersection(&.{ other, shape_a });
+    const binder = try s.ti.internTypeParameter(
+        try s.sint.intern("T"),
+        constraint,
+        types.Primitive.none,
+    );
+    const candidates = [_]KeyofInferenceCandidate{
+        .{ .binder = binder, .source = shape_a, .shape = shape_a },
+        .{ .binder = binder, .source = shape_b, .shape = shape_b },
+    };
+
+    var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer substitutions.deinit(allocator);
+    try substitutions.put(allocator, other, shape_b);
+    try s.checker.applyKeyofInferenceCandidates(&.{binder}, &candidates, &substitutions);
+    const inferred = substitutions.get(binder) orelse return error.TestUnexpectedResult;
+    try T.expect(s.ti.pool.flagsOf(inferred).is_intersection);
+    const members = s.ti.intersectionMembers(inferred);
+    try T.expectEqual(@as(usize, 2), members.len);
+    try T.expect(std.mem.indexOfScalar(TypeId, members, shape_a) != null);
+    try T.expect(std.mem.indexOfScalar(TypeId, members, shape_b) != null);
+}
+
+fn checkGenericKeyofAllocationFailures(comptime run: anytype) !void {
+    var baseline = std.testing.FailingAllocator.init(T.allocator, .{});
+    try run(baseline.allocator());
+    try T.expectEqual(baseline.allocated_bytes, baseline.freed_bytes);
+    const allocation_count = baseline.alloc_index;
+    try T.expect(allocation_count > 0);
+
+    for (0..allocation_count) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(T.allocator, .{ .fail_index = fail_index });
+        if (run(failing.allocator())) |_| {
+            // Optional memo/cache allocation may fail without changing the
+            // result. Each run still asserts its exact semantic outcome.
+            try T.expect(failing.has_induced_failure);
+        } else |err| {
+            if (err != error.OutOfMemory) return err;
+            try T.expect(failing.has_induced_failure);
+        }
+        try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+    }
+}
+
+test "checker: keyof inference candidate aggregation releases partial allocations (#998)" {
+    try checkGenericKeyofAllocationFailures(testKeyofInferenceCandidateAllocationFailures);
+}
+
+fn testGenericConstraintInterningAllocationFailures(allocator: std.mem.Allocator) !void {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const parameter = try s.ti.internTypeParameter(
+        try s.sint.intern("U"), types.Primitive.none, types.Primitive.none,
+    );
+    const raw_union = try s.ti.internUnion(&.{ parameter, types.Primitive.number_t });
+    const raw_intersection = try s.ti.internIntersection(&.{ parameter, types.Primitive.number_t });
+    const expected_union = try s.ti.internUnion(&.{ types.Primitive.string_t, types.Primitive.number_t });
+    const expected_intersection = try s.ti.internIntersection(&.{ types.Primitive.string_t, types.Primitive.number_t });
+    var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer substitutions.deinit(T.allocator);
+    try substitutions.put(T.allocator, parameter, types.Primitive.string_t);
+
+    // The result types already exist, so only transient interner scratch
+    // allocations use the faulting allocator. Restore it before teardown.
+    s.ti.gpa = allocator;
+    defer s.ti.gpa = T.allocator;
+    try T.expectEqual(expected_union, try s.checker.substituteType(raw_union, &substitutions));
+    try T.expectEqual(expected_intersection, try s.checker.substituteType(raw_intersection, &substitutions));
+}
+
+test "checker: generic constraint union and intersection propagate interner OOM (#998)" {
+    try checkGenericKeyofAllocationFailures(testGenericConstraintInterningAllocationFailures);
+}
+
+fn testGenericConstraintRelationAllocationFailures(allocator: std.mem.Allocator) !void {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const a = try s.sint.intern("a");
+    const b = try s.sint.intern("b");
+    const source = try s.ti.internObjectType(&.{
+        .{ .name = a, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = b, .type = types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const constraint = try s.ti.internObjectType(&.{
+        .{ .name = a, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+
+    var engine = try relation.Engine.init(allocator, &s.ti);
+    defer engine.deinit();
+    engine.setStringInterner(&s.sint);
+    const original_engine = s.checker.engine;
+    s.checker.engine = &engine;
+    defer s.checker.engine = original_engine;
+
+    try T.expect(try s.checker.genericConstraintAssignable(source, constraint));
+}
+
+test "checker: generic keyof constraint relation propagates allocation failure (#998)" {
+    try checkGenericKeyofAllocationFailures(testGenericConstraintRelationAllocationFailures);
+}
+
+fn testGenericRestConstraintDiagnosticAllocationFailures(allocator: std.mem.Allocator) !void {
+    const s = try newSetup("f(1);");
+    s.checker.gpa = allocator;
+    defer destroySetup(s);
+
+    var call_node: NodeId = hir_mod.none_node_id;
+    var node: NodeId = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) {
+        if (s.hir.kindOf(node) == .call_expr) {
+            call_node = node;
+            break;
+        }
+    }
+    if (call_node == hir_mod.none_node_id) return error.TestUnexpectedResult;
+    const args = hir_mod.callArgs(&s.hir, call_node);
+    try T.expectEqual(@as(usize, 1), args.len);
+
+    const rest_param = try s.ti.internTypeParameter(
+        try s.sint.intern("T"),
+        types.Primitive.string_t,
+        types.Primitive.none,
+    );
+    const signature = try s.ti.internSignature(&.{rest_param}, types.Primitive.void_t, false);
+    try s.checker.rest_signatures.put(allocator, signature, {});
+    var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer substitutions.deinit(allocator);
+    try substitutions.put(allocator, rest_param, types.Primitive.number_t);
+
+    const reported = s.checker.reportInferredGenericRestConstraintMismatch(
+        call_node, args, &.{types.Primitive.number_t}, signature, &substitutions,
+    ) catch |err| {
+        try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+        return err;
+    };
+    try T.expect(reported);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(TsCodes.argument_type_mismatch, s.checker.diagnostics.items[0].code);
+}
+
+test "checker: generic rest constraint diagnostic releases partial allocations (#998)" {
+    try checkGenericKeyofAllocationFailures(testGenericRestConstraintDiagnosticAllocationFailures);
 }
 
 test "checker: generic class heritage substitutes homomorphic mapped members" {
