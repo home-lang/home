@@ -47,3 +47,7 @@ the independent `other` key does not become a member of the inferred result.
 `tsconfig-cycle-composite.json` checks a two-parameter circular constraint.
 The checker must terminate and preserve the exact TS2313, TS2345, TS2322, and
 TS2339 diagnostic stream, including the widened property-key explanation.
+
+`tsconfig-cycle-three.json` and `tsconfig-cycle-four.json` extend that check to
+three- and four-parameter cycles. Both include a literal write to `keyof A` so
+the circular constraint cannot accidentally grant a writable key.
