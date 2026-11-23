@@ -30,3 +30,7 @@ not erase candidates contributed by string or string-literal members.
 `tsconfig-composite-constraints.json` checks base constraints of `keyof` over
 unions and intersections of generic and concrete operands. It compares the
 broad and finite domains, including a concrete single-key boundary.
+
+`tsconfig-direct-composite.json` checks the distinct Index-vs-Index inference
+path for direct `keyof (U & V)` arguments and apparent-domain inference for
+direct `keyof (U | V)` arguments, including raw nested call diagnostics.
